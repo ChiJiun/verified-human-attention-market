@@ -1,5 +1,9 @@
 # Verified Human Attention Market
 
+[English](README.md) | [繁體中文](README.zh-TW.md)
+
+[Roadmap](ROADMAP.md) | [開發路線圖](ROADMAP.zh-TW.md)
+
 > Working title. A Web3 marketplace/protocol for buying **verified human attention** and rewarding real users in **USDC**.
 
 This repository is the product and engineering master plan for turning the idea from a proof of concept into a production system.
