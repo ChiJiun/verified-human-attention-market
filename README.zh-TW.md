@@ -12,6 +12,24 @@
 
 > **不要只做「看廣告賺幣」網站，而是建立「可驗證真人注意力市場與協議」。**
 
+## SDLC 狀態
+
+**目前階段：** Planning → Requirements
+
+**Implementation：** 尚未開始
+
+第一批 SDLC artifact 已正式建立：
+
+- [SDLC 執行狀態](docs/SDLC_STATUS.md)
+- [Product Brief／產品簡報](docs/product/PRODUCT_BRIEF.md)
+- [MVP Requirements／需求規格](docs/product/REQUIREMENTS.md)
+- [MVP Architecture／技術架構](docs/architecture/MVP_ARCHITECTURE.md)
+- [ADR-0001：Base 作為 MVP chain 的提案](docs/adr/0001-mvp-chain-base.md)
+- [ADR-0002：Sponsored content + comprehension check](docs/adr/0002-first-use-case-sponsored-content.md)
+- [Threat Model v0／威脅模型](docs/threat-model/THREAT_MODEL.md)
+
+目前 decision 都刻意維持可逆；在 Product Decision Gate 正式接受前，不把 working assumption 當成不可更改的事實。
+
 ---
 
 ## 1. 要解決的問題

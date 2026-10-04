@@ -14,6 +14,24 @@ The core thesis is simple:
 
 The protocol should let advertisers, creators, publishers, and AI agents fund campaigns; let verified humans complete meaningful missions; and settle rewards transparently.
 
+## SDLC Status
+
+**Current phase:** Planning → Requirements
+
+**Implementation:** Not started
+
+The first SDLC artifacts are now maintained in the repository:
+
+- [SDLC status](docs/SDLC_STATUS.md)
+- [Product brief](docs/product/PRODUCT_BRIEF.md)
+- [MVP requirements](docs/product/REQUIREMENTS.md)
+- [MVP architecture](docs/architecture/MVP_ARCHITECTURE.md)
+- [ADR-0001: Base as proposed MVP chain](docs/adr/0001-mvp-chain-base.md)
+- [ADR-0002: Sponsored content + comprehension check](docs/adr/0002-first-use-case-sponsored-content.md)
+- [Threat model v0](docs/threat-model/THREAT_MODEL.md)
+
+Working assumptions are intentionally reversible until the Product Decision Gate is accepted.
+
 ---
 
 ## 1. Problem
