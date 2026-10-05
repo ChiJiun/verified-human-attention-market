@@ -32,6 +32,27 @@
 
 目前 decision 都刻意維持可逆；在 Product Decision Gate 正式接受前，不把 working assumption 當成不可更改的事實。
 
+### 本機開發
+
+需求：Node.js 24+、pnpm 12.4.2。
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
+pnpm lint
+pnpm build
+pnpm format:check
+```
+
+同時啟動 web 與 API：
+
+```bash
+pnpm dev
+```
+
+需要環境變數時，將 `.env.example` 複製成自己的 `.env`；不得把真實 private key、API key 或其他 credential commit 進 repository。
+
 ---
 
 ## 1. 要解決的問題

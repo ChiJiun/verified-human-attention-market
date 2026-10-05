@@ -34,6 +34,27 @@ The first SDLC artifacts are now maintained in the repository:
 
 Working assumptions are intentionally reversible until the Product Decision Gate is accepted.
 
+### Local development
+
+Requirements: Node.js 24+ and pnpm 12.4.2.
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
+pnpm lint
+pnpm build
+pnpm format:check
+```
+
+Run the web app and API together:
+
+```bash
+pnpm dev
+```
+
+Copy `.env.example` to a local `.env` file when environment-specific values are needed. Never commit real keys or credentials.
+
 ---
 
 ## 1. Problem
