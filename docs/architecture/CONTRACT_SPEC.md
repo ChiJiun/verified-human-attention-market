@@ -74,12 +74,12 @@ struct Campaign {
     address advertiser;
     uint128 fundedBudget;
     uint128 paidRewards;
-    uint128 reservedLiability;
     uint96 rewardPerCompletion;
     uint32 maxCompletions;
     uint32 paidCompletions;
     uint64 startTime;
     uint64 endTime;
+    uint64 closedAt;
     CampaignStatus status;
 }
 ```
@@ -135,7 +135,7 @@ event SignerUpdated(address indexed previousSigner, address indexed newSigner);
 ### INV-001 Budget Conservation
 
 ```
-paidRewards + reservedLiability + refundableBalance <= fundedBudget
+paidRewards + refundableBalance <= fundedBudget
 ```
 
 ### INV-002 Replay Safety
@@ -158,7 +158,9 @@ authorization.amount == campaign.rewardPerCompletion
 
 ### INV-005 Refund Safety
 
-Advertiser cannot refund funds that are still required for valid outstanding liability.
+The contract enforces a maximum authorization TTL. A refund is permitted only after the campaign's issuance deadline (manual `closedAt` or natural `endTime`) plus that TTL. At that point no valid pre-close authorization can remain unexpired.
+
+This avoids pretending that an off-chain signed authorization is an on-chain `reservedLiability` before it is submitted.
 
 ## Access Control
 

@@ -16,11 +16,13 @@ The protocol should let advertisers, creators, publishers, and AI agents fund ca
 
 ## SDLC Status
 
-**Current phase:** System Design
+**Current phase:** Implementation
 
-**Planning / Requirements:** Baseline complete
+**Planning / Requirements / System Design:** Baseline complete
 
-**Implementation:** Not started
+**Implementation:** Active — monorepo and `CampaignManager` baseline implemented
+
+**Testing:** Active — JavaScript checks plus Foundry unit/fuzz/invariant tests
 
 The first SDLC artifacts are now maintained in the repository:
 
@@ -36,7 +38,7 @@ Working assumptions are intentionally reversible until the Product Decision Gate
 
 ### Local development
 
-Requirements: Node.js 24+ and pnpm 12.4.2.
+Requirements: Node.js 24+, pnpm 12.4.2, and Foundry v1.8.4 for Solidity work. On Windows, Foundry is currently used through WSL.
 
 ```bash
 pnpm install
@@ -51,6 +53,15 @@ Run the web app and API together:
 
 ```bash
 pnpm dev
+```
+
+Contract checks:
+
+```bash
+cd packages/contracts
+forge fmt --check
+forge build --sizes
+forge test -vv
 ```
 
 Copy `.env.example` to a local `.env` file when environment-specific values are needed. Never commit real keys or credentials.

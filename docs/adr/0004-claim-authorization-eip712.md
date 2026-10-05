@@ -23,6 +23,7 @@ ClaimAuthorization {
   address claimant;
   uint256 amount;
   bytes32 nonce;
+  uint64 issuedAt;
   uint64 expiresAt;
 }
 ```
@@ -40,7 +41,9 @@ The reward contract MUST verify:
 - signature comes from an authorized signer;
 - campaign exists and permits claim;
 - claimant equals `msg.sender`;
-- authorization is not expired;
+- authorization is not expired and was not issued in the future;
+- authorization lifetime does not exceed the contract's maximum authorization TTL;
+- authorization was issued before the campaign's close/end issuance deadline;
 - nonce has not been consumed;
 - amount matches permitted campaign accounting;
 - funded budget is sufficient.

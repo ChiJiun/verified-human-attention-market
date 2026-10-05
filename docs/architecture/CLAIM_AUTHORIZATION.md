@@ -42,6 +42,7 @@ struct ClaimAuthorization {
     address claimant;
     uint256 amount;
     bytes32 nonce;
+    uint64 issuedAt;
     uint64 expiresAt;
 }
 ```
@@ -49,7 +50,7 @@ struct ClaimAuthorization {
 Suggested type string:
 
 ```text
-ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 expiresAt)
+ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)
 ```
 
 ## Nonce
@@ -64,15 +65,19 @@ nonce = random 32-byte cryptographically secure value
 
 Do not derive nonce solely from timestamp.
 
-## Expiry
+## Issuance and Expiry
 
-POC default: **15 minutes** after issuance.
+POC maximum authorization lifetime: **15 minutes**.
 
-Reasons:
+The signed payload includes both `issuedAt` and `expiresAt`. The contract verifies:
 
-- limits replay window;
-- gives mobile wallet sufficient time;
-- authorization can be regenerated idempotently if expired, while ensuring the previous one cannot also be paid.
+- `issuedAt <= block.timestamp`;
+- `expiresAt > block.timestamp`;
+- `expiresAt > issuedAt`;
+- `expiresAt - issuedAt <= MAX_AUTHORIZATION_TTL`;
+- `issuedAt` is no later than the campaign's issuance deadline (manual `closedAt` or natural `endTime`).
+
+This closes an important refund race: after the issuance deadline plus the maximum authorization TTL, every honestly issued authorization must have expired, so unused budget can be refunded without an on-chain reservation transaction for every authorization.
 
 ## Idempotency
 

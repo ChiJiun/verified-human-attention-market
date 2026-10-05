@@ -2,16 +2,16 @@
 
 > Last reviewed: 2026-10-05
 
-Milestone 0 的 working decisions 已收斂，目前正式進入 **System Design**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
+Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
 ## Current Phase
 
 ```
 Planning        ✅ Complete
 Requirements    ✅ Baseline complete
-System Design   🟡 Active
-Implementation ⬜ Not started
-Testing        🟡 Test plan drafted; no implementation yet
+System Design   ✅ Baseline complete
+Implementation 🟡 Active
+Testing        🟡 Active
 Deployment     ⬜ Not started
 Operations     ⬜ Not started
 ```
@@ -70,9 +70,13 @@ Official references:
 | Claim Authorization Design | ✅ Drafted |
 | Threat Model v0 | ✅ Drafted |
 | Test Plan v0 | ✅ Drafted |
-| Implementation skeleton | ⬜ |
-| Test suite | ⬜ |
-| CI | ⬜ |
+| Implementation skeleton | ✅ Monorepo scaffold |
+| CampaignManager contract | ✅ Baseline implemented |
+| Contract test suite | ✅ Unit + fuzz + invariants |
+| JavaScript test suite | ✅ API/shared baseline |
+| CI | ✅ JavaScript + Foundry jobs |
+| API persistence | ⬜ |
+| World ID integration | ⬜ |
 | Testnet deployment | ⬜ |
 
 ## Remaining Gate Before Implementation
@@ -82,18 +86,25 @@ Official references:
 - [x] POC gas UX selected.
 - [x] Claim authorization trust model selected.
 - [x] POC campaign economics selected.
-- [ ] Confirm exact current testnet addresses and SDK/package versions immediately before scaffolding/deployment.
+- [ ] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment.
+
+## Implementation Evidence
+
+- Monorepo scaffold verified with `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm build`, and `pnpm format:check`.
+- `CampaignManager` implements campaign creation/funding, EIP-712 claims, close/refund, replay protection, completion caps, pause, signer rotation, and single-token settlement.
+- Claim authorization now includes `issuedAt` + `expiresAt`; refunds wait until the issuance deadline plus maximum authorization TTL, eliminating the off-chain authorization/refund race in the original design.
+- Foundry baseline currently passes 13 unit/fuzz tests plus 3 stateful invariants.
+- Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
 
 ## Next SDLC Actions
 
-1. Review the system-design artifacts for internal consistency.
-2. Create Milestone 1 implementation issues.
-3. Scaffold the monorepo: `apps/web`, `apps/api`, `packages/contracts`.
-4. Implement contract state machine and tests first.
-5. Implement API schemas and persistence.
-6. Integrate World ID after the local economic loop works.
-7. Run end-to-end test before any public testnet demo.
+1. Complete and merge/commit the CampaignManager + contract-test milestone.
+2. Implement API schemas and PostgreSQL persistence (GitHub issue #8).
+3. Implement the EIP-712 backend claim authorization service (#10).
+4. Re-verify the current official World ID integration path, then implement eligibility verification (#9).
+5. Build advertiser and verified-user flows (#11–#12).
+6. Run end-to-end POC before public testnet demo (#13).
 
 ---
 
-**Current gate:** System Design is active. The next transition is **System Design → Implementation**.
+**Current gate:** Implementation is active. Deployment remains blocked until the local economic loop and testnet configuration are verified.

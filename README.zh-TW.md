@@ -14,11 +14,13 @@
 
 ## SDLC 狀態
 
-**目前階段：** System Design
+**目前階段：** Implementation
 
-**Planning / Requirements：** 基準版已完成
+**Planning / Requirements / System Design：** 基準版已完成
 
-**Implementation：** 尚未開始
+**Implementation：** 進行中 — monorepo 與 `CampaignManager` baseline 已實作
+
+**Testing：** 進行中 — JavaScript checks + Foundry unit / fuzz / invariant tests
 
 第一批 SDLC artifact 已正式建立：
 
@@ -34,7 +36,7 @@
 
 ### 本機開發
 
-需求：Node.js 24+、pnpm 12.4.2。
+需求：Node.js 24+、pnpm 12.4.2；Solidity 開發使用 Foundry v1.8.4。Windows 目前透過 WSL 使用 Foundry。
 
 ```bash
 pnpm install
@@ -49,6 +51,15 @@ pnpm format:check
 
 ```bash
 pnpm dev
+```
+
+Smart contract 驗證：
+
+```bash
+cd packages/contracts
+forge fmt --check
+forge build --sizes
+forge test -vv
 ```
 
 需要環境變數時，將 `.env.example` 複製成自己的 `.env`；不得把真實 private key、API key 或其他 credential commit 進 repository。

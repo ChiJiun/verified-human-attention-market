@@ -101,6 +101,7 @@ Accepted response:
     "claimant": "0x...",
     "amount": "1000000",
     "nonce": "0x...",
+    "issuedAt": 1791186300,
     "expiresAt": 1791187200,
     "signature": "0x..."
   }

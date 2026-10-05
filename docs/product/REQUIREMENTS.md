@@ -81,7 +81,8 @@
 - [ ] authorization 綁定 claimant。
 - [ ] authorization 綁定 reward amount。
 - [ ] authorization 有 nonce / unique identifier。
-- [ ] authorization 有 expiry。
+- [ ] authorization 有 `issuedAt` 與 `expiresAt`。
+- [ ] authorization lifetime 不超過 contract-defined maximum TTL。
 - [ ] 修改任一欄位後驗證失敗。
 
 ## FR-007 Claim Reward
@@ -135,7 +136,7 @@
 任何時間：
 
 ```
-paidRewards + reservedLiabilities + protocolFees + refundableBalance <= fundedBudget
+paidRewards + protocolFees + refundableBalance <= fundedBudget
 ```
 
 不得因 retry、race condition 或 replay 被破壞。
