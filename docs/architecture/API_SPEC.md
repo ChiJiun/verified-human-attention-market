@@ -8,7 +8,7 @@
 
 - Base path: `/v1`
 - JSON only
-- Mutating endpoints accept `Idempotency-Key` where financial state may be affected.
+- Mutating endpoints that create durable state require or accept `Idempotency-Key`; repeated keys with identical normalized input return the original result, while changed input returns a conflict.
 - Dates/times use RFC 3339 externally.
 - Monetary integer fields use atomic units or explicit decimal strings; never floating-point JSON numbers for settlement.
 
@@ -17,6 +17,14 @@
 ## POST /v1/campaigns
 
 Create off-chain campaign draft / metadata.
+
+Headers:
+
+```
+Idempotency-Key: <client-generated unique key>
+```
+
+For the same advertiser, retrying the same normalized request with the same key returns the existing campaign. Reusing the key with different input returns `409 IDEMPOTENCY_CONFLICT`.
 
 Request:
 

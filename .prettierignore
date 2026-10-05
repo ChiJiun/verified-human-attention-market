@@ -5,4 +5,5 @@ coverage
 out
 cache
 pnpm-lock.yaml
+apps/api/drizzle/meta/
 *.md
