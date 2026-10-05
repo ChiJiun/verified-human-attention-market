@@ -16,7 +16,9 @@ The protocol should let advertisers, creators, publishers, and AI agents fund ca
 
 ## SDLC Status
 
-**Current phase:** Planning → Requirements
+**Current phase:** System Design
+
+**Planning / Requirements:** Baseline complete
 
 **Implementation:** Not started
 

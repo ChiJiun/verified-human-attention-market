@@ -14,7 +14,9 @@
 
 ## SDLC 狀態
 
-**目前階段：** Planning → Requirements
+**目前階段：** System Design
+
+**Planning / Requirements：** 基準版已完成
 
 **Implementation：** 尚未開始
 

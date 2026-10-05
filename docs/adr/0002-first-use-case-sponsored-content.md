@@ -1,6 +1,6 @@
 # ADR-0002: Start with Sponsored Content + Comprehension Check
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-05
 - **Scope:** First POC/MVP mission
 
@@ -70,4 +70,5 @@ The mission is successful as an MVP primitive if:
 
 ## Acceptance Gate
 
-- [ ] Project owner accepts this as the first mission or selects a replacement.
+- [x] Sponsored Content + Short Comprehension Check accepted as the first POC/MVP mission.
+- [ ] Revisit the mission if first buyer interviews indicate a stronger initial use case.

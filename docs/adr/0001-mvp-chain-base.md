@@ -1,6 +1,6 @@
 # ADR-0001: Use Base as the Initial POC/MVP Chain
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-05
 - **Decision owner:** Project owner
 - **Scope:** POC / MVP
@@ -83,8 +83,7 @@ Checked on 2026-10-05:
 
 ## Acceptance Gate
 
-Before changing status from **Proposed** to **Accepted**:
-
-- [ ] Project owner accepts Base as POC/MVP default.
-- [ ] Confirm current testnet/mainnet USDC contract addresses from official Circle documentation immediately before implementation.
-- [ ] Confirm current World ID SDK/API integration path immediately before implementation.
+- [x] Base accepted as the POC/MVP working default.
+- [x] Current official documentation confirms Base support for USDC and current World ID external verification capability.
+- [ ] Re-confirm exact testnet/mainnet USDC contract addresses immediately before deployment.
+- [ ] Re-confirm concrete World ID SDK/package versions immediately before implementation.
