@@ -4,6 +4,8 @@
 
 [開發路線圖](#開發路線圖)
 
+**新的 developer / AI session：** 請先讀 [AGENTS.md](AGENTS.md)。
+
 > 暫定名稱。一個以 **USDC** 結算、讓廣告主／內容方購買「可驗證真人注意力」，並讓真人使用者因完成有效任務而獲得報酬的 Web3 marketplace / protocol。
 
 本 repository 同時作為產品規格、技術設計與 SDLC 主文件，目標是把概念從 POC 推進到可安全營運的 production system。
