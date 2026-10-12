@@ -91,7 +91,7 @@ jobs:
           pnpm format:check 2>&1 | tee format.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            grep "\[warn\]" format.log | head -9 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*m//g' format.log | grep -v "^>" | tail -9 | sed 's/^/::error::/'
           fi
           exit "$status"
 
