@@ -13,16 +13,20 @@ import { createDatabase } from "../src/db/client.js";
 import {
   answers,
   campaigns,
+  chainEvents,
   eligibility,
   missions,
+  reconciliationState,
   submissions,
 } from "../src/db/schema.js";
+import { PostgresChainEventRepository } from "../src/chain/events-repository.postgres.js";
 import {
   hashMissionDefinition,
   toMissionDefinition,
 } from "../src/missions/schemas.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
+import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -66,6 +70,8 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     await database.db.delete(eligibility);
     await database.db.delete(missions);
     await database.db.delete(campaigns);
+    await database.db.delete(chainEvents);
+    await database.db.delete(reconciliationState);
   }
 
   beforeAll(async () => {
@@ -241,5 +247,11 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       createCampaign,
       missionIdFor,
     }));
+  });
+
+  describe("chain indexer persistence", () => {
+    defineIndexerContract({
+      repository: () => new PostgresChainEventRepository(database.db),
+    });
   });
 });
