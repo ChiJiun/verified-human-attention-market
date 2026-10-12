@@ -12,6 +12,8 @@ Solidity financial layer for campaign escrow and reward settlement.
 - nonce replay protection;
 - one rewarded claim per wallet per campaign for the first mission;
 - completion and budget caps;
+- immutable deployment-time exposure limits (ADR-0006);
+- unfunded draft cancellation and no funding after `endTime`;
 - manual close and expiry-aware refund grace period;
 - pause/unpause;
 - authorized signer rotation;
@@ -41,3 +43,4 @@ Tracking:
 
 - GitHub issue #14 — CampaignManager implementation
 - GitHub issue #7 — contract unit/fuzz/invariant tests
+- GitHub issue #18 — on-chain exposure limits

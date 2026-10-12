@@ -150,7 +150,9 @@ contract CampaignManagerInvariantTest {
         address signer = vm.addr(SIGNER_KEY);
 
         token = new InvariantUSDC();
-        manager = new CampaignManager(address(token), signer);
+        manager = new CampaignManager(
+            address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(ONE_USDC * MAX_COMPLETIONS)
+        );
 
         uint64 startTime = uint64(block.timestamp + 1);
         uint64 endTime = startTime + 1 hours;

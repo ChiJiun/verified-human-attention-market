@@ -66,12 +66,17 @@ contract CampaignManager {
     error InvalidSignature();
     error RefundNotAvailable();
     error TokenTransferFailed();
+    error InvalidExposureLimits();
+    error RewardAboveLimit();
+    error CompletionsAboveLimit();
+    error BudgetAboveLimit();
 
     event CampaignCreated(uint256 indexed campaignId, address indexed advertiser);
     event CampaignFunded(uint256 indexed campaignId, uint256 amount);
     event RewardClaimed(uint256 indexed campaignId, address indexed claimant, uint256 amount, bytes32 nonce);
     event CampaignClosed(uint256 indexed campaignId);
     event CampaignRefunded(uint256 indexed campaignId, uint256 amount);
+    event CampaignCancelled(uint256 indexed campaignId);
     event SignerUpdated(address indexed previousSigner, address indexed newSigner);
     event PausedStateChanged(bool paused);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -92,6 +97,13 @@ contract CampaignManager {
 
     IERC20 public immutable rewardToken;
 
+    /// @notice Deployment-time exposure limits (ADR-0006). They bound the
+    /// liability a single campaign can create regardless of API/frontend
+    /// validation, which is not a financial security boundary.
+    uint96 public immutable maxRewardPerCompletion;
+    uint32 public immutable maxCompletionsPerCampaign;
+    uint128 public immutable maxCampaignBudget;
+
     address public owner;
     address public authorizedSigner;
     bool public paused;
@@ -111,12 +123,24 @@ contract CampaignManager {
         _;
     }
 
-    constructor(address rewardToken_, address authorizedSigner_) {
+    constructor(
+        address rewardToken_,
+        address authorizedSigner_,
+        uint96 maxRewardPerCompletion_,
+        uint32 maxCompletionsPerCampaign_,
+        uint128 maxCampaignBudget_
+    ) {
         if (rewardToken_ == address(0) || authorizedSigner_ == address(0)) {
             revert ZeroAddress();
         }
+        if (maxRewardPerCompletion_ == 0 || maxCompletionsPerCampaign_ == 0) revert InvalidExposureLimits();
+        // Also rules out a zero budget, since maxRewardPerCompletion_ > 0.
+        if (maxCampaignBudget_ < maxRewardPerCompletion_) revert InvalidExposureLimits();
 
         rewardToken = IERC20(rewardToken_);
+        maxRewardPerCompletion = maxRewardPerCompletion_;
+        maxCompletionsPerCampaign = maxCompletionsPerCampaign_;
+        maxCampaignBudget = maxCampaignBudget_;
         authorizedSigner = authorizedSigner_;
         owner = msg.sender;
 
@@ -131,6 +155,11 @@ contract CampaignManager {
     {
         if (rewardPerCompletion == 0) revert InvalidReward();
         if (maxCompletions == 0) revert InvalidCompletionLimit();
+        if (rewardPerCompletion > maxRewardPerCompletion) revert RewardAboveLimit();
+        if (maxCompletions > maxCompletionsPerCampaign) revert CompletionsAboveLimit();
+        if (uint256(rewardPerCompletion) * uint256(maxCompletions) > maxCampaignBudget) {
+            revert BudgetAboveLimit();
+        }
         if (startTime < block.timestamp || endTime <= startTime) {
             revert InvalidCampaignWindow();
         }
@@ -164,9 +193,12 @@ contract CampaignManager {
         if (msg.sender != campaign.advertiser) revert Unauthorized();
         if (campaign.status != CampaignStatus.Draft) revert InvalidCampaignStatus();
         if (campaign.fundedBudget != 0) revert AlreadyFunded();
+        if (block.timestamp >= campaign.endTime) revert CampaignAlreadyEnded();
 
         uint256 requiredBudget = uint256(campaign.rewardPerCompletion) * uint256(campaign.maxCompletions);
         if (amount != requiredBudget) revert InvalidFundingAmount();
+        // Bounded by maxCampaignBudget at creation; re-checked before narrowing.
+        if (requiredBudget > maxCampaignBudget) revert BudgetAboveLimit();
 
         campaign.fundedBudget = uint128(amount);
         campaign.status = CampaignStatus.Active;
@@ -230,6 +262,18 @@ contract CampaignManager {
         _safeTransfer(msg.sender, authorization.amount);
 
         emit RewardClaimed(authorization.campaignId, msg.sender, authorization.amount, authorization.nonce);
+    }
+
+    /// @notice Cancels a campaign that was never funded. No funds move.
+    function cancelCampaign(uint256 campaignId) external {
+        Campaign storage campaign = _campaign(campaignId);
+
+        if (msg.sender != campaign.advertiser) revert Unauthorized();
+        if (campaign.status != CampaignStatus.Draft) revert InvalidCampaignStatus();
+
+        campaign.status = CampaignStatus.Cancelled;
+
+        emit CampaignCancelled(campaignId);
     }
 
     function closeCampaign(uint256 campaignId) external {

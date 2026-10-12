@@ -77,7 +77,9 @@ contract CampaignManagerTest {
         claimant = vm.addr(CLAIMANT_KEY);
 
         token = new MockUSDC();
-        manager = new CampaignManager(address(token), signer);
+        manager = new CampaignManager(
+            address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(ONE_USDC * MAX_COMPLETIONS)
+        );
 
         startTime = uint64(block.timestamp + 1);
         endTime = startTime + 1 hours;
@@ -291,8 +293,8 @@ contract CampaignManagerTest {
     }
 
     function testFuzz_FundingEqualsMaximumLiability(uint96 rewardSeed, uint32 completionSeed) public {
-        uint96 reward = uint96((uint256(rewardSeed) % 10_000_000) + 1);
-        uint32 completions = uint32((uint256(completionSeed) % 100) + 1);
+        uint96 reward = uint96((uint256(rewardSeed) % manager.maxRewardPerCompletion()) + 1);
+        uint32 completions = uint32((uint256(completionSeed) % manager.maxCompletionsPerCampaign()) + 1);
 
         uint256 requiredBudget = uint256(reward) * uint256(completions);
         token.mint(advertiser, requiredBudget);
@@ -311,7 +313,114 @@ contract CampaignManagerTest {
 
         (, uint128 fundedBudget,,,,,,,,) = manager.campaigns(campaignId);
         require(fundedBudget == requiredBudget, "funded budget");
+        require(fundedBudget <= manager.maxCampaignBudget(), "budget limit");
         require(token.balanceOf(address(manager)) >= requiredBudget, "escrow balance");
+    }
+
+    function test_ExposureLimitBoundariesAccepted() public {
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+
+        (,,, uint96 reward, uint32 completions,,,,,) = manager.campaigns(campaignId);
+        require(reward == ONE_USDC && completions == MAX_COMPLETIONS, "boundary stored");
+    }
+
+    function test_RewardAboveLimitRejected() public {
+        vm.expectRevert(CampaignManager.RewardAboveLimit.selector);
+        vm.prank(advertiser);
+        manager.createCampaign(uint96(ONE_USDC + 1), 1, startTime, endTime);
+    }
+
+    function test_CompletionsAboveLimitRejected() public {
+        vm.expectRevert(CampaignManager.CompletionsAboveLimit.selector);
+        vm.prank(advertiser);
+        manager.createCampaign(1, MAX_COMPLETIONS + 1, startTime, endTime);
+    }
+
+    function test_VeryLargeDirectCallsRejected() public {
+        vm.expectRevert(CampaignManager.RewardAboveLimit.selector);
+        vm.prank(advertiser);
+        manager.createCampaign(type(uint96).max, type(uint32).max, startTime, endTime);
+
+        vm.expectRevert(CampaignManager.CompletionsAboveLimit.selector);
+        vm.prank(advertiser);
+        manager.createCampaign(1, type(uint32).max, startTime, endTime);
+    }
+
+    function test_BudgetAboveLimitRejected() public {
+        CampaignManager tight =
+            new CampaignManager(address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(5 * ONE_USDC));
+
+        tight.createCampaign(uint96(ONE_USDC), 5, startTime, endTime);
+
+        vm.expectRevert(CampaignManager.BudgetAboveLimit.selector);
+        tight.createCampaign(uint96(ONE_USDC), 6, startTime, endTime);
+    }
+
+    function testFuzz_CreateNeverExceedsExposureLimits(uint96 reward, uint32 completions) public {
+        if (reward == 0 || completions == 0) return;
+
+        vm.prank(advertiser);
+        try manager.createCampaign(reward, completions, startTime, endTime) returns (uint256 campaignId) {
+            (,,, uint96 storedReward, uint32 storedCompletions,,,,,) = manager.campaigns(campaignId);
+            require(storedReward <= manager.maxRewardPerCompletion(), "reward limit");
+            require(storedCompletions <= manager.maxCompletionsPerCampaign(), "completion limit");
+            require(uint256(storedReward) * uint256(storedCompletions) <= manager.maxCampaignBudget(), "budget limit");
+        } catch {}
+    }
+
+    function test_InvalidExposureLimitsRejected() public {
+        vm.expectRevert(CampaignManager.InvalidExposureLimits.selector);
+        new CampaignManager(address(token), signer, 0, MAX_COMPLETIONS, uint128(ONE_USDC));
+
+        vm.expectRevert(CampaignManager.InvalidExposureLimits.selector);
+        new CampaignManager(address(token), signer, uint96(ONE_USDC), 0, uint128(ONE_USDC));
+
+        vm.expectRevert(CampaignManager.InvalidExposureLimits.selector);
+        new CampaignManager(address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(ONE_USDC - 1));
+    }
+
+    function test_FundingAfterEndRejected() public {
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+
+        vm.warp(endTime);
+
+        vm.expectRevert(CampaignManager.CampaignAlreadyEnded.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS);
+    }
+
+    function test_CancelUnfundedDraft() public {
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+
+        vm.expectRevert(CampaignManager.Unauthorized.selector);
+        vm.prank(address(0xDEAD));
+        manager.cancelCampaign(campaignId);
+
+        vm.prank(advertiser);
+        manager.cancelCampaign(campaignId);
+
+        require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Cancelled, "cancelled");
+
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+
+        vm.expectRevert(CampaignManager.InvalidCampaignStatus.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS);
+    }
+
+    function test_CannotCancelFundedCampaign() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+
+        vm.expectRevert(CampaignManager.InvalidCampaignStatus.selector);
+        vm.prank(advertiser);
+        manager.cancelCampaign(campaignId);
     }
 
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
