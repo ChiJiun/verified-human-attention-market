@@ -88,27 +88,26 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-As of this handoff, the open M1 work should generally proceed in this order:
+Status as of 2026-10-12 (verify against GitHub, which is authoritative):
 
-1. **#8 — API schemas and PostgreSQL persistence**
-   - Much of the baseline is already implemented.
-   - Finish submission/eligibility persistence and integration.
-   - Ensure PostgreSQL integration tests pass in CI.
-   - Close the issue only after acceptance criteria are satisfied.
+Done on `main`:
 
-2. **#10 — EIP-712 backend claim authorization service**
-   - Must match the contract's exact typed-data schema.
-   - Must preserve idempotency and financial-liability rules.
+- #8 eligibility/submission persistence (one accepted completion per human, enforced in the DB)
+- #18 on-chain exposure limits (ADR-0006)
+- #15 mission model + deterministic engagement verifier
+- #9 World ID eligibility, backend side (ADR-0007)
+- `POST /v1/campaigns/:id/submissions` (eligibility + verifier + persistence, 2-attempt cap)
+- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config (still open for runtime ABI import and the real testnet deployment record)
 
-3. **#9 — World ID eligibility verification**
-   - Re-check the current official World ID API/SDK immediately before implementation.
-   - Do not rely on stale integration assumptions.
+Next, in dependency order:
 
-4. **#11 — Advertiser create/fund flow**
+1. **#10 — EIP-712 claim authorization service.** Must also cap outstanding (unexpired, unclaimed) authorizations at `maxCompletions − paidCompletions` under a row lock, otherwise late participants receive signatures the contract will reject with `CompletionLimitReached`. Wire `@vham/shared` (ABI) into the API here.
+2. **#37 — SIWE wallet authentication** (blocks #11 and advertiser-only #20).
+3. **#17 — chain event indexer / reconciliation**, then **#16 — publish + on-chain create/fund reconciliation** (sets campaign `active`), then **#20 — analytics**.
+4. **#11 / #12 — web flows** (wallet connect, IDKit + RP signature endpoint, claim UX).
+5. **#13 — E2E**: local anvil first (can run in CI), then Base Sepolia (needs the owner's keystore, RPC and World ID app).
 
-5. **#12 — Verified-user mission and claim flow**
-
-6. **#13 — End-to-end POC on test environment**
+Dependencies not yet in the lockfile: `viem` (api, web), `wagmi` + `@tanstack/react-query` + `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
@@ -598,7 +597,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is usually to finish **GitHub issue #8**, then continue **#10 → #9 → #11/#12 → #13**, unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is **#10** (see §4), unless GitHub state shows that work has already advanced.
 
 ---
 
