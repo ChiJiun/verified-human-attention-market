@@ -133,12 +133,9 @@ contract CampaignManager {
         if (rewardToken_ == address(0) || authorizedSigner_ == address(0)) {
             revert ZeroAddress();
         }
-        if (
-            maxRewardPerCompletion_ == 0 || maxCompletionsPerCampaign_ == 0 || maxCampaignBudget_ == 0
-                || maxCampaignBudget_ < maxRewardPerCompletion_
-        ) {
-            revert InvalidExposureLimits();
-        }
+        if (maxRewardPerCompletion_ == 0 || maxCompletionsPerCampaign_ == 0) revert InvalidExposureLimits();
+        // Also rules out a zero budget, since maxRewardPerCompletion_ > 0.
+        if (maxCampaignBudget_ < maxRewardPerCompletion_) revert InvalidExposureLimits();
 
         rewardToken = IERC20(rewardToken_);
         maxRewardPerCompletion = maxRewardPerCompletion_;

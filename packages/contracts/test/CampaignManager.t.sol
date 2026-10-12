@@ -365,9 +365,7 @@ contract CampaignManagerTest {
             (,,, uint96 storedReward, uint32 storedCompletions,,,,,) = manager.campaigns(campaignId);
             require(storedReward <= manager.maxRewardPerCompletion(), "reward limit");
             require(storedCompletions <= manager.maxCompletionsPerCampaign(), "completion limit");
-            require(
-                uint256(storedReward) * uint256(storedCompletions) <= manager.maxCampaignBudget(), "budget limit"
-            );
+            require(uint256(storedReward) * uint256(storedCompletions) <= manager.maxCampaignBudget(), "budget limit");
         } catch {}
     }
 
