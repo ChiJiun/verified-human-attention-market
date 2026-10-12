@@ -97,14 +97,34 @@ Marks metadata ready and returns the required on-chain create/fund transaction i
 
 ## POST /v1/campaigns/:id/eligibility/verify
 
-Request includes current World ID proof fields required by the official verification API plus claimant wallet address.
+See ADR-0007. Request:
+
+```json
+{
+  "claimant": "0x...",
+  "idkitResponse": { "protocol_version": "4.0", "action": "vham-campaign-<campaignId>", "...": "forwarded unchanged" }
+}
+```
 
 Backend:
 
-1. verifies proof with current official World ID API;
-2. applies campaign verification-count policy;
-3. stores only the minimum identifier needed for duplicate prevention;
-4. returns an opaque eligibility session/token.
+1. checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
+2. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
+3. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
+4. returns an opaque eligibility token.
+
+Responses:
+
+| Status | Body / code |
+| --- | --- |
+| 201 / 200 (replay) | `{ "eligibilityToken", "campaignId", "claimant", "expiresAt" }` |
+| 400 | `INVALID_ELIGIBILITY_REQUEST`, `INVALID_PROOF_PAYLOAD` |
+| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH` |
+| 404 | `CAMPAIGN_NOT_FOUND` |
+| 409 | `CAMPAIGN_NOT_OPEN`, `PARTICIPANT_WALLET_MISMATCH`, `WALLET_ALREADY_BOUND` |
+| 503 | `WORLD_ID_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE` |
+
+Proof payloads are never echoed, logged, or persisted.
 
 Do not hard-code external provider request schemas into public client types more than necessary.
 

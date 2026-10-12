@@ -1,6 +1,12 @@
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { buildApp } from "./app.js";
 import { createDatabase } from "./db/client.js";
+import { PostgresEligibilityRepository } from "./eligibility/repository.js";
+import {
+  HttpWorldIdVerifier,
+  UnconfiguredWorldIdVerifier,
+  type WorldIdEnvironment,
+} from "./identity/world-id.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -14,14 +20,44 @@ if (!Number.isSafeInteger(chainId) || chainId <= 0) {
   throw new Error("EVM_CHAIN_ID must be a positive safe integer");
 }
 
+const participantKeySecret = process.env.PARTICIPANT_KEY_SECRET || null;
+
+if (participantKeySecret !== null && participantKeySecret.length < 32) {
+  throw new Error("PARTICIPANT_KEY_SECRET must be at least 32 characters");
+}
+
+const worldIdEnvironment = (process.env.WORLD_ID_ENVIRONMENT ??
+  "production") as WorldIdEnvironment;
+
+if (!["production", "staging"].includes(worldIdEnvironment)) {
+  throw new Error("WORLD_ID_ENVIRONMENT must be production or staging");
+}
+
+const worldIdRpId = process.env.WORLD_ID_RP_ID;
+const worldIdVerifier = worldIdRpId
+  ? new HttpWorldIdVerifier({
+      rpId: worldIdRpId,
+      environment: worldIdEnvironment,
+    })
+  : new UnconfiguredWorldIdVerifier();
+
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 
 const app = buildApp({
   campaignRepository,
+  eligibilityRepository: new PostgresEligibilityRepository(database.db),
+  worldIdVerifier,
+  participantKeySecret,
   chainId,
   close: database.close,
 });
+
+if (!worldIdRpId || !participantKeySecret) {
+  app.log.warn(
+    "World ID eligibility is disabled: set WORLD_ID_RP_ID and PARTICIPANT_KEY_SECRET",
+  );
+}
 
 const port = Number(process.env.API_PORT ?? 3001);
 

@@ -5,9 +5,22 @@ import {
   type CampaignRepository,
 } from "./campaigns/repository.js";
 import { registerCampaignRoutes } from "./campaigns/routes.js";
+import {
+  InMemoryEligibilityRepository,
+  type EligibilityRepository,
+} from "./eligibility/repository.js";
+import { registerEligibilityRoutes } from "./eligibility/routes.js";
+import {
+  UnconfiguredWorldIdVerifier,
+  type WorldIdVerifier,
+} from "./identity/world-id.js";
 
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
+  eligibilityRepository?: EligibilityRepository;
+  worldIdVerifier?: WorldIdVerifier;
+  /** HMAC secret for participant keys; eligibility fails closed without it. */
+  participantKeySecret?: string | null;
   chainId?: number;
   close?: () => Promise<void>;
   now?: () => Date;
@@ -20,6 +33,11 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
   const campaignRepository =
     dependencies.campaignRepository ?? new InMemoryCampaignRepository();
+  const eligibilityRepository =
+    dependencies.eligibilityRepository ?? new InMemoryEligibilityRepository();
+  const worldIdVerifier =
+    dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
+  const now = dependencies.now ?? (() => new Date());
   const chainId = dependencies.chainId ?? 84532;
 
   app.get("/health/live", async () => ({ status: "ok" }));
@@ -50,7 +68,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
     await registerCampaignRoutes(instance, {
       repository: campaignRepository,
       chainId,
-      ...(dependencies.now ? { now: dependencies.now } : {}),
+      now,
+    });
+
+    await registerEligibilityRoutes(instance, {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      worldId: worldIdVerifier,
+      participantKeySecret: dependencies.participantKeySecret ?? null,
+      now,
     });
   });
 
