@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import type { CampaignRepository } from "../src/campaigns/repository.js";
+import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 
@@ -43,16 +43,12 @@ describe("health endpoints", () => {
   });
 
   it("returns 503 when the repository is unavailable", async () => {
-    const repository: CampaignRepository = {
-      createIdempotent: async () => {
-        throw new Error("not used");
-      },
-      getById: async () => null,
-      getMission: async () => null,
-      ping: async () => {
+    class UnavailableRepository extends InMemoryCampaignRepository {
+      override async ping(): Promise<void> {
         throw new Error("database unavailable");
-      },
-    };
+      }
+    }
+    const repository = new UnavailableRepository();
 
     const app = buildApp({ campaignRepository: repository });
     apps.push(app);

@@ -110,6 +110,9 @@ export interface SubmissionRepository {
   ): Promise<SubmissionRecord | null>;
   /** Number of persisted attempts (accepted + rejected) for an eligibility. */
   countByEligibility(eligibilityId: string): Promise<number>;
+  countByCampaign(
+    campaignId: string,
+  ): Promise<{ accepted: number; rejected: number }>;
 }
 
 /**
@@ -349,6 +352,25 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
     return row ? this.withAnswers(row) : null;
   }
 
+  async countByCampaign(
+    campaignId: string,
+  ): Promise<{ accepted: number; rejected: number }> {
+    const rows = await this.db
+      .select({ result: submissions.result, value: count() })
+      .from(submissions)
+      .where(eq(submissions.campaignId, campaignId))
+      .groupBy(submissions.result);
+
+    const totals = { accepted: 0, rejected: 0 };
+    for (const row of rows) {
+      if (row.result === "accepted" || row.result === "rejected") {
+        totals[row.result] = row.value;
+      }
+    }
+
+    return totals;
+  }
+
   async countByEligibility(eligibilityId: string): Promise<number> {
     const [row] = await this.db
       .select({ value: count() })
@@ -475,6 +497,20 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     idempotencyKey: string,
   ): Promise<SubmissionRecord | null> {
     return this.findByKeySync(campaignId, idempotencyKey);
+  }
+
+  async countByCampaign(
+    campaignId: string,
+  ): Promise<{ accepted: number; rejected: number }> {
+    const totals = { accepted: 0, rejected: 0 };
+
+    for (const record of this.records.values()) {
+      if (record.campaignId === campaignId) {
+        totals[record.result] += 1;
+      }
+    }
+
+    return totals;
   }
 
   async countByEligibility(eligibilityId: string): Promise<number> {

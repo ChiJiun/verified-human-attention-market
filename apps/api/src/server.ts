@@ -1,6 +1,8 @@
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { buildApp } from "./app.js";
 import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
+import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
+import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
@@ -61,6 +63,18 @@ const app = buildApp({
   worldIdVerifier,
   participantKeySecret,
   chainId,
+  chain: chainConfig
+    ? {
+        rpc: new JsonRpcClient(chainConfig.rpcUrl),
+        chain: {
+          chainId: chainConfig.chainId,
+          contractAddress: chainConfig.campaignManagerAddress,
+          usdcAddress: chainConfig.usdcAddress,
+        },
+        events: new PostgresChainEventRepository(database.db),
+        now: () => new Date(),
+      }
+    : null,
   close: database.close,
 });
 

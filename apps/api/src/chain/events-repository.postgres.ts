@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { chainEvents, reconciliationState } from "../db/schema.js";
@@ -209,6 +209,35 @@ export class PostgresChainEventRepository implements ChainEventRepository {
         status: row.confirmationStatus as ConfirmationStatus,
       }))
       .sort(byChainOrder);
+  }
+
+  async listConfirmedCreations(
+    scope: ChainScope,
+  ): Promise<{ onchainCampaignId: string; advertiser: string }[]> {
+    const rows = await this.db
+      .select({ payload: chainEvents.payload })
+      .from(chainEvents)
+      .where(
+        and(
+          eq(chainEvents.chainId, scope.chainId),
+          eq(chainEvents.contractAddress, scope.contractAddress),
+          eq(chainEvents.eventName, "CampaignCreated"),
+          eq(chainEvents.confirmationStatus, "confirmed"),
+        ),
+      )
+      .orderBy(asc(chainEvents.blockNumber), asc(chainEvents.logIndex));
+
+    return rows.flatMap(({ payload }) => {
+      const event = payload as CampaignManagerEvent;
+      return event.name === "CampaignCreated"
+        ? [
+            {
+              onchainCampaignId: event.campaignId,
+              advertiser: event.advertiser,
+            },
+          ]
+        : [];
+    });
   }
 
   private async orphan(

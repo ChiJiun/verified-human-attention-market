@@ -26,6 +26,7 @@ export const campaigns = pgTable(
       precision: 78,
       scale: 0,
     }),
+    publishTxHash: text("publish_tx_hash"),
     advertiserAddress: text("advertiser_address").notNull(),
     creationIdempotencyKey: text("creation_idempotency_key").notNull(),
     creationRequestHash: text("creation_request_hash").notNull(),
@@ -64,6 +65,10 @@ export const campaigns = pgTable(
     uniqueIndex("campaigns_chain_onchain_id_uq").on(
       table.chainId,
       table.onchainCampaignId,
+    ),
+    check(
+      "campaigns_status_check",
+      sql`${table.status} IN ('draft', 'pending_onchain', 'active', 'closed', 'expired', 'settled', 'cancelled')`,
     ),
   ],
 );

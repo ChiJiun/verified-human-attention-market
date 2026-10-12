@@ -18,7 +18,8 @@ The database is **not** the source of truth for final settlement. On-chain event
 | max_completions | integer | > 0 |
 | start_at | timestamptz | |
 | end_at | timestamptz | |
-| status | enum/text | draft/active/closed/etc |
+| publish_tx_hash | text nullable | createCampaign tx, once linked |
+| status | text | `draft`, `pending_onchain`, `active`, `closed`, `expired`, `settled`, `cancelled` (CHECK). Lifecycle values mirror confirmed chain events. |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 
@@ -116,11 +117,11 @@ For POC deterministic multiple-choice answers are preferred over free-text colle
 | confirmation_status | text | observed/confirmed/orphaned |
 | observed_at | timestamptz | |
 
-Unique key: `(chain_id, tx_hash, log_index)`.
+Unique key: `(chain_id, tx_hash, log_index)`. Also `contract_address` and decoded `onchain_campaign_id` (indexed). `confirmation_status` is `observed` (inside the confirmation window), `confirmed`, or `orphaned` (removed by a reorg; never counted).
 
 ## reconciliation_state
 
-Tracks latest indexed block/finality state per chain.
+Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), and `latest_observed_block`. Each confirmed batch commits events and cursor in one transaction.
 
 ## Data Retention Principles
 
