@@ -92,6 +92,8 @@ jobs:
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             sed 's/\x1b\[[0-9;]*m//g' format.log | grep -v "^>" | tail -9 | sed 's/^/::error::/'
+            pnpm exec prettier --write . > /dev/null
+            echo "::error::$(git diff | head -80 | sed ':a;N;$!ba;s/\n/%0A/g')"
           fi
           exit "$status"
 
