@@ -11,6 +11,11 @@ import {
 } from "./eligibility/repository.js";
 import { registerEligibilityRoutes } from "./eligibility/routes.js";
 import {
+  InMemorySubmissionRepository,
+  type SubmissionRepository,
+} from "./submissions/repository.js";
+import { registerSubmissionRoutes } from "./submissions/routes.js";
+import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
@@ -18,6 +23,7 @@ import {
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
   eligibilityRepository?: EligibilityRepository;
+  submissionRepository?: SubmissionRepository;
   worldIdVerifier?: WorldIdVerifier;
   /** HMAC secret for participant keys; eligibility fails closed without it. */
   participantKeySecret?: string | null;
@@ -35,6 +41,9 @@ export function buildApp(dependencies: AppDependencies = {}) {
     dependencies.campaignRepository ?? new InMemoryCampaignRepository();
   const eligibilityRepository =
     dependencies.eligibilityRepository ?? new InMemoryEligibilityRepository();
+  const submissionRepository =
+    dependencies.submissionRepository ??
+    new InMemorySubmissionRepository(eligibilityRepository);
   const worldIdVerifier =
     dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
   const now = dependencies.now ?? (() => new Date());
@@ -76,6 +85,13 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
+      now,
+    });
+
+    await registerSubmissionRoutes(instance, {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      submissions: submissionRepository,
       now,
     });
   });

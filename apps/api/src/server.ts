@@ -3,6 +3,7 @@ import { buildApp } from "./app.js";
 import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
+import { PostgresSubmissionRepository } from "./submissions/repository.js";
 import {
   HttpWorldIdVerifier,
   UnconfiguredWorldIdVerifier,
@@ -56,6 +57,7 @@ const campaignRepository = new PostgresCampaignRepository(database.db);
 const app = buildApp({
   campaignRepository,
   eligibilityRepository: new PostgresEligibilityRepository(database.db),
+  submissionRepository: new PostgresSubmissionRepository(database.db),
   worldIdVerifier,
   participantKeySecret,
   chainId,

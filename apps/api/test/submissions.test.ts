@@ -1,0 +1,372 @@
+import { afterEach, describe, expect, it } from "vitest";
+
+import { buildApp } from "../src/app.js";
+import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
+import type { CampaignRecord, CampaignStatus } from "../src/campaigns/types.js";
+import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
+import {
+  campaignAction,
+  type WorldIdResult,
+  type WorldIdVerifier,
+} from "../src/identity/world-id.js";
+import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
+
+const apps: ReturnType<typeof buildApp>[] = [];
+const SECRET = "submission-test-secret-0123456789abcdef";
+const WALLET_A = "0x" + "a".repeat(40);
+const WALLET_B = "0x" + "b".repeat(40);
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+});
+
+/** Campaign status comes from on-chain reconciliation (#16); simulated here. */
+class StatusOverrideCampaignRepository extends InMemoryCampaignRepository {
+  status: CampaignStatus = "active";
+
+  override async getById(id: string): Promise<CampaignRecord | null> {
+    const record = await super.getById(id);
+    return record ? { ...record, status: this.status } : null;
+  }
+}
+
+class FakeWorldId implements WorldIdVerifier {
+  async verify(request: {
+    action: string;
+    idkitResponse: unknown;
+  }): Promise<WorldIdResult> {
+    const proof = request.idkitResponse as { action: string; human: string };
+    return proof.action === request.action
+      ? { ok: true, nullifier: proof.human }
+      : { ok: false, code: "ACTION_MISMATCH" };
+  }
+}
+
+const campaignPayload = {
+  advertiser: "0x1234567890ABCDEF1234567890ABCDEF12345678",
+  contentUrl: "https://example.com/sponsored",
+  rewardPerCompletion: "1000000",
+  maxCompletions: 10,
+  startAt: "2026-10-05T10:15:00.000Z",
+  endAt: "2026-10-05T11:15:00.000Z",
+  mission: {
+    questions: [
+      {
+        id: "q1",
+        prompt: "Pick a",
+        choices: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+      },
+      {
+        id: "q2",
+        prompt: "Pick b",
+        choices: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+      },
+    ],
+    answerKey: { q1: "a", q2: "b" },
+  },
+};
+
+const CORRECT = [
+  { questionId: "q1", choiceId: "a" },
+  { questionId: "q2", choiceId: "b" },
+];
+const WRONG = [
+  { questionId: "q1", choiceId: "b" },
+  { questionId: "q2", choiceId: "b" },
+];
+
+async function setup() {
+  let now = new Date("2026-10-05T10:00:00.000Z");
+  const campaigns = new StatusOverrideCampaignRepository();
+  const eligibility = new InMemoryEligibilityRepository();
+  const submissions = new InMemorySubmissionRepository(eligibility);
+  const app = buildApp({
+    campaignRepository: campaigns,
+    eligibilityRepository: eligibility,
+    submissionRepository: submissions,
+    worldIdVerifier: new FakeWorldId(),
+    participantKeySecret: SECRET,
+    now: () => now,
+  });
+  apps.push(app);
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/v1/campaigns",
+    headers: { "idempotency-key": "campaign" },
+    payload: campaignPayload,
+  });
+  const campaignId = created.json<{ id: string }>().id;
+  now = new Date("2026-10-05T10:30:00.000Z");
+
+  async function verify(human: string, claimant: string) {
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: {
+        claimant,
+        idkitResponse: { action: campaignAction(campaignId), human },
+      },
+    });
+    return response.json<{ eligibilityToken: string }>().eligibilityToken;
+  }
+
+  function submit(
+    key: string,
+    body: { eligibilityToken: string; claimant: string; answers: unknown },
+  ) {
+    return app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions`,
+      headers: { "idempotency-key": key },
+      payload: body,
+    });
+  }
+
+  return {
+    app,
+    campaigns,
+    campaignId,
+    verify,
+    submit,
+    setNow: (value: Date) => {
+      now = value;
+    },
+  };
+}
+
+describe("POST /v1/campaigns/:id/submissions", () => {
+  it("accepts a verified human with correct answers", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+
+    const response = await submit("k1", {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      status: "accepted",
+      rejectionCode: null,
+      claimant: WALLET_A,
+      claim: { status: "pending_authorization" },
+    });
+  });
+
+  it("replays the original outcome for the same idempotency key", async () => {
+    const { verify, submit, setNow } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const body = {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    };
+
+    const first = await submit("k1", body);
+    // Even after the campaign ends, a retry returns the stored result.
+    setNow(new Date("2026-10-05T12:00:00.000Z"));
+    const second = await submit("k1", body);
+
+    expect(second.statusCode).toBe(200);
+    expect(second.json<{ submissionId: string }>().submissionId).toBe(
+      first.json<{ submissionId: string }>().submissionId,
+    );
+
+    const changed = await submit("k1", { ...body, answers: WRONG });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json()).toMatchObject({
+      error: { code: "IDEMPOTENCY_CONFLICT" },
+    });
+  });
+
+  it("blocks a second completion by the same human", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    await submit("k1", {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    const again = await submit("k2", {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({
+      error: { code: "ALREADY_COMPLETED" },
+    });
+  });
+
+  it("rejects wrong answers without revealing which were wrong", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+
+    const response = await submit("k1", {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: WRONG,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      status: "rejected",
+      rejectionCode: "COMPREHENSION_FAILED",
+      claim: null,
+    });
+    expect(response.body).not.toContain("correct");
+    expect(response.body).not.toContain("score");
+  });
+
+  it("caps attempts per verified human to stop brute forcing", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const base = { eligibilityToken: token, claimant: WALLET_A };
+
+    expect((await submit("k1", { ...base, answers: WRONG })).statusCode).toBe(
+      201,
+    );
+    expect((await submit("k2", { ...base, answers: WRONG })).statusCode).toBe(
+      201,
+    );
+
+    const third = await submit("k3", { ...base, answers: CORRECT });
+    expect(third.statusCode).toBe(429);
+    expect(third.json()).toMatchObject({
+      error: { code: "ATTEMPT_LIMIT_REACHED" },
+    });
+  });
+
+  it("allows a retry after one failed attempt", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const base = { eligibilityToken: token, claimant: WALLET_A };
+
+    await submit("k1", { ...base, answers: WRONG });
+    const retry = await submit("k2", { ...base, answers: CORRECT });
+
+    expect(retry.json()).toMatchObject({ status: "accepted" });
+  });
+
+  it("refuses someone else's eligibility token or wallet", async () => {
+    const { verify, submit } = await setup();
+    const tokenA = await verify("human-a", WALLET_A);
+    await verify("human-b", WALLET_B);
+
+    const stolen = await submit("k1", {
+      eligibilityToken: tokenA,
+      claimant: WALLET_B,
+      answers: CORRECT,
+    });
+    const unknown = await submit("k2", {
+      eligibilityToken: "00000000-0000-4000-8000-000000000000",
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    expect(stolen.statusCode).toBe(403);
+    expect(unknown.statusCode).toBe(403);
+    expect(stolen.json()).toMatchObject({
+      error: { code: "INVALID_ELIGIBILITY" },
+    });
+  });
+
+  it("creates no liability when the campaign is not active", async () => {
+    const { verify, submit, campaigns, setNow } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const body = {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    };
+
+    campaigns.status = "closed";
+    const closed = await submit("k1", body);
+
+    campaigns.status = "active";
+    setNow(new Date("2026-10-05T10:05:00.000Z"));
+    const early = await submit("k2", body);
+
+    expect(closed.statusCode).toBe(409);
+    expect(closed.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_ACTIVE" },
+    });
+    expect(early.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_STARTED" },
+    });
+
+    // Neither counted as an attempt: the human can still complete.
+    setNow(new Date("2026-10-05T10:30:00.000Z"));
+    expect((await submit("k3", body)).json()).toMatchObject({
+      status: "accepted",
+    });
+  });
+
+  it("does not store or count malformed answers", async () => {
+    const { verify, submit } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const base = { eligibilityToken: token, claimant: WALLET_A };
+
+    for (const [key, answers] of [
+      ["m1", "free text"],
+      ["m2", [{ questionId: "q1", choiceId: "zzz" }]],
+      ["m3", [{ questionId: "q9", choiceId: "a" }]],
+    ] as const) {
+      const response = await submit(key, { ...base, answers });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "MALFORMED_ANSWERS" },
+      });
+    }
+
+    expect((await submit("ok", { ...base, answers: CORRECT })).statusCode).toBe(
+      201,
+    );
+  });
+
+  it("validates headers, body and campaign id", async () => {
+    const { app, campaignId, verify } = await setup();
+    const token = await verify("human-1", WALLET_A);
+    const url = `/v1/campaigns/${campaignId}/submissions`;
+    const payload = {
+      eligibilityToken: token,
+      claimant: WALLET_A,
+      answers: CORRECT,
+    };
+
+    expect(
+      (await app.inject({ method: "POST", url, payload })).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url,
+          headers: { "idempotency-key": "x" },
+          payload: { ...payload, claimant: "nope" },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: "/v1/campaigns/not-a-uuid/submissions",
+          headers: { "idempotency-key": "x" },
+          payload,
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+});
