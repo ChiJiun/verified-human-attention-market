@@ -75,7 +75,7 @@ Official references:
 | Contract test suite | ✅ Unit + fuzz + invariants |
 | JavaScript test suite | ✅ API/shared baseline |
 | CI | ✅ JavaScript + Foundry jobs |
-| API persistence | ⬜ |
+| API persistence | 🟡 Campaign + eligibility/submission persistence (#8); routes follow with #9/#15 |
 | World ID integration | ⬜ |
 | Testnet deployment | ⬜ |
 

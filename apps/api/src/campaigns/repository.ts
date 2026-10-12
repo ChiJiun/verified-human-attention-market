@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { campaigns } from "../db/schema.js";
+import { IdempotencyConflictError } from "../persistence/errors.js";
 import type {
   CampaignRecord,
   CampaignStatus,
@@ -13,12 +14,7 @@ export interface IdempotentCampaignResult {
   created: boolean;
 }
 
-export class IdempotencyConflictError extends Error {
-  constructor() {
-    super("Idempotency key was already used with a different request");
-    this.name = "IdempotencyConflictError";
-  }
-}
+export { IdempotencyConflictError };
 
 export interface CampaignRepository {
   createIdempotent(
