@@ -75,6 +75,13 @@ export class FakeChain implements ChainRpc {
     this.mine(genesisBlocks);
   }
 
+  /** Unique per contract, like real transaction hashes across tests. */
+  private txHash(counter: number): string {
+    return `0x${this.contract.slice(2).toLowerCase()}${counter
+      .toString(16)
+      .padStart(24, "0")}`;
+  }
+
   get head(): bigint {
     return BigInt(this.blocks.length - 1);
   }
@@ -97,7 +104,7 @@ export class FakeChain implements ChainRpc {
             ? specs.map((spec) => ({
                 ...spec,
                 address,
-                txHash: word(++this.txCounter),
+                txHash: this.txHash(++this.txCounter),
               }))
             : [],
       });
