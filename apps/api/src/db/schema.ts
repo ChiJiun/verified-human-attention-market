@@ -10,6 +10,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -221,6 +222,12 @@ export const chainEvents = pgTable(
   "chain_events",
   {
     chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    contractAddress: text("contract_address").notNull(),
+    // Decoded campaignId for campaign events; null for global events.
+    onchainCampaignId: numeric("onchain_campaign_id", {
+      precision: 78,
+      scale: 0,
+    }),
     txHash: text("tx_hash").notNull(),
     logIndex: integer("log_index").notNull(),
     blockNumber: bigint("block_number", { mode: "number" }).notNull(),
@@ -242,19 +249,35 @@ export const chainEvents = pgTable(
       table.logIndex,
     ),
     index("chain_events_block_idx").on(table.chainId, table.blockNumber),
+    index("chain_events_campaign_idx").on(
+      table.chainId,
+      table.contractAddress,
+      table.onchainCampaignId,
+    ),
+    check(
+      "chain_events_confirmation_status_check",
+      sql`${table.confirmationStatus} IN ('observed', 'confirmed', 'orphaned')`,
+    ),
   ],
 );
 
-export const reconciliationState = pgTable("reconciliation_state", {
-  chainId: bigint("chain_id", { mode: "number" }).primaryKey(),
-  latestObservedBlock: bigint("latest_observed_block", {
-    mode: "number",
-  }).notNull(),
-  latestConfirmedBlock: bigint("latest_confirmed_block", {
-    mode: "number",
-  }).notNull(),
-  updatedAt: timestamp("updated_at", {
-    withTimezone: true,
-    mode: "date",
-  }).notNull(),
-});
+export const reconciliationState = pgTable(
+  "reconciliation_state",
+  {
+    chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    contractAddress: text("contract_address").notNull(),
+    latestObservedBlock: bigint("latest_observed_block", {
+      mode: "number",
+    }).notNull(),
+    latestConfirmedBlock: bigint("latest_confirmed_block", {
+      mode: "number",
+    }).notNull(),
+    // Detects reorgs deeper than the confirmation depth.
+    latestConfirmedBlockHash: text("latest_confirmed_block_hash"),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
+);
