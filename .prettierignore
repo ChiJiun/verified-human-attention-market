@@ -7,3 +7,5 @@ cache
 pnpm-lock.yaml
 apps/api/drizzle/meta/
 *.md
+packages/shared/src/contracts/campaign-manager-abi.ts
+packages/contracts/deployments/
