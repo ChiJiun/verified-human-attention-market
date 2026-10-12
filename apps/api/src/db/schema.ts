@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
+  check,
   index,
   integer,
   jsonb,
@@ -54,6 +56,11 @@ export const campaigns = pgTable(
       table.advertiserAddress,
       table.creationIdempotencyKey,
     ),
+    // One database campaign per canonical on-chain campaign.
+    uniqueIndex("campaigns_chain_onchain_id_uq").on(
+      table.chainId,
+      table.onchainCampaignId,
+    ),
   ],
 );
 
@@ -63,7 +70,7 @@ export const eligibility = pgTable(
     id: uuid("id").primaryKey(),
     campaignId: uuid("campaign_id")
       .notNull()
-      .references(() => campaigns.id, { onDelete: "cascade" }),
+      .references(() => campaigns.id, { onDelete: "restrict" }),
     participantKey: text("participant_key").notNull(),
     claimantAddress: text("claimant_address").notNull(),
     provider: text("provider").notNull().default("world_id"),
@@ -77,9 +84,24 @@ export const eligibility = pgTable(
     }).notNull(),
   },
   (table) => [
+    // One verified human per campaign.
     uniqueIndex("eligibility_campaign_participant_uq").on(
       table.campaignId,
       table.participantKey,
+    ),
+    // One payout wallet per campaign; mirrors the contract's claimedWallet rule.
+    uniqueIndex("eligibility_campaign_claimant_uq").on(
+      table.campaignId,
+      table.claimantAddress,
+    ),
+    // Only derived HMAC keys may be stored, never raw identity material.
+    check(
+      "eligibility_participant_key_format",
+      sql`${table.participantKey} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "eligibility_claimant_address_format",
+      sql`${table.claimantAddress} ~ '^0x[0-9a-f]{40}$'`,
     ),
   ],
 );
@@ -90,11 +112,12 @@ export const submissions = pgTable(
     id: uuid("id").primaryKey(),
     campaignId: uuid("campaign_id")
       .notNull()
-      .references(() => campaigns.id, { onDelete: "cascade" }),
+      .references(() => campaigns.id, { onDelete: "restrict" }),
     eligibilityId: uuid("eligibility_id")
       .notNull()
       .references(() => eligibility.id, { onDelete: "restrict" }),
     idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
     claimantAddress: text("claimant_address").notNull(),
     result: text("result").notNull(),
     rejectionCode: text("rejection_code"),
@@ -122,6 +145,19 @@ export const submissions = pgTable(
       table.idempotencyKey,
     ),
     index("submissions_campaign_idx").on(table.campaignId),
+    // At most one accepted completion (= one reward liability) per human.
+    uniqueIndex("submissions_eligibility_accepted_uq")
+      .on(table.eligibilityId)
+      .where(sql`${table.result} = 'accepted'`),
+    uniqueIndex("submissions_claim_nonce_uq").on(table.claimNonce),
+    check(
+      "submissions_result_check",
+      sql`(${table.result} = 'accepted' AND ${table.rejectionCode} IS NULL) OR (${table.result} = 'rejected' AND ${table.rejectionCode} IS NOT NULL)`,
+    ),
+    check(
+      "submissions_claimant_address_format",
+      sql`${table.claimantAddress} ~ '^0x[0-9a-f]{40}$'`,
+    ),
   ],
 );
 

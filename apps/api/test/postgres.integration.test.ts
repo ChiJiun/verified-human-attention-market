@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -9,7 +10,15 @@ import {
   PostgresCampaignRepository,
 } from "../src/campaigns/repository.js";
 import { createDatabase } from "../src/db/client.js";
-import { campaigns } from "../src/db/schema.js";
+import {
+  answers,
+  campaigns,
+  eligibility,
+  submissions,
+} from "../src/db/schema.js";
+import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
+import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
+import { definePersistenceContract } from "./support/persistence-contract.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -22,16 +31,25 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   const database = createDatabase(databaseUrl);
   const repository = new PostgresCampaignRepository(database.db);
 
+  // Financial rows reference campaigns with ON DELETE RESTRICT, so clean up
+  // children first.
+  async function truncateAll() {
+    await database.db.delete(answers);
+    await database.db.delete(submissions);
+    await database.db.delete(eligibility);
+    await database.db.delete(campaigns);
+  }
+
   beforeAll(async () => {
     await migrate(database.db, {
       migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
     });
 
-    await database.db.delete(campaigns);
+    await truncateAll();
   });
 
   afterAll(async () => {
-    await database.db.delete(campaigns);
+    await truncateAll();
     await database.close();
   });
 
@@ -109,5 +127,57 @@ describeWithDatabase("PostgresCampaignRepository", () => {
 
   it("responds to the readiness ping after migration", async () => {
     await expect(repository.ping()).resolves.toBeUndefined();
+  });
+
+  it("refuses to delete a campaign that has eligibility records", async () => {
+    const campaignId = await createCampaign();
+    await new PostgresEligibilityRepository(database.db).recordIdempotent({
+      id: randomUUID(),
+      campaignId,
+      participantKey: "f".repeat(64),
+      claimantAddress: "0x" + "1".repeat(40),
+      provider: "world_id",
+      verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+      expiresAt: new Date("2026-10-05T11:20:00.000Z"),
+    });
+
+    await expect(
+      database.db.delete(campaigns).where(eq(campaigns.id, campaignId)),
+    ).rejects.toThrow();
+  });
+
+  async function createCampaign(): Promise<string> {
+    const id = randomUUID();
+    const createdAt = new Date("2026-10-05T10:00:00.000Z");
+
+    await repository.createIdempotent({
+      id,
+      chainId: 84532,
+      advertiserAddress: "0x" + "2".repeat(40),
+      creationIdempotencyKey: `contract-${id}`,
+      creationRequestHash: `hash-${id}`,
+      contentUrl: "https://example.com/contract",
+      rewardAtomic: "1000000",
+      maxCompletions: 10,
+      startAt: new Date("2026-10-05T10:15:00.000Z"),
+      endAt: new Date("2026-10-05T11:15:00.000Z"),
+      status: "draft",
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    return id;
+  }
+
+  describe("eligibility + submission persistence", () => {
+    const eligibilityRepository = new PostgresEligibilityRepository(
+      database.db,
+    );
+
+    definePersistenceContract(() => ({
+      eligibility: eligibilityRepository,
+      submissions: new PostgresSubmissionRepository(database.db),
+      createCampaign,
+    }));
   });
 });

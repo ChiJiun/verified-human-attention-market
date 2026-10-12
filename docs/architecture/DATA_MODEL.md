@@ -11,7 +11,7 @@ The database is **not** the source of truth for final settlement. On-chain event
 | --- | --- | --- |
 | id | uuid/text | internal ID |
 | chain_id | bigint | target EVM chain |
-| onchain_campaign_id | numeric nullable | set after creation |
+| onchain_campaign_id | numeric nullable | set after creation; `UNIQUE (chain_id, onchain_campaign_id)` |
 | advertiser_address | text | normalized EVM address |
 | content_url | text | first mission |
 | reward_atomic | numeric | USDC atomic units |
@@ -34,7 +34,15 @@ The database is **not** the source of truth for final settlement. On-chain event
 | expires_at | timestamptz | |
 | provider | text | world_id initially |
 
-Unique constraint should enforce the campaign-specific duplicate policy.
+Enforced constraints (migration `0002_submission_integrity`):
+
+- `UNIQUE (campaign_id, participant_key)` — one verified human per campaign;
+- `UNIQUE (campaign_id, claimant_address)` — one payout wallet per campaign (mirrors the contract's one-claim-per-wallet rule);
+- `participant_key` must be a 64-char lowercase hex HMAC (`CHECK`). It is derived with `deriveParticipantKey(PARTICIPANT_KEY_SECRET, campaignId, providerSubject)`; raw World ID identifiers or proofs are never stored;
+- `claimant_address` must be a lowercase EVM address (`CHECK`);
+- `campaign_id` FK is `ON DELETE RESTRICT`.
+
+Replaying the same participant + wallet is idempotent. The same participant with a different wallet, or the same wallet with a different participant, is rejected.
 
 ## submissions
 
@@ -44,13 +52,24 @@ Unique constraint should enforce the campaign-specific duplicate policy.
 | campaign_id | fk | |
 | eligibility_id | fk | |
 | idempotency_key | text | unique within route/scope |
+| request_hash | text | sha256 of the normalized request (`hashSubmissionRequest`) |
 | claimant_address | text | |
-| result | enum | accepted/rejected/pending |
+| result | text | accepted/rejected (POC verifier is synchronous; no pending state) |
 | rejection_code | text nullable | |
 | claim_nonce | bytea/text nullable | |
 | claim_expires_at | timestamptz nullable | |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
+
+Enforced constraints (migration `0002_submission_integrity`):
+
+- `UNIQUE (campaign_id, idempotency_key)`; same key + same `request_hash` replays the original result, a different hash is an idempotency conflict;
+- partial `UNIQUE (eligibility_id) WHERE result = 'accepted'` — at most one accepted completion, and therefore one reward liability, per human per campaign, even under concurrent retries;
+- `UNIQUE (claim_nonce)`;
+- `CHECK`: accepted ⇒ `rejection_code IS NULL`; rejected ⇒ `rejection_code IS NOT NULL`;
+- the submission's campaign and claimant must match its eligibility record, and eligibility must not be expired (checked in the repository);
+- submission and its answers are written in one transaction;
+- `campaign_id` FK is `ON DELETE RESTRICT`, so deleting a campaign cannot silently erase completion history.
 
 Do not store signer private material.
 
