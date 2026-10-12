@@ -2,12 +2,7 @@ import type { CampaignManagerEvent } from "./abi.js";
 import type { StoredEvent } from "./events-repository.js";
 
 export type OnchainCampaignStatus =
-  | "not_found"
-  | "created"
-  | "active"
-  | "closed"
-  | "settled"
-  | "cancelled";
+  "not_found" | "created" | "active" | "closed" | "settled" | "cancelled";
 
 export interface OnchainCampaignState {
   status: OnchainCampaignStatus;
