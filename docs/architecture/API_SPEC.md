@@ -142,7 +142,7 @@ Request:
 
 ```json
 {
-  "eligibilityToken": "...",
+  "eligibilityToken": "<uuid from eligibility/verify>",
   "claimant": "0x...",
   "answers": [
     {"questionId": "q1", "choiceId": "b"}
@@ -163,11 +163,30 @@ Engagement verifier rejection codes (deterministic, see `apps/api/src/missions/v
 | `MISSING_ANSWERS` | not every question answered |
 | `COMPREHENSION_FAILED` | fewer correct answers than `passThreshold` |
 
-Possible outcomes:
+Implemented flow (`apps/api/src/submissions/service.ts`):
 
-- `accepted`
-- `rejected`
-- `pending`
+1. Same `Idempotency-Key` + same request returns the stored outcome, even after the campaign ends. A changed request returns `409 IDEMPOTENCY_CONFLICT`.
+2. The eligibility token must belong to this campaign **and** the claimant wallet bound during World ID verification (`403 INVALID_ELIGIBILITY`, `403 ELIGIBILITY_EXPIRED`).
+3. One accepted completion per human (`409 ALREADY_COMPLETED`), and at most **2 attempts** per human per campaign (`429 ATTEMPT_LIMIT_REACHED`), so the multiple-choice check cannot be brute-forced by retrying.
+4. The deterministic verifier runs. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) are not stored and do not count as attempts. `MISSING_ANSWERS` and `COMPREHENSION_FAILED` are stored as rejected attempts.
+5. The response reveals only the status and reason code, never which answers were wrong.
+
+Outcomes: `accepted`, `rejected` (POC verifier is synchronous; no `pending`).
+
+Current accepted response (claim authorization is issued by #10):
+
+```json
+{
+  "submissionId": "uuid",
+  "campaignId": "uuid",
+  "claimant": "0x...",
+  "status": "accepted",
+  "rejectionCode": null,
+  "claim": { "status": "pending_authorization" }
+}
+```
+
+Target accepted response once #10 lands:
 
 Accepted response:
 

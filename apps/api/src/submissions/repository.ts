@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, eq } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { answers, eligibility, submissions } from "../db/schema.js";
@@ -104,6 +104,12 @@ export interface SubmissionRepository {
   findAcceptedByEligibility(
     eligibilityId: string,
   ): Promise<SubmissionRecord | null>;
+  findByIdempotencyKey(
+    campaignId: string,
+    idempotencyKey: string,
+  ): Promise<SubmissionRecord | null>;
+  /** Number of persisted attempts (accepted + rejected) for an eligibility. */
+  countByEligibility(eligibilityId: string): Promise<number>;
 }
 
 /**
@@ -343,7 +349,16 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
     return row ? this.withAnswers(row) : null;
   }
 
-  private async findByIdempotencyKey(
+  async countByEligibility(eligibilityId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ value: count() })
+      .from(submissions)
+      .where(eq(submissions.eligibilityId, eligibilityId));
+
+    return row?.value ?? 0;
+  }
+
+  async findByIdempotencyKey(
     campaignId: string,
     idempotencyKey: string,
   ): Promise<SubmissionRecord | null> {
@@ -381,10 +396,7 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     rawInput: NewSubmission,
   ): Promise<IdempotentSubmissionResult> {
     const input = normalize(rawInput);
-    const existing = this.findByIdempotencyKey(
-      input.campaignId,
-      input.idempotencyKey,
-    );
+    const existing = this.findByKeySync(input.campaignId, input.idempotencyKey);
 
     if (existing) {
       return replay(input, existing);
@@ -396,10 +408,7 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     );
 
     // Re-check after the await: another call may have interleaved.
-    const raced = this.findByIdempotencyKey(
-      input.campaignId,
-      input.idempotencyKey,
-    );
+    const raced = this.findByKeySync(input.campaignId, input.idempotencyKey);
 
     if (raced) {
       return replay(input, raced);
@@ -461,7 +470,26 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     return null;
   }
 
-  private findByIdempotencyKey(
+  async findByIdempotencyKey(
+    campaignId: string,
+    idempotencyKey: string,
+  ): Promise<SubmissionRecord | null> {
+    return this.findByKeySync(campaignId, idempotencyKey);
+  }
+
+  async countByEligibility(eligibilityId: string): Promise<number> {
+    let total = 0;
+
+    for (const record of this.records.values()) {
+      if (record.eligibilityId === eligibilityId) {
+        total += 1;
+      }
+    }
+
+    return total;
+  }
+
+  private findByKeySync(
     campaignId: string,
     idempotencyKey: string,
   ): SubmissionRecord | null {
