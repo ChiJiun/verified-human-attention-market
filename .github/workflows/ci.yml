@@ -87,7 +87,13 @@ jobs:
         run: pnpm build
 
       - name: Format check
-        run: pnpm format:check
+        run: |
+          pnpm format:check 2>&1 | tee format.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep "\[warn\]" format.log | head -9 | sed 's/^/::error::/'
+          fi
+          exit "$status"
 
   solidity:
     runs-on: ubuntu-latest
