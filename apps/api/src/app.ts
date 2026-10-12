@@ -1,4 +1,10 @@
 import Fastify from "fastify";
+import { registerClaimRoutes } from "./claims/routes.js";
+import {
+  InMemoryClaimRepository,
+  type ClaimRepository,
+} from "./claims/repository.js";
+import type { ClaimSigner } from "./claims/signer.js";
 
 import {
   InMemoryCampaignRepository,
@@ -28,6 +34,8 @@ export interface AppDependencies {
   campaignRepository?: CampaignRepository;
   eligibilityRepository?: EligibilityRepository;
   submissionRepository?: SubmissionRepository;
+  claimRepository?: ClaimRepository;
+  claimSigner?: ClaimSigner | null;
   worldIdVerifier?: WorldIdVerifier;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
@@ -50,6 +58,12 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const submissionRepository =
     dependencies.submissionRepository ??
     new InMemorySubmissionRepository(eligibilityRepository);
+  const claimRepository =
+    dependencies.claimRepository ??
+    new InMemoryClaimRepository(
+      (id) => submissionRepository.getById(id),
+      (id) => campaignRepository.getById(id),
+    );
   const worldIdVerifier =
     dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
   const now = dependencies.now ?? (() => new Date());
@@ -104,6 +118,23 @@ export function buildApp(dependencies: AppDependencies = {}) {
       campaigns: campaignRepository,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
+      now,
+    });
+
+    await registerClaimRoutes(instance, {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      submissions: submissionRepository,
+      claims: claimRepository,
+      signer: dependencies.claimSigner ?? null,
+      chain: dependencies.chain
+        ? {
+            chainId: dependencies.chain.chain.chainId,
+            contractAddress: dependencies.chain.chain
+              .contractAddress as `0x${string}`,
+            rpc: dependencies.chain.rpc,
+          }
+        : null,
       now,
     });
   });

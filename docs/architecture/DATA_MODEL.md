@@ -77,6 +77,10 @@ Replaying the same participant + wallet is idempotent. The same participant with
 | rejection_code | text nullable | |
 | claim_nonce | bytea/text nullable | |
 | claim_expires_at | timestamptz nullable | |
+| claim_issued_at | timestamptz nullable | |
+| claim_signature | text nullable | EIP-712 signature; never private key |
+| claim_chain_id | bigint nullable | domain chain ID |
+| claim_contract_address | text nullable | domain verifying contract |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 

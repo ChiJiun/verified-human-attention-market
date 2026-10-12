@@ -165,6 +165,9 @@ export const submissions = pgTable(
     result: text("result").notNull(),
     rejectionCode: text("rejection_code"),
     claimNonce: text("claim_nonce"),
+    claimSignature: text("claim_signature"),
+    claimContractAddress: text("claim_contract_address"),
+    claimChainId: bigint("claim_chain_id", { mode: "number" }),
     claimIssuedAt: timestamp("claim_issued_at", {
       withTimezone: true,
       mode: "date",

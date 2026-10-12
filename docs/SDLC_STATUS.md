@@ -82,10 +82,10 @@ Official references:
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
 | Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config (#19); testnet record pending |
-| Claim authorization service | ⬜ #10 |
+| Claim authorization service | ✅ EIP-712 signing and one-time persisted issuance (#10) |
 | Wallet authentication (SIWE) | ⬜ #37 |
-| Chain indexer / reconciliation | ⬜ #17, #16 |
-| Advertiser analytics | ⬜ #20 |
+| Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
+| Advertiser analytics | 🟡 Reconciled endpoint exists; access control pending (#20, #37) |
 | Web flows | ⬜ #11, #12 |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9); IDKit widget + RP signing with #12 |
 | Testnet deployment | ⬜ Runbook ready (docs/deployment/TESTNET.md); needs owner keystore + RPC |
@@ -106,15 +106,14 @@ Official references:
 - Claim authorization now includes `issuedAt` + `expiresAt`; refunds wait until the issuance deadline plus maximum authorization TTL, eliminating the off-chain authorization/refund race in the original design.
 - Foundry baseline currently passes 13 unit/fuzz tests plus 3 stateful invariants.
 - Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
+- Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
 
 ## Next SDLC Actions
 
-1. Complete and merge/commit the CampaignManager + contract-test milestone.
-2. Implement API schemas and PostgreSQL persistence (GitHub issue #8).
-3. Implement the EIP-712 backend claim authorization service (#10).
-4. Re-verify the current official World ID integration path, then implement eligibility verification (#9).
-5. Build advertiser and verified-user flows (#11–#12).
-6. Run end-to-end POC before public testnet demo (#13).
+1. Add wallet authentication for advertiser ownership and analytics (#37).
+2. Build advertiser and verified-user flows (#11–#12).
+3. Complete advertiser analytics access control (#20).
+4. Run end-to-end POC before public testnet demo (#13).
 
 ---
 

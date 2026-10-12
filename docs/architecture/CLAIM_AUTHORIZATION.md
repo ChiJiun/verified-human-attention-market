@@ -81,6 +81,15 @@ This closes an important refund race: after the issuance deadline plus the maxim
 
 ## Idempotency
 
+The accepted submission is the issuance identity. Its signed payload, nonce,
+signature and EIP-712 domain are persisted atomically. A concurrent or repeated
+authorization request returns the same active signature. The POC does not
+reissue an expired authorization; callers receive `AUTHORIZATION_EXPIRED`.
+Issuance is serialized per campaign and capped at `maxCompletions` so the
+backend cannot create more distinct signed reward liabilities than the
+campaign's completion limit. The service also checks the contract's current
+authorized signer via RPC before signing.
+
 Submission endpoint accepts an `Idempotency-Key`.
 
 Same key + same normalized request:
