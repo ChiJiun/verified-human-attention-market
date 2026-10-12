@@ -55,7 +55,17 @@ jobs:
         run: pnpm lint
 
       - name: Test
-        run: pnpm test
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
+        # Failures are re-emitted as annotations (readable via the API).
+        run: |
+          pnpm test 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E -B2 -A12 "FAIL|AssertionError|Error:|✗|×" test.log | head -120 | sed 's/^/::error::/'
+          fi
+          exit "$status"
 
       - name: Build
         run: pnpm build

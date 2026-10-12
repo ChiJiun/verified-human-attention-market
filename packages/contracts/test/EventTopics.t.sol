@@ -29,7 +29,7 @@ contract EventTopicsTest {
         require(CampaignManager.OwnershipTransferred.selector == OWNERSHIP_TRANSFERRED, "OwnershipTransferred");
     }
 
-    function test_FunctionSelectorsMatchIndexer() public pure {
+    function test_FunctionSelectorsMatchIndexer() public view {
         // `campaigns` is a public-variable getter, so it needs an instance.
         CampaignManager manager = CampaignManager(address(0));
         require(manager.campaigns.selector == bytes4(0x141961bc), "campaigns");
