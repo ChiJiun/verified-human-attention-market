@@ -1,5 +1,6 @@
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { buildApp } from "./app.js";
+import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import {
@@ -14,7 +15,15 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
 
-const chainId = Number(process.env.EVM_CHAIN_ID ?? 84532);
+// Fails fast on partial, wrong-chain or non-official-USDC configuration.
+const chainConfig = loadChainConfig(process.env);
+
+if (chainConfig) {
+  await verifyChainConnection(chainConfig);
+}
+
+const chainId =
+  chainConfig?.chainId ?? Number(process.env.EVM_CHAIN_ID ?? 84532);
 
 if (!Number.isSafeInteger(chainId) || chainId <= 0) {
   throw new Error("EVM_CHAIN_ID must be a positive safe integer");

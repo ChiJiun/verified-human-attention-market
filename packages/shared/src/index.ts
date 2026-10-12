@@ -10,3 +10,10 @@ export const atomicAmountSchema = z
   );
 
 export type CampaignId = z.infer<typeof campaignIdSchema>;
+
+export { campaignManagerAbi } from "./contracts/campaign-manager-abi.js";
+export {
+  getSupportedChain,
+  SUPPORTED_CHAINS,
+  type SupportedChain,
+} from "./chains.js";

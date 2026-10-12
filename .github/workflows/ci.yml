@@ -82,5 +82,8 @@ jobs:
       - name: Forge build
         run: forge build --sizes
 
+      - name: Check shared ABI is up to date
+        run: node scripts/export-abi.mjs --check
+
       - name: Forge test
         run: forge test -vv

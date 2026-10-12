@@ -1,0 +1,66 @@
+# Base Sepolia Deployment Runbook
+
+> Issue #19. External facts checked on **2026-10-12**. Re-check them immediately before every deployment (AGENTS.md §19).
+
+| Fact | Value | Source |
+| --- | --- | --- |
+| Chain | Base Sepolia, chain ID `84532` | https://docs.base.org/base-chain/quickstart/connecting-to-base |
+| Public RPC | `https://sepolia.base.org` (use a dedicated provider for anything beyond smoke tests) | same |
+| Explorer | https://sepolia.basescan.org | same |
+| Test USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Circle) | https://developers.circle.com/stablecoins/usdc-contract-addresses |
+
+## POC exposure limits (ADR-0005 / ADR-0006)
+
+| Env | Value |
+| --- | --- |
+| `MAX_REWARD_PER_COMPLETION` | `1000000` (1 USDC) |
+| `MAX_COMPLETIONS_PER_CAMPAIGN` | `10` |
+| `MAX_CAMPAIGN_BUDGET` | `10000000` (10 USDC) |
+
+Raising a limit requires a new deployment and an ADR update.
+
+## Keys
+
+- **Deployer / owner:** use a Foundry encrypted keystore (`cast wallet import deployer --interactive`). Never put a private key in `.env` or the repository.
+- **Claim signer:** a separate key whose **address** goes in `CLAIM_SIGNER_ADDRESS`. The private key is configured only on the API (`CLAIM_SIGNER_PRIVATE_KEY`, #10) and must never be the deployer key.
+
+## Deploy
+
+```bash
+cd packages/contracts
+export EXPECTED_CHAIN_ID=84532
+export USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+export CLAIM_SIGNER_ADDRESS=0x...            # claim signer address
+export MAX_REWARD_PER_COMPLETION=1000000
+export MAX_COMPLETIONS_PER_CAMPAIGN=10
+export MAX_CAMPAIGN_BUDGET=10000000
+
+forge script script/DeployCampaignManager.s.sol \
+  --rpc-url "$EVM_RPC_URL" --account deployer --broadcast
+```
+
+The script reverts **before broadcasting** if the RPC chain differs from `EXPECTED_CHAIN_ID`, an address is zero, the USDC address has no code, or a limit does not fit its on-chain type.
+
+It writes `packages/contracts/deployments/<chainId>.json` with chain ID, contract address, deploy block, owner, signer, reward token and limits. Commit that file; it is the auditable deployment record.
+
+## Configure the API
+
+Copy the values from the deployment record into the API environment:
+
+```bash
+EVM_CHAIN_ID=84532
+EVM_RPC_URL=...
+USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+CAMPAIGN_MANAGER_ADDRESS=<campaignManager>
+CAMPAIGN_MANAGER_DEPLOY_BLOCK=<deployBlock>
+```
+
+On startup the API refuses to run if the configuration is partial, the chain is unsupported (Base mainnet is intentionally unsupported), the USDC address is not the official one, the RPC reports another chain, or either contract has no code.
+
+## ABI
+
+`packages/shared/src/contracts/campaign-manager-abi.ts` is generated from `forge build` by `packages/contracts/scripts/export-abi.mjs`. CI fails if it drifts from the compiled contract:
+
+```bash
+cd packages/contracts && forge build && node scripts/export-abi.mjs
+```
