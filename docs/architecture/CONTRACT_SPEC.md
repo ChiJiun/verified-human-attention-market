@@ -106,6 +106,8 @@ function claim(
     bytes calldata signature
 ) external;
 
+function cancelCampaign(uint256 campaignId) external; // unfunded Draft only
+
 function closeCampaign(uint256 campaignId) external;
 
 function refundUnusedBudget(uint256 campaignId) external;
@@ -113,6 +115,16 @@ function refundUnusedBudget(uint256 campaignId) external;
 function pause() external;
 function unpause() external;
 ```
+
+## Exposure Limits (ADR-0006)
+
+Immutable constructor parameters bound every campaign:
+
+- `maxRewardPerCompletion`
+- `maxCompletionsPerCampaign`
+- `maxCampaignBudget` (`reward × completions`)
+
+`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`. `fundCampaign` rejects campaigns whose `endTime` has passed. `cancelCampaign` cancels an unfunded draft.
 
 ## Events
 
