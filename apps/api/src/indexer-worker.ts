@@ -1,3 +1,8 @@
+import { PostgresCampaignRepository } from "./campaigns/repository.js";
+import {
+  autoLinkCreatedCampaigns,
+  syncCampaignStatuses,
+} from "./campaigns/onchain.js";
 import { loadChainConfig } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
@@ -29,6 +34,12 @@ if (!Number.isSafeInteger(confirmations) || confirmations < 1) {
 const database = createDatabase(databaseUrl);
 const repository = new PostgresChainEventRepository(database.db);
 const rpc = new JsonRpcClient(chainConfig.rpcUrl);
+const campaigns = new PostgresCampaignRepository(database.db);
+const scope = {
+  chainId: chainConfig.chainId,
+  contractAddress: chainConfig.campaignManagerAddress,
+};
+const now = () => new Date();
 const config = {
   chainId: chainConfig.chainId,
   contractAddress: chainConfig.campaignManagerAddress,
@@ -67,6 +78,41 @@ while (!stopping) {
       observedEvents: result.observedEvents,
       skippedLogs: result.skippedLogs,
     });
+
+    // Reconcile campaigns from confirmed events (issue #16).
+    const autoLinked = await autoLinkCreatedCampaigns({
+      campaigns,
+      events: repository,
+      rpc,
+      chain: { ...scope, usdcAddress: chainConfig.usdcAddress },
+      now,
+    });
+    const statuses = await syncCampaignStatuses({
+      campaigns,
+      events: repository,
+      chain: scope,
+      now,
+    });
+
+    if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
+      log("info", "campaigns reconciled", {
+        autoLinked: autoLinked.linked,
+        statusChanges: statuses.updated,
+      });
+    }
+
+    if (autoLinked.ambiguous.length > 0) {
+      log("warn", "ambiguous on-chain campaigns need manual linking", {
+        onchainCampaignIds: autoLinked.ambiguous,
+      });
+    }
+
+    if (statuses.accountingViolations.length > 0) {
+      log("error", "ACCOUNTING VIOLATION: paid + refunded exceeds funded", {
+        campaignIds: statuses.accountingViolations,
+      });
+    }
+
     backoffMs = pollMs;
   } catch (error) {
     if (error instanceof ReorgBeyondConfirmationsError) {

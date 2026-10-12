@@ -4,6 +4,10 @@ import {
   InMemoryCampaignRepository,
   type CampaignRepository,
 } from "./campaigns/repository.js";
+import {
+  registerOnchainRoutes,
+  type OnchainRouteDependencies,
+} from "./campaigns/onchain-routes.js";
 import { registerCampaignRoutes } from "./campaigns/routes.js";
 import {
   InMemoryEligibilityRepository,
@@ -25,6 +29,8 @@ export interface AppDependencies {
   eligibilityRepository?: EligibilityRepository;
   submissionRepository?: SubmissionRepository;
   worldIdVerifier?: WorldIdVerifier;
+  /** On-chain integration (RPC, contract, indexed events); null = disabled. */
+  chain?: OnchainRouteDependencies["chain"];
   /** HMAC secret for participant keys; eligibility fails closed without it. */
   participantKeySecret?: string | null;
   chainId?: number;
@@ -86,6 +92,12 @@ export function buildApp(dependencies: AppDependencies = {}) {
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
       now,
+    });
+
+    await registerOnchainRoutes(instance, {
+      campaigns: campaignRepository,
+      submissions: submissionRepository,
+      chain: dependencies.chain ?? null,
     });
 
     await registerSubmissionRoutes(instance, {

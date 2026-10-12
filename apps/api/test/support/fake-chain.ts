@@ -1,4 +1,4 @@
-import { EVENT_TOPICS } from "../../src/chain/abi.js";
+import { EVENT_TOPICS, FUNCTION_SELECTORS } from "../../src/chain/abi.js";
 import {
   RpcError,
   type BlockHeader,
@@ -67,6 +67,21 @@ export class FakeChain implements ChainRpc {
   private txCounter = 0;
   failGetLogsAfter: number | null = null;
   getLogsCalls = 0;
+  /** Simulates an unreachable provider for receipts / calls. */
+  rpcDown = false;
+  readonly revertedTxs = new Set<string>();
+  /** On-chain `campaigns(id)` storage returned by eth_call. */
+  readonly campaignStructs = new Map<
+    string,
+    {
+      advertiser: string;
+      fundedBudget?: bigint;
+      rewardPerCompletion: bigint;
+      maxCompletions: number;
+      startTime: number;
+      endTime: number;
+    }
+  >();
 
   constructor(
     readonly contract: string,
@@ -80,6 +95,11 @@ export class FakeChain implements ChainRpc {
     return `0x${this.contract.slice(2).toLowerCase()}${counter
       .toString(16)
       .padStart(24, "0")}`;
+  }
+
+  /** Hash of the most recently created transaction. */
+  get lastTxHash(): string {
+    return this.txHash(this.txCounter);
   }
 
   get head(): bigint {
@@ -181,6 +201,20 @@ export class FakeChain implements ChainRpc {
   async getTransactionReceipt(
     hash: string,
   ): Promise<TransactionReceipt | null> {
+    if (this.rpcDown) {
+      throw new RpcError("simulated provider outage");
+    }
+
+    if (this.revertedTxs.has(hash)) {
+      const block = this.blocks[this.blocks.length - 1]!;
+      return {
+        status: "reverted",
+        blockNumber: block.number,
+        blockHash: block.hash,
+        logs: [],
+      };
+    }
+
     for (const block of this.blocks) {
       const logsInTx = this.rawLogs(block).filter(
         (log) => log.transactionHash === hash,
@@ -197,7 +231,38 @@ export class FakeChain implements ChainRpc {
     return null;
   }
 
-  async call(): Promise<string> {
-    throw new RpcError("eth_call not simulated");
+  async call(to: string, data: string): Promise<string> {
+    if (this.rpcDown) {
+      throw new RpcError("simulated provider outage");
+    }
+
+    if (
+      to !== this.contract ||
+      !data.startsWith(FUNCTION_SELECTORS.campaigns)
+    ) {
+      throw new RpcError("eth_call not simulated");
+    }
+
+    const id = BigInt(`0x${data.slice(10)}`).toString();
+    const struct = this.campaignStructs.get(id);
+
+    if (!struct) {
+      return `0x${"0".repeat(640)}`;
+    }
+
+    return [
+      addressWord(struct.advertiser),
+      word(struct.fundedBudget ?? 0n),
+      word(0),
+      word(struct.rewardPerCompletion),
+      word(struct.maxCompletions),
+      word(0),
+      word(struct.startTime),
+      word(struct.endTime),
+      word(0),
+      word(0),
+    ]
+      .map((value, index) => (index === 0 ? value : value.slice(2)))
+      .join("");
   }
 }

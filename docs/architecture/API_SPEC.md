@@ -91,7 +91,24 @@ Unknown or malformed campaign ids return `404`.
 
 ## POST /v1/campaigns/:id/publish
 
-Marks metadata ready and returns the required on-chain create/fund transaction intent if the campaign is not yet active.
+Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime)` on `CampaignManager`, `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
+
+## POST /v1/campaigns/:id/onchain
+
+Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16).
+
+The client's report is never trusted. The API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
+
+| Status | Meaning |
+| --- | --- |
+| 200 | linked (idempotent for the same `txHash`) |
+| 202 `TX_PENDING`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
+| 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
+| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `PARAMETERS_MISMATCH` |
+
+If the hash is never reported (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the advertiser's **single** unlinked draft with identical economics. Ambiguous matches are logged for manual resolution.
+
+Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.
 
 # World ID / Eligibility
 
@@ -209,17 +226,37 @@ Accepted response:
 
 ## GET /v1/campaigns/:id/analytics
 
-Advertiser-only or authenticated response:
+Issue #20. **Currently unauthenticated.** It becomes advertiser-only with SIWE (#37).
+
+Settlement values come only from reconciled chain events, and submission counts come from persisted server-side results. `confirmed` counts finalized events; `pending` also includes observed, unconfirmed events and is for progress display only.
 
 ```json
 {
-  "validCompletions": 8,
-  "rejectedSubmissions": 3,
-  "paidRewards": "8000000",
-  "remainingBudget": "2000000",
-  "status": "active"
+  "campaignId": "uuid",
+  "onchainCampaignId": "1",
+  "status": "active",
+  "rewardPerCompletion": "1000000",
+  "maxCompletions": 10,
+  "plannedBudget": "10000000",
+  "submissions": { "accepted": 8, "rejected": 3 },
+  "settlement": {
+    "confirmed": {
+      "status": "active",
+      "advertiser": "0x…",
+      "funded": "10000000",
+      "paidRewards": "7000000",
+      "refunded": "0",
+      "remaining": "3000000",
+      "paidCompletions": 7,
+      "accountingViolation": false
+    },
+    "pending": { "paidRewards": "8000000", "paidCompletions": 8, "...": "..." },
+    "hasUnconfirmedEvents": true
+  }
 }
 ```
+
+`settlement` is `null` until the campaign is linked on-chain.
 
 # Health
 

@@ -1,12 +1,26 @@
 import type { MissionDefinition } from "../missions/types.js";
 
+/**
+ * draft            off-chain only
+ * pending_onchain  linked to an on-chain campaign that is not funded yet
+ * active/closed/settled/cancelled  mirror confirmed on-chain events (#16)
+ * expired          time-derived; kept for API compatibility
+ */
 export type CampaignStatus =
-  "draft" | "active" | "closed" | "expired" | "settled";
+  | "draft"
+  | "pending_onchain"
+  | "active"
+  | "closed"
+  | "expired"
+  | "settled"
+  | "cancelled";
 
 export interface CampaignRecord {
   id: string;
   chainId: number;
   onchainCampaignId: string | null;
+  /** Transaction that created the on-chain campaign, once linked. */
+  publishTxHash: string | null;
   advertiserAddress: string;
   creationIdempotencyKey: string;
   creationRequestHash: string;

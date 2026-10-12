@@ -36,6 +36,13 @@
       "when": 1791772327607,
       "tag": "0004_chain_indexer",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791772680174,
+      "tag": "0005_campaign_publish",
+      "breakpoints": true
     }
   ]
 }

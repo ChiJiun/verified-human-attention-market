@@ -1,9 +1,12 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { campaigns, missions } from "../db/schema.js";
 import type { MissionRecord } from "../missions/types.js";
-import { IdempotencyConflictError } from "../persistence/errors.js";
+import {
+  IdempotencyConflictError,
+  uniqueViolationConstraint,
+} from "../persistence/errors.js";
 import type {
   CampaignRecord,
   CampaignStatus,
@@ -17,6 +20,26 @@ export interface IdempotentCampaignResult {
 
 export { IdempotencyConflictError };
 
+export type LinkConflictCode =
+  /** This draft is already linked to a different on-chain campaign. */
+  | "ALREADY_LINKED"
+  /** That on-chain campaign is already linked to a different draft. */
+  | "ONCHAIN_CAMPAIGN_ALREADY_LINKED";
+
+export class CampaignLinkConflictError extends Error {
+  constructor(readonly code: LinkConflictCode) {
+    super(`Campaign link conflict: ${code}`);
+    this.name = "CampaignLinkConflictError";
+  }
+}
+
+export interface OnchainLink {
+  onchainCampaignId: string;
+  publishTxHash: string | null;
+  status: CampaignStatus;
+  updatedAt: Date;
+}
+
 export interface CampaignRepository {
   createIdempotent(
     input: CreateCampaignRecord,
@@ -24,6 +47,25 @@ export interface CampaignRepository {
   getById(id: string): Promise<CampaignRecord | null>;
   /** Latest mission version for the campaign. */
   getMission(campaignId: string): Promise<MissionRecord | null>;
+  /**
+   * Links a draft to its canonical on-chain campaign. Idempotent for the
+   * same on-chain id; throws CampaignLinkConflictError otherwise.
+   */
+  linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord>;
+  updateStatus(
+    id: string,
+    status: CampaignStatus,
+    updatedAt: Date,
+  ): Promise<void>;
+  listLinked(chainId: number): Promise<CampaignRecord[]>;
+  findByOnchainId(
+    chainId: number,
+    onchainCampaignId: string,
+  ): Promise<CampaignRecord | null>;
+  listUnlinkedDrafts(
+    chainId: number,
+    advertiserAddress: string,
+  ): Promise<CampaignRecord[]>;
   ping(): Promise<void>;
 }
 
@@ -63,6 +105,7 @@ function mapCampaign(row: typeof campaigns.$inferSelect): CampaignRecord {
     id: row.id,
     chainId: row.chainId,
     onchainCampaignId: row.onchainCampaignId,
+    publishTxHash: row.publishTxHash,
     advertiserAddress: row.advertiserAddress,
     creationIdempotencyKey: row.creationIdempotencyKey,
     creationRequestHash: row.creationRequestHash,
@@ -91,6 +134,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
         .values({
           ...campaignValues,
           onchainCampaignId: null,
+          publishTxHash: null,
         })
         .onConflictDoNothing({
           target: [
@@ -174,6 +218,107 @@ export class PostgresCampaignRepository implements CampaignRepository {
     return row ? mapMission(row) : null;
   }
 
+  async linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord> {
+    let row: typeof campaigns.$inferSelect | undefined;
+
+    try {
+      [row] = await this.db
+        .update(campaigns)
+        .set({
+          onchainCampaignId: link.onchainCampaignId,
+          publishTxHash: link.publishTxHash,
+          status: link.status,
+          updatedAt: link.updatedAt,
+        })
+        .where(and(eq(campaigns.id, id), isNull(campaigns.onchainCampaignId)))
+        .returning();
+    } catch (error) {
+      if (
+        uniqueViolationConstraint(error) === "campaigns_chain_onchain_id_uq"
+      ) {
+        throw new CampaignLinkConflictError("ONCHAIN_CAMPAIGN_ALREADY_LINKED");
+      }
+      throw error;
+    }
+
+    if (row) {
+      return mapCampaign(row);
+    }
+
+    const existing = await this.getById(id);
+
+    if (!existing) {
+      throw new Error("Campaign not found");
+    }
+
+    if (existing.onchainCampaignId !== link.onchainCampaignId) {
+      throw new CampaignLinkConflictError("ALREADY_LINKED");
+    }
+
+    return existing;
+  }
+
+  async updateStatus(
+    id: string,
+    status: CampaignStatus,
+    updatedAt: Date,
+  ): Promise<void> {
+    await this.db
+      .update(campaigns)
+      .set({ status, updatedAt })
+      .where(eq(campaigns.id, id));
+  }
+
+  async listLinked(chainId: number): Promise<CampaignRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.chainId, chainId),
+          isNotNull(campaigns.onchainCampaignId),
+        ),
+      );
+
+    return rows.map(mapCampaign);
+  }
+
+  async findByOnchainId(
+    chainId: number,
+    onchainCampaignId: string,
+  ): Promise<CampaignRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.chainId, chainId),
+          eq(campaigns.onchainCampaignId, onchainCampaignId),
+        ),
+      )
+      .limit(1);
+
+    return row ? mapCampaign(row) : null;
+  }
+
+  async listUnlinkedDrafts(
+    chainId: number,
+    advertiserAddress: string,
+  ): Promise<CampaignRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.chainId, chainId),
+          eq(campaigns.advertiserAddress, advertiserAddress.toLowerCase()),
+          isNull(campaigns.onchainCampaignId),
+        ),
+      );
+
+    return rows.map(mapCampaign);
+  }
+
   async ping(): Promise<void> {
     await this.db.select({ id: campaigns.id }).from(campaigns).limit(1);
   }
@@ -211,6 +356,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     const record: CampaignRecord = {
       ...campaignValues,
       onchainCampaignId: null,
+      publishTxHash: null,
     };
 
     this.records.set(record.id, record);
@@ -232,6 +378,85 @@ export class InMemoryCampaignRepository implements CampaignRepository {
 
   async getMission(campaignId: string): Promise<MissionRecord | null> {
     return this.missionsByCampaign.get(campaignId) ?? null;
+  }
+
+  async linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord> {
+    const existing = this.records.get(id);
+
+    if (!existing) {
+      throw new Error("Campaign not found");
+    }
+
+    if (existing.onchainCampaignId !== null) {
+      if (existing.onchainCampaignId !== link.onchainCampaignId) {
+        throw new CampaignLinkConflictError("ALREADY_LINKED");
+      }
+      return existing;
+    }
+
+    for (const record of this.records.values()) {
+      if (
+        record.chainId === existing.chainId &&
+        record.onchainCampaignId === link.onchainCampaignId
+      ) {
+        throw new CampaignLinkConflictError("ONCHAIN_CAMPAIGN_ALREADY_LINKED");
+      }
+    }
+
+    const updated: CampaignRecord = {
+      ...existing,
+      onchainCampaignId: link.onchainCampaignId,
+      publishTxHash: link.publishTxHash,
+      status: link.status,
+      updatedAt: link.updatedAt,
+    };
+    this.records.set(id, updated);
+
+    return updated;
+  }
+
+  async updateStatus(
+    id: string,
+    status: CampaignStatus,
+    updatedAt: Date,
+  ): Promise<void> {
+    const existing = this.records.get(id);
+
+    if (existing) {
+      this.records.set(id, { ...existing, status, updatedAt });
+    }
+  }
+
+  async listLinked(chainId: number): Promise<CampaignRecord[]> {
+    return [...this.records.values()].filter(
+      (record) =>
+        record.chainId === chainId && record.onchainCampaignId !== null,
+    );
+  }
+
+  async findByOnchainId(
+    chainId: number,
+    onchainCampaignId: string,
+  ): Promise<CampaignRecord | null> {
+    return (
+      [...this.records.values()].find(
+        (record) =>
+          record.chainId === chainId &&
+          record.onchainCampaignId === onchainCampaignId,
+      ) ?? null
+    );
+  }
+
+  async listUnlinkedDrafts(
+    chainId: number,
+    advertiserAddress: string,
+  ): Promise<CampaignRecord[]> {
+    return [...this.records.values()].filter(
+      (record) =>
+        record.chainId === chainId &&
+        record.advertiserAddress === advertiserAddress.toLowerCase() &&
+        record.onchainCampaignId === null,
+    );
   }
 
   async ping(): Promise<void> {}
