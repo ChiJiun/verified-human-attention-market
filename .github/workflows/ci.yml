@@ -78,13 +78,32 @@ jobs:
           version: v1.8.4
 
       - name: Forge format check
-        run: forge fmt --check
+        run: |
+          forge fmt --check 2>&1 | tee forge-fmt.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            head -60 forge-fmt.log | sed 's/^/::error::/'
+          fi
+          exit "$status"
 
       - name: Forge build
-        run: forge build --sizes
+        # Compiler errors are re-emitted as annotations (readable via the API).
+        run: |
+          forge build --sizes 2>&1 | tee forge-build.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E -A6 "^Error|error\[" forge-build.log | head -60 | sed 's/^/::error::/'
+          fi
+          exit "$status"
 
       - name: Check shared ABI is up to date
         run: node scripts/export-abi.mjs --check
 
       - name: Forge test
-        run: forge test -vv
+        run: |
+          forge test -vv 2>&1 | tee forge-test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E -A4 "\[FAIL|Error|error\[" forge-test.log | head -60 | sed 's/^/::error::/'
+          fi
+          exit "$status"

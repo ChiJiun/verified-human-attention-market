@@ -35,8 +35,10 @@ describe("CampaignManager ABI constants", () => {
 
   it("match the selectors pinned by the Foundry test", () => {
     for (const [name, selector] of Object.entries(FUNCTION_SELECTORS)) {
-      expect(solidity).toContain(
-        `CampaignManager.${name}.selector == bytes4(${selector})`,
+      expect(solidity).toMatch(
+        new RegExp(
+          `(CampaignManager|manager)\\.${name}\\.selector == bytes4\\(${selector}\\)`,
+        ),
       );
     }
   });

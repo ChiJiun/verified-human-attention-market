@@ -30,7 +30,9 @@ contract EventTopicsTest {
     }
 
     function test_FunctionSelectorsMatchIndexer() public pure {
-        require(CampaignManager.campaigns.selector == bytes4(0x141961bc), "campaigns");
+        // `campaigns` is a public-variable getter, so it needs an instance.
+        CampaignManager manager = CampaignManager(address(0));
+        require(manager.campaigns.selector == bytes4(0x141961bc), "campaigns");
         require(CampaignManager.createCampaign.selector == bytes4(0x6ecff6f8), "createCampaign");
         require(CampaignManager.fundCampaign.selector == bytes4(0x918eab15), "fundCampaign");
     }
