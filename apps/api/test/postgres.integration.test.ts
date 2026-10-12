@@ -14,13 +14,40 @@ import {
   answers,
   campaigns,
   eligibility,
+  missions,
   submissions,
 } from "../src/db/schema.js";
+import {
+  hashMissionDefinition,
+  toMissionDefinition,
+} from "../src/missions/schemas.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
+
+function testMission(contentUrl = "https://example.com/postgres") {
+  const definition = toMissionDefinition(contentUrl, {
+    questions: [
+      {
+        id: "q1",
+        prompt: "What is the product name?",
+        choices: [
+          { id: "a", label: "Alpha" },
+          { id: "b", label: "Beta" },
+        ],
+      },
+    ],
+    answerKey: { q1: "a" },
+  });
+
+  return {
+    id: randomUUID(),
+    definition,
+    definitionHash: hashMissionDefinition(definition),
+  };
+}
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 
 describeWithDatabase("PostgresCampaignRepository", () => {
@@ -37,6 +64,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     await database.db.delete(answers);
     await database.db.delete(submissions);
     await database.db.delete(eligibility);
+    await database.db.delete(missions);
     await database.db.delete(campaigns);
   }
 
@@ -71,6 +99,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       status: "draft",
       createdAt,
       updatedAt: createdAt,
+      mission: testMission(),
     });
 
     expect(result.created).toBe(true);
@@ -104,6 +133,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       status: "draft" as const,
       createdAt,
       updatedAt: createdAt,
+      mission: testMission(),
     };
 
     const first = await repository.createIdempotent(baseInput);
@@ -164,10 +194,41 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       status: "draft",
       createdAt,
       updatedAt: createdAt,
+      mission: testMission(),
     });
 
     return id;
   }
+
+  async function missionIdFor(campaignId: string): Promise<string> {
+    const mission = await repository.getMission(campaignId);
+
+    if (!mission) {
+      throw new Error("Campaign has no mission");
+    }
+
+    return mission.id;
+  }
+
+  it("stores the mission atomically and keeps it immutable", async () => {
+    const campaignId = await createCampaign();
+    const mission = await repository.getMission(campaignId);
+
+    expect(mission).toMatchObject({
+      campaignId,
+      version: 1,
+      kind: "comprehension_check",
+      answerKey: { q1: "a" },
+      passThreshold: 1,
+    });
+
+    await expect(
+      database.db
+        .update(missions)
+        .set({ answerKey: { q1: "b" } })
+        .where(eq(missions.campaignId, campaignId)),
+    ).rejects.toThrow();
+  });
 
   describe("eligibility + submission persistence", () => {
     const eligibilityRepository = new PostgresEligibilityRepository(
@@ -178,6 +239,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       eligibility: eligibilityRepository,
       submissions: new PostgresSubmissionRepository(database.db),
       createCampaign,
+      missionIdFor,
     }));
   });
 });

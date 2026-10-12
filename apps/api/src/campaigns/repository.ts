@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
-import { campaigns } from "../db/schema.js";
+import { campaigns, missions } from "../db/schema.js";
+import type { MissionRecord } from "../missions/types.js";
 import { IdempotencyConflictError } from "../persistence/errors.js";
 import type {
   CampaignRecord,
@@ -21,7 +22,40 @@ export interface CampaignRepository {
     input: CreateCampaignRecord,
   ): Promise<IdempotentCampaignResult>;
   getById(id: string): Promise<CampaignRecord | null>;
+  /** Latest mission version for the campaign. */
+  getMission(campaignId: string): Promise<MissionRecord | null>;
   ping(): Promise<void>;
+}
+
+function toMissionRecord(
+  campaignId: string,
+  mission: CreateCampaignRecord["mission"],
+  createdAt: Date,
+): MissionRecord {
+  return {
+    ...mission.definition,
+    id: mission.id,
+    campaignId,
+    version: 1,
+    kind: "comprehension_check",
+    definitionHash: mission.definitionHash,
+    createdAt,
+  };
+}
+
+function mapMission(row: typeof missions.$inferSelect): MissionRecord {
+  return {
+    id: row.id,
+    campaignId: row.campaignId,
+    version: row.version,
+    kind: "comprehension_check",
+    contentUrl: row.contentUrl,
+    questions: row.questions,
+    answerKey: row.answerKey,
+    passThreshold: row.passThreshold,
+    definitionHash: row.definitionHash,
+    createdAt: row.createdAt,
+  };
 }
 
 function mapCampaign(row: typeof campaigns.$inferSelect): CampaignRecord {
@@ -49,16 +83,43 @@ export class PostgresCampaignRepository implements CampaignRepository {
   async createIdempotent(
     input: CreateCampaignRecord,
   ): Promise<IdempotentCampaignResult> {
-    const [inserted] = await this.db
-      .insert(campaigns)
-      .values({
-        ...input,
-        onchainCampaignId: null,
-      })
-      .onConflictDoNothing({
-        target: [campaigns.advertiserAddress, campaigns.creationIdempotencyKey],
-      })
-      .returning();
+    const { mission, ...campaignValues } = input;
+
+    const inserted = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(campaigns)
+        .values({
+          ...campaignValues,
+          onchainCampaignId: null,
+        })
+        .onConflictDoNothing({
+          target: [
+            campaigns.advertiserAddress,
+            campaigns.creationIdempotencyKey,
+          ],
+        })
+        .returning();
+
+      if (!row) {
+        return null;
+      }
+
+      const missionRecord = toMissionRecord(row.id, mission, row.createdAt);
+      await tx.insert(missions).values({
+        id: missionRecord.id,
+        campaignId: missionRecord.campaignId,
+        version: missionRecord.version,
+        kind: missionRecord.kind,
+        contentUrl: missionRecord.contentUrl,
+        questions: missionRecord.questions,
+        answerKey: missionRecord.answerKey,
+        passThreshold: missionRecord.passThreshold,
+        definitionHash: missionRecord.definitionHash,
+        createdAt: missionRecord.createdAt,
+      });
+
+      return row;
+    });
 
     if (inserted) {
       return {
@@ -102,6 +163,17 @@ export class PostgresCampaignRepository implements CampaignRepository {
     return row ? mapCampaign(row) : null;
   }
 
+  async getMission(campaignId: string): Promise<MissionRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(missions)
+      .where(eq(missions.campaignId, campaignId))
+      .orderBy(desc(missions.version))
+      .limit(1);
+
+    return row ? mapMission(row) : null;
+  }
+
   async ping(): Promise<void> {
     await this.db.select({ id: campaigns.id }).from(campaigns).limit(1);
   }
@@ -110,6 +182,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
 export class InMemoryCampaignRepository implements CampaignRepository {
   private readonly records = new Map<string, CampaignRecord>();
   private readonly idempotency = new Map<string, string>();
+  private readonly missionsByCampaign = new Map<string, MissionRecord>();
 
   async createIdempotent(
     input: CreateCampaignRecord,
@@ -134,12 +207,17 @@ export class InMemoryCampaignRepository implements CampaignRepository {
       };
     }
 
+    const { mission, ...campaignValues } = input;
     const record: CampaignRecord = {
-      ...input,
+      ...campaignValues,
       onchainCampaignId: null,
     };
 
     this.records.set(record.id, record);
+    this.missionsByCampaign.set(
+      record.id,
+      toMissionRecord(record.id, mission, record.createdAt),
+    );
     this.idempotency.set(scopedKey, record.id);
 
     return {
@@ -150,6 +228,10 @@ export class InMemoryCampaignRepository implements CampaignRepository {
 
   async getById(id: string): Promise<CampaignRecord | null> {
     return this.records.get(id) ?? null;
+  }
+
+  async getMission(campaignId: string): Promise<MissionRecord | null> {
+    return this.missionsByCampaign.get(campaignId) ?? null;
   }
 
   async ping(): Promise<void> {}

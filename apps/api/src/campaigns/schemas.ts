@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { httpsUrlSchema, missionInputSchema } from "../missions/schemas.js";
+
 const evmAddressSchema = z
   .string()
   .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address");
@@ -20,11 +22,12 @@ const dateTimeSchema = z
 export const createCampaignSchema = z
   .object({
     advertiser: evmAddressSchema,
-    contentUrl: z.url(),
+    contentUrl: httpsUrlSchema,
     rewardPerCompletion: positiveAtomicAmountSchema,
     maxCompletions: z.number().int().min(1).max(10),
     startAt: dateTimeSchema,
     endAt: dateTimeSchema,
+    mission: missionInputSchema,
   })
   .superRefine((value, context) => {
     const durationMs = value.endAt.getTime() - value.startAt.getTime();

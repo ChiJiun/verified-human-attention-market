@@ -22,6 +22,7 @@ describe("in-memory eligibility + submission repositories", () => {
     eligibility,
     submissions: new InMemorySubmissionRepository(eligibility),
     createCampaign: async () => randomUUID(),
+    missionIdFor: async () => randomUUID(),
   };
 
   definePersistenceContract(() => harness);

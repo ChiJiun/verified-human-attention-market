@@ -22,6 +22,23 @@ The database is **not** the source of truth for final settlement. On-chain event
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 
+## missions
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| id | uuid | |
+| campaign_id | fk | `ON DELETE RESTRICT` |
+| version | integer | `UNIQUE (campaign_id, version)`, `>= 1` |
+| kind | text | `comprehension_check` |
+| content_url | text | https only (validated at API) |
+| questions | jsonb | public question/choice definitions |
+| answer_key | jsonb | **server-only**; never serialized to participants |
+| pass_threshold | integer | minimum correct answers |
+| definition_hash | text | sha256 of the canonical definition |
+| created_at | timestamptz | |
+
+Rows are immutable: a `BEFORE UPDATE` trigger (`missions_immutable`, migration `0003_missions`) rejects updates. Changes are new versions.
+
 ## eligibility
 
 | Column | Type | Notes |
@@ -51,6 +68,7 @@ Replaying the same participant + wallet is idempotent. The same participant with
 | id | uuid | |
 | campaign_id | fk | |
 | eligibility_id | fk | |
+| mission_id | fk | mission version used for evaluation; composite FK `(mission_id, campaign_id) → missions(id, campaign_id)` |
 | idempotency_key | text | unique within route/scope |
 | request_hash | text | sha256 of the normalized request (`hashSubmissionRequest`) |
 | claimant_address | text | |

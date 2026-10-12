@@ -1,7 +1,10 @@
 import { sql } from "drizzle-orm";
+
+import type { MissionQuestion } from "../missions/types.js";
 import {
   bigint,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -64,6 +67,38 @@ export const campaigns = pgTable(
   ],
 );
 
+export const missions = pgTable(
+  "missions",
+  {
+    id: uuid("id").primaryKey(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    kind: text("kind").notNull().default("comprehension_check"),
+    contentUrl: text("content_url").notNull(),
+    questions: jsonb("questions").$type<MissionQuestion[]>().notNull(),
+    // Server-only. Never serialize to participants.
+    answerKey: jsonb("answer_key").$type<Record<string, string>>().notNull(),
+    passThreshold: integer("pass_threshold").notNull(),
+    definitionHash: text("definition_hash").notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("missions_campaign_version_uq").on(
+      table.campaignId,
+      table.version,
+    ),
+    // Target of the composite FK that pins a submission to its campaign.
+    uniqueIndex("missions_id_campaign_uq").on(table.id, table.campaignId),
+    check("missions_version_positive", sql`${table.version} >= 1`),
+    check("missions_pass_threshold_positive", sql`${table.passThreshold} >= 1`),
+  ],
+);
+
 export const eligibility = pgTable(
   "eligibility",
   {
@@ -116,6 +151,8 @@ export const submissions = pgTable(
     eligibilityId: uuid("eligibility_id")
       .notNull()
       .references(() => eligibility.id, { onDelete: "restrict" }),
+    // Mission version used to evaluate this submission.
+    missionId: uuid("mission_id").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     requestHash: text("request_hash").notNull(),
     claimantAddress: text("claimant_address").notNull(),
@@ -150,6 +187,11 @@ export const submissions = pgTable(
       .on(table.eligibilityId)
       .where(sql`${table.result} = 'accepted'`),
     uniqueIndex("submissions_claim_nonce_uq").on(table.claimNonce),
+    foreignKey({
+      name: "submissions_mission_campaign_fk",
+      columns: [table.missionId, table.campaignId],
+      foreignColumns: [missions.id, missions.campaignId],
+    }).onDelete("restrict"),
     check(
       "submissions_result_check",
       sql`(${table.result} = 'accepted' AND ${table.rejectionCode} IS NULL) OR (${table.result} = 'rejected' AND ${table.rejectionCode} IS NOT NULL)`,

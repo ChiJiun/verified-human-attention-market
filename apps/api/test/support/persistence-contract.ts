@@ -23,6 +23,8 @@ export interface PersistenceHarness {
   submissions: SubmissionRepository;
   /** Creates a campaign row (where required) and returns its id. */
   createCampaign(): Promise<string>;
+  /** Mission id of a campaign created by `createCampaign`. */
+  missionIdFor(campaignId: string): Promise<string>;
 }
 
 const SECRET = "test-participant-key-secret-0123456789abcdef";
@@ -54,8 +56,10 @@ const ANSWERS: AnswerInput[] = [
   { questionId: "q1", normalizedAnswer: { choice: "a" }, score: "1.0000" },
 ];
 
+type EligibleParticipant = NewEligibility & { missionId: string };
+
 function submissionInput(
-  eligibility: NewEligibility,
+  eligibility: EligibleParticipant,
   overrides: Partial<NewSubmission> = {},
 ): NewSubmission {
   const answers = overrides.answers ?? ANSWERS;
@@ -64,6 +68,7 @@ function submissionInput(
     id: randomUUID(),
     campaignId: eligibility.campaignId,
     eligibilityId: eligibility.id,
+    missionId: eligibility.missionId,
     idempotencyKey: randomUUID(),
     requestHash: hashSubmissionRequest({
       campaignId: eligibility.campaignId,
@@ -85,11 +90,14 @@ function submissionInput(
  * cannot drift from PostgreSQL semantics.
  */
 export function definePersistenceContract(harness: () => PersistenceHarness) {
-  async function setupEligible(overrides: Partial<NewEligibility> = {}) {
-    const { eligibility, createCampaign } = harness();
-    const input = eligibilityInput(await createCampaign(), overrides);
+  async function setupEligible(
+    overrides: Partial<NewEligibility> = {},
+  ): Promise<EligibleParticipant> {
+    const { eligibility, createCampaign, missionIdFor } = harness();
+    const campaignId = await createCampaign();
+    const input = eligibilityInput(campaignId, overrides);
     await eligibility.recordIdempotent(input);
-    return input;
+    return { ...input, missionId: await missionIdFor(campaignId) };
   }
 
   it("records eligibility and replays the same participant + wallet", async () => {
