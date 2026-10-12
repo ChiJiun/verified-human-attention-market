@@ -48,6 +48,7 @@ describe("health endpoints", () => {
         throw new Error("not used");
       },
       getById: async () => null,
+      getMission: async () => null,
       ping: async () => {
         throw new Error("database unavailable");
       },

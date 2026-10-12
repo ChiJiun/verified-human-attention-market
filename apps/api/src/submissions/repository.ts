@@ -31,6 +31,8 @@ export interface NewSubmission {
   id: string;
   campaignId: string;
   eligibilityId: string;
+  /** Mission version the submission was evaluated against. */
+  missionId: string;
   idempotencyKey: string;
   /** Hash of the normalized request, see `hashSubmissionRequest`. */
   requestHash: string;
@@ -46,6 +48,7 @@ export interface SubmissionRecord {
   id: string;
   campaignId: string;
   eligibilityId: string;
+  missionId: string;
   idempotencyKey: string;
   requestHash: string;
   claimantAddress: string;
@@ -182,6 +185,7 @@ function mapSubmission(
     id: row.id,
     campaignId: row.campaignId,
     eligibilityId: row.eligibilityId,
+    missionId: row.missionId,
     idempotencyKey: row.idempotencyKey,
     requestHash: row.requestHash,
     claimantAddress: row.claimantAddress,
@@ -238,6 +242,7 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
             id: input.id,
             campaignId: input.campaignId,
             eligibilityId: input.eligibilityId,
+            missionId: input.missionId,
             idempotencyKey: input.idempotencyKey,
             requestHash: input.requestHash,
             claimantAddress: input.claimantAddress,
@@ -412,6 +417,7 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
       id: input.id,
       campaignId: input.campaignId,
       eligibilityId: input.eligibilityId,
+      missionId: input.missionId,
       idempotencyKey: input.idempotencyKey,
       requestHash: input.requestHash,
       claimantAddress: input.claimantAddress,

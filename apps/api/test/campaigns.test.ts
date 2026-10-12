@@ -13,6 +13,27 @@ const validPayload = {
   maxCompletions: 10,
   startAt: "2026-10-05T10:15:00.000Z",
   endAt: "2026-10-05T11:15:00.000Z",
+  mission: {
+    questions: [
+      {
+        id: "q1",
+        prompt: "Which feature did the article highlight?",
+        choices: [
+          { id: "a", label: "Speed" },
+          { id: "b", label: "Price" },
+        ],
+      },
+      {
+        id: "q2",
+        prompt: "Who is the product for?",
+        choices: [
+          { id: "a", label: "Developers" },
+          { id: "b", label: "Designers" },
+        ],
+      },
+    ],
+    answerKey: { q1: "a", q2: "b" },
+  },
 };
 
 afterEach(async () => {
@@ -208,5 +229,147 @@ describe("campaign routes", () => {
         code: "CAMPAIGN_NOT_FOUND",
       },
     });
+  });
+
+  it("serves the public mission without the answer key", async () => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "mission-key" },
+      payload: validPayload,
+    });
+    const { id } = created.json<{ id: string }>();
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/campaigns/${id}/mission`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      campaignId: id,
+      version: 1,
+      kind: "comprehension_check",
+      contentUrl: validPayload.contentUrl,
+    });
+    expect(body).not.toHaveProperty("answerKey");
+    expect(body).not.toHaveProperty("passThreshold");
+    expect(response.body).not.toContain("answerKey");
+  });
+
+  it("treats answer key ordering as the same idempotent request", async () => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "order-key" },
+      payload: validPayload,
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "order-key" },
+      payload: {
+        ...validPayload,
+        mission: {
+          ...validPayload.mission,
+          answerKey: { q2: "b", q1: "a" },
+        },
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+    expect(second.json<{ id: string }>().id).toBe(
+      first.json<{ id: string }>().id,
+    );
+  });
+
+  it("rejects a changed mission under the same idempotency key", async () => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "mission-conflict" },
+      payload: validPayload,
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "mission-conflict" },
+      payload: {
+        ...validPayload,
+        mission: {
+          ...validPayload.mission,
+          answerKey: { q1: "b", q2: "b" },
+        },
+      },
+    });
+
+    expect(second.statusCode).toBe(409);
+  });
+
+  it.each([
+    ["missing answer key entry", { answerKey: { q1: "a" } }],
+    [
+      "answer key naming an unknown choice",
+      { answerKey: { q1: "z", q2: "b" } },
+    ],
+    [
+      "answer key naming an unknown question",
+      { answerKey: { q1: "a", q2: "b", q3: "a" } },
+    ],
+    ["threshold above question count", { passThreshold: 3 }],
+  ])("rejects an invalid mission: %s", async (_label, override) => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": `invalid-${_label}` },
+      payload: {
+        ...validPayload,
+        mission: { ...validPayload.mission, ...override },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "http://example.com/plain-http",
+    "file:///etc/passwd",
+  ])("rejects non-https content URL %s", async (contentUrl) => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": `url-${contentUrl.length}` },
+      payload: { ...validPayload, contentUrl },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("returns 404 instead of failing on malformed campaign ids", async () => {
+    const app = buildApp({ now: () => now });
+    apps.push(app);
+
+    for (const url of ["/v1/campaigns/not-a-uuid", "/v1/campaigns/x/mission"]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode).toBe(404);
+    }
   });
 });

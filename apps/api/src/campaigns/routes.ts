@@ -6,6 +6,12 @@ import {
   IdempotencyConflictError,
   type CampaignRepository,
 } from "./repository.js";
+import {
+  canonicalMission,
+  hashMissionDefinition,
+  toMissionDefinition,
+} from "../missions/schemas.js";
+import { toPublicMission } from "../missions/verifier.js";
 import { createCampaignSchema } from "./schemas.js";
 import type { CampaignRecord } from "./types.js";
 
@@ -14,6 +20,9 @@ interface CampaignRoutesOptions {
   chainId: number;
   now?: () => Date;
 }
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function serializeCampaign(campaign: CampaignRecord) {
   return {
@@ -81,6 +90,10 @@ export async function registerCampaignRoutes(
     }
 
     const advertiserAddress = parsed.data.advertiser.toLowerCase();
+    const missionDefinition = toMissionDefinition(
+      parsed.data.contentUrl,
+      parsed.data.mission,
+    );
     const normalizedRequest = JSON.stringify({
       advertiserAddress,
       contentUrl: parsed.data.contentUrl,
@@ -89,6 +102,7 @@ export async function registerCampaignRoutes(
       startAt: parsed.data.startAt.toISOString(),
       endAt: parsed.data.endAt.toISOString(),
       chainId: options.chainId,
+      mission: canonicalMission(missionDefinition),
     });
     const creationRequestHash = createHash("sha256")
       .update(normalizedRequest)
@@ -109,6 +123,11 @@ export async function registerCampaignRoutes(
         status: "draft",
         createdAt,
         updatedAt: createdAt,
+        mission: {
+          id: randomUUID(),
+          definition: missionDefinition,
+          definitionHash: hashMissionDefinition(missionDefinition),
+        },
       });
 
       return reply
@@ -133,7 +152,9 @@ export async function registerCampaignRoutes(
   app.get<{ Params: { id: string } }>(
     "/v1/campaigns/:id",
     async (request, reply) => {
-      const campaign = await options.repository.getById(request.params.id);
+      const campaign = UUID_PATTERN.test(request.params.id)
+        ? await options.repository.getById(request.params.id)
+        : null;
 
       if (!campaign) {
         return reply.status(404).send({
@@ -146,6 +167,28 @@ export async function registerCampaignRoutes(
       }
 
       return reply.send(serializeCampaign(campaign));
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/v1/campaigns/:id/mission",
+    async (request, reply) => {
+      const mission = UUID_PATTERN.test(request.params.id)
+        ? await options.repository.getMission(request.params.id)
+        : null;
+
+      if (!mission) {
+        return reply.status(404).send({
+          error: {
+            code: "MISSION_NOT_FOUND",
+            message: "Mission was not found",
+            requestId: request.id,
+          },
+        });
+      }
+
+      // Answer key and pass threshold stay server-side.
+      return reply.send(toPublicMission(mission));
     },
   );
 }

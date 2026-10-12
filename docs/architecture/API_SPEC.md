@@ -35,9 +35,27 @@ Request:
   "rewardPerCompletion": "1000000",
   "maxCompletions": 10,
   "startAt": "2026-10-05T12:00:00+08:00",
-  "endAt": "2026-10-05T18:00:00+08:00"
+  "endAt": "2026-10-05T18:00:00+08:00",
+  "mission": {
+    "questions": [
+      {
+        "id": "q1",
+        "prompt": "Which feature did the article highlight?",
+        "choices": [
+          { "id": "a", "label": "Speed" },
+          { "id": "b", "label": "Price" }
+        ]
+      }
+    ],
+    "answerKey": { "q1": "a" },
+    "passThreshold": 1
+  }
 }
 ```
+
+- `contentUrl` must be `https:`; `javascript:`, `data:`, `file:` and plain `http:` are rejected.
+- `mission` (ADR-0002 comprehension check): 1–3 questions, 2–6 choices each, identifiers `[A-Za-z0-9_-]{1,32}`. `answerKey` must name a valid choice for every question. `passThreshold` defaults to the number of questions (all correct).
+- Campaign and mission version 1 are stored in one transaction. Missions are immutable (DB trigger); a change requires a new version. The mission is part of the idempotency hash, and answer-key ordering does not matter.
 
 Response:
 
@@ -51,6 +69,25 @@ Response:
 ## GET /v1/campaigns/:id
 
 Returns normalized off-chain + indexed on-chain state.
+
+## GET /v1/campaigns/:id/mission
+
+Public mission payload for participants. **Never** includes `answerKey` or `passThreshold`.
+
+```json
+{
+  "missionId": "uuid",
+  "campaignId": "uuid",
+  "version": 1,
+  "kind": "comprehension_check",
+  "contentUrl": "https://example.com/article",
+  "questions": [
+    { "id": "q1", "prompt": "...", "choices": [{ "id": "a", "label": "Speed" }] }
+  ]
+}
+```
+
+Unknown or malformed campaign ids return `404`.
 
 ## POST /v1/campaigns/:id/publish
 
@@ -88,10 +125,23 @@ Request:
   "eligibilityToken": "...",
   "claimant": "0x...",
   "answers": [
-    {"questionId": "q1", "answer": "B"}
+    {"questionId": "q1", "choiceId": "b"}
   ]
 }
 ```
+
+Answers are choice ids only (`{"questionId": "q1", "choiceId": "a"}`); no free text in the POC.
+
+Engagement verifier rejection codes (deterministic, see `apps/api/src/missions/verifier.ts`):
+
+| Code | Meaning |
+| --- | --- |
+| `CAMPAIGN_NOT_ACTIVE` | campaign is not active/funded (draft, closed, expired, settled) |
+| `CAMPAIGN_NOT_STARTED` | before `startAt` |
+| `CAMPAIGN_ENDED` | at or after `endAt`; no new liabilities |
+| `MALFORMED_ANSWERS` | wrong shape, unknown/duplicate question, unknown choice |
+| `MISSING_ANSWERS` | not every question answered |
+| `COMPREHENSION_FAILED` | fewer correct answers than `passThreshold` |
 
 Possible outcomes:
 
