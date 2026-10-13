@@ -40,6 +40,8 @@ Working assumptions are intentionally reversible until the Product Decision Gate
 
 ### Local development
 
+**End-to-end demo:** see [docs/DEMO.md](docs/DEMO.md) (Traditional Chinese). It runs the full create → fund → verify → claim → settle loop on a local chain with the real contract, API and database.
+
 Requirements: Node.js 24+, pnpm 12.4.2, and Foundry v1.8.4 for Solidity work. On Windows, Foundry is currently used through WSL.
 
 ```bash

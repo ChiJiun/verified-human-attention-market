@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-10-12
+> Last reviewed: 2026-10-13
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -76,17 +76,18 @@ Official references:
 | CampaignManager contract | ✅ Baseline implemented |
 | Contract test suite | ✅ Unit + fuzz + invariants |
 | JavaScript test suite | ✅ API/shared baseline |
-| CI | ✅ JavaScript + Foundry jobs |
+| CI | ✅ JavaScript + Foundry + local-chain E2E jobs; failures as annotations |
 | API persistence | ✅ Campaigns, missions, eligibility, submissions (#8, #15) |
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
 | Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config (#19); testnet record pending |
-| Claim authorization service | ✅ EIP-712 signing and one-time persisted issuance (#10) |
-| Wallet authentication (SIWE) | ⬜ #37 |
+| Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
+| Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
-| Advertiser analytics | 🟡 Reconciled endpoint exists; access control pending (#20, #37) |
+| Advertiser analytics | ✅ Reconciled, advertiser-only via SIWE (#20, #37) |
 | Web flows | ⬜ #11, #12 |
+| End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9); IDKit widget + RP signing with #12 |
 | Testnet deployment | ⬜ Runbook ready (docs/deployment/TESTNET.md); needs owner keystore + RPC |
 

@@ -38,6 +38,8 @@
 
 ### 本機開發
 
+**想直接看完整流程？** 請見 [Demo：本機端到端 POC](docs/DEMO.md)。在本機鏈上用真的合約、API 和資料庫，跑完「建立 → 入金 → 驗證 → 領取 → 結算」的完整流程。
+
 需求：Node.js 24+、pnpm 12.4.2；Solidity 開發使用 Foundry v1.8.4。Windows 目前透過 WSL 使用 Foundry。
 
 ```bash
