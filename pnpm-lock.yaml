@@ -206,6 +206,9 @@ importers:
       '@types/node':
         specifier: 26.6.4
         version: 26.6.4
+      '@vham/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       drizzle-kit:
         specifier: 0.31.11
         version: 0.31.11
