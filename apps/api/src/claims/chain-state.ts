@@ -1,16 +1,8 @@
-import {
-  decodeFunctionResult,
-  encodeFunctionData,
-  parseAbi,
-  type Address,
-} from "viem";
+import { campaignManagerAbi } from "@vham/shared/contracts";
+import { decodeFunctionResult, encodeFunctionData, type Address } from "viem";
 
 import { readOnchainCampaign } from "../campaigns/onchain.js";
 import type { ChainRpc } from "../chain/rpc.js";
-
-const claimedWalletAbi = parseAbi([
-  "function claimedWallet(uint256 campaignId, address claimant) view returns (bool)",
-]);
 
 export interface ClaimChainState {
   /** RewardClaimed count already settled on-chain. */
@@ -47,7 +39,7 @@ export async function readClaimChainState(
   const result = await rpc.call(
     contractAddress,
     encodeFunctionData({
-      abi: claimedWalletAbi,
+      abi: campaignManagerAbi,
       functionName: "claimedWallet",
       args: [BigInt(onchainCampaignId), claimant],
     }),
@@ -59,7 +51,7 @@ export async function readClaimChainState(
     closedAt: campaign.closedAt,
     endTime: campaign.endTime,
     alreadyClaimed: decodeFunctionResult({
-      abi: claimedWalletAbi,
+      abi: campaignManagerAbi,
       functionName: "claimedWallet",
       data: result as `0x${string}`,
     }),

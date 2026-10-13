@@ -4,11 +4,21 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./contracts": "./src/contracts/campaign-manager-abi.ts",
-    "./chains": "./src/chains.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./contracts": {
+      "types": "./dist/contracts/campaign-manager-abi.d.ts",
+      "default": "./dist/contracts/campaign-manager-abi.js"
+    },
+    "./chains": {
+      "types": "./dist/chains.d.ts",
+      "default": "./dist/chains.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

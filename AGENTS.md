@@ -97,7 +97,7 @@ Done on `main`:
 - #15 mission model + deterministic engagement verifier
 - #9 World ID eligibility, backend side (ADR-0007)
 - `POST /v1/campaigns/:id/submissions` (eligibility + verifier + persistence, 2-attempt cap)
-- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config (still open for runtime ABI import and the real testnet deployment record)
+- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config, runtime ABI from `@vham/shared` in API and web (still open for the real testnet deployment record)
 - #17 reorg-safe chain indexer; #16 verified on-chain linking + status sync; #20 analytics
 - #10 EIP-712 claim authorization: live on-chain checks, cap = paid + unexpired outstanding, reissue of expired unredeemed authorizations
 - #37 Sign-In with Ethereum; advertiser-only endpoints
@@ -110,10 +110,12 @@ Done on `main`:
 Next, in dependency order:
 
 1. **#12 remainder — real World ID** (IDKit widget + RP signature endpoint). Needs `@worldcoin/idkit` in `apps/web` and `@worldcoin/idkit-core` in `apps/api`.
-2. **#19 remainder** — import the canonical ABI from `@vham/shared` at runtime; record the real testnet deployment.
+2. **#19 remainder** — record the real testnet deployment (`packages/contracts/deployments/84532.json`).
 3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
 
 Dependencies not yet in the lockfile: `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+
+`@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 

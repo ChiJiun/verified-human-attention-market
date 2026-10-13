@@ -1,39 +1,60 @@
+import { campaignManagerAbi } from "@vham/shared/contracts";
+import { toEventSelector, toFunctionSelector } from "viem";
+
 /**
  * CampaignManager event topics / selectors and a strict log decoder.
  *
- * Every event argument is a static 32-byte word, so decoding needs no ABI
- * library. Topic and selector constants are verified against the compiled
- * contract in packages/contracts/test/EventTopics.t.sol (and mirrored by
- * apps/api/test/chain-abi.test.ts), so a contract change cannot silently
- * desynchronize the indexer.
+ * Topics and selectors are derived at load time from the canonical ABI that
+ * `forge build` exports to @vham/shared (#19), the same interface the web
+ * app uses, so API, web and contract cannot diverge. Every event argument is
+ * a static 32-byte word, so the decoder itself stays a small, strict word
+ * parser (it rejects dirty address padding and wrong shapes).
  */
 
-export const EVENT_TOPICS = {
-  CampaignCreated:
-    "0x633109eec20320eded000fc1e2634211aa7e92ba3f5b15faf6dcdafca05094e4",
-  CampaignFunded:
-    "0x318daf69d77e946364e804495b2184222324b99fddeb42ab5fd25a919f596e8c",
-  RewardClaimed:
-    "0x26b1605560a38613ed768e913564f2d9a454c54f88abaeb323ce9a8a8f79ed65",
-  CampaignClosed:
-    "0x5e6eb33a418de5dbbc17f989f7ae362cdfbb1748c5d603137c767027a354edbc",
-  CampaignRefunded:
-    "0xce0a95a6a92352cb9e5619426cd86ee5bb0cb44739ad6a7b1a0683d4cd16e536",
-  CampaignCancelled:
-    "0x403b6718db13878ac16c27decb08f09d3a10f116c7c25af575ff5bfbc11ae9e6",
-  SignerUpdated:
-    "0x2d025324f0a785e8c12d0a0d91a9caa49df4ef20ff87e0df7213a1d4f3157beb",
-  PausedStateChanged:
-    "0x9e3a5e37224532dea67b89face185703738a228a6e8a23dee546960180d3be64",
-  OwnershipTransferred:
-    "0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0",
-} as const;
+type AbiEntry = (typeof campaignManagerAbi)[number];
 
-export const FUNCTION_SELECTORS = {
-  campaigns: "0x141961bc",
-  createCampaign: "0x6ecff6f8",
-  fundCampaign: "0x918eab15",
-} as const;
+function canonical(
+  type: "event" | "function",
+  name: string,
+): Extract<AbiEntry, { type: "event" | "function" }> {
+  const entry = campaignManagerAbi.find(
+    (item) => item.type === type && "name" in item && item.name === name,
+  );
+
+  if (!entry || (entry.type !== "event" && entry.type !== "function")) {
+    throw new Error(`CampaignManager ABI has no ${type} ${name}`);
+  }
+
+  return entry;
+}
+
+const EVENT_NAMES = [
+  "CampaignCreated",
+  "CampaignFunded",
+  "RewardClaimed",
+  "CampaignClosed",
+  "CampaignRefunded",
+  "CampaignCancelled",
+  "SignerUpdated",
+  "PausedStateChanged",
+  "OwnershipTransferred",
+] as const;
+
+const FUNCTION_NAMES = ["campaigns", "createCampaign", "fundCampaign"] as const;
+
+export const EVENT_TOPICS = Object.fromEntries(
+  EVENT_NAMES.map((name) => [
+    name,
+    toEventSelector(canonical("event", name) as never),
+  ]),
+) as Record<(typeof EVENT_NAMES)[number], `0x${string}`>;
+
+export const FUNCTION_SELECTORS = Object.fromEntries(
+  FUNCTION_NAMES.map((name) => [
+    name,
+    toFunctionSelector(canonical("function", name) as never),
+  ]),
+) as Record<(typeof FUNCTION_NAMES)[number], `0x${string}`>;
 
 export type CampaignManagerEvent =
   | { name: "CampaignCreated"; campaignId: string; advertiser: string }

@@ -1,5 +1,5 @@
-import type { Address } from "viem";
-import { toFunctionSelector } from "viem";
+import { campaignManagerAbi } from "@vham/shared/contracts";
+import { encodeFunctionData, type Address } from "viem";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
@@ -33,7 +33,11 @@ export type ClaimOutcome =
   | { ok: true; claim: SignedClaim; created: boolean }
   | { ok: false; status: number; code: string };
 
-const SIGNER_SELECTOR = toFunctionSelector("authorizedSigner()");
+// Canonical ABI (#19): same interface as the contract and the web app.
+const SIGNER_SELECTOR = encodeFunctionData({
+  abi: campaignManagerAbi,
+  functionName: "authorizedSigner",
+});
 
 export async function authorizeClaim(
   dependencies: ClaimDependencies,
