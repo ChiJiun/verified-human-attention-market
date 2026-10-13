@@ -12,6 +12,8 @@ import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { applyRetention } from "./privacy/retention.js";
+import { PostgresClaimRepository } from "./claims/repository.js";
+import { checkReconciliation } from "./reconciliation/check.js";
 
 /**
  * Long-running chain indexer process (issue #17).
@@ -116,6 +118,31 @@ if (!Number.isSafeInteger(retentionIntervalMs) || retentionIntervalMs < 0) {
 
 let lastRetentionAt = 0;
 
+// Settlement reconciliation (#29): contract ↔ events ↔ authorizations.
+const reconciliationIntervalMs = Number(
+  process.env.RECONCILIATION_INTERVAL_MS ?? 10 * 60_000,
+);
+
+if (
+  !Number.isSafeInteger(reconciliationIntervalMs) ||
+  reconciliationIntervalMs < 0
+) {
+  throw new Error("RECONCILIATION_INTERVAL_MS must be a non-negative integer");
+}
+
+const claims = new PostgresClaimRepository(database.db);
+const findingsGauge = metrics.gauge(
+  "vham_reconciliation_findings",
+  "Open reconciliation findings by kind (must be 0)",
+);
+const FINDING_KINDS = [
+  "INDEX_MISMATCH",
+  "ACCOUNTING_VIOLATION",
+  "UNBACKED_PAYOUT",
+  "CHAIN_READ_FAILED",
+] as const;
+let lastReconciliationAt = 0;
+
 let stopping = false;
 const stop = () => {
   stopping = true;
@@ -187,6 +214,33 @@ while (!stopping) {
       log("error", "ACCOUNTING VIOLATION: paid + refunded exceeds funded", {
         campaignIds: statuses.accountingViolations,
       });
+    }
+
+    if (
+      reconciliationIntervalMs > 0 &&
+      Date.now() - lastReconciliationAt >= reconciliationIntervalMs
+    ) {
+      lastReconciliationAt = Date.now();
+      const report = await checkReconciliation({
+        campaigns,
+        events: repository,
+        claims,
+        rpc,
+        chain: scope,
+      });
+      for (const kind of FINDING_KINDS) {
+        findingsGauge.set(
+          report.findings.filter((finding) => finding.kind === kind).length,
+          { kind },
+        );
+      }
+      log(
+        report.findings.length > 0 ? "error" : "info",
+        report.findings.length > 0
+          ? "RECONCILIATION MISMATCH"
+          : "reconciliation clean",
+        { ...report },
+      );
     }
 
     if (

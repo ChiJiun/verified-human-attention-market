@@ -36,7 +36,8 @@ export interface ChainRpc {
     toBlock: bigint;
   }): Promise<RawLog[]>;
   getTransactionReceipt(hash: string): Promise<TransactionReceipt | null>;
-  call(to: string, data: string): Promise<string>;
+  /** eth_call at `block` (default: latest). */
+  call(to: string, data: string, block?: bigint): Promise<string>;
 }
 
 /** Transport or provider failure. Always safe to retry: reads only. */
@@ -164,9 +165,12 @@ export class JsonRpcClient implements ChainRpc {
     };
   }
 
-  async call(to: string, data: string): Promise<string> {
+  async call(to: string, data: string, block?: bigint): Promise<string> {
     return String(
-      await this.request("eth_call", [{ to, data }, "latest"]),
+      await this.request("eth_call", [
+        { to, data },
+        block === undefined ? "latest" : `0x${block.toString(16)}`,
+      ]),
     ).toLowerCase();
   }
 }

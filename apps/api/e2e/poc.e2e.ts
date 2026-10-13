@@ -41,6 +41,10 @@ import { PostgresChainEventRepository } from "../src/chain/events-repository.pos
 import { indexOnce } from "../src/chain/indexer.js";
 import { JsonRpcClient } from "../src/chain/rpc.js";
 import { PostgresClaimRepository } from "../src/claims/repository.js";
+import {
+  checkReconciliation,
+  type ReconciliationReport,
+} from "../src/reconciliation/check.js";
 import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
@@ -124,6 +128,7 @@ describeE2e("POC economic loop on a local chain", () => {
   let usdcAddress: Address;
   let app: ReturnType<typeof buildApp>;
   let reconcile: () => Promise<void>;
+  let checkSettlement: () => Promise<ReconciliationReport>;
 
   /** Moves chain time and the API clock together. */
   async function travelTo(date: Date) {
@@ -248,6 +253,16 @@ describeE2e("POC economic loop on a local chain", () => {
       },
       now,
     });
+
+    // Contract ↔ indexed events ↔ issued authorizations (#29).
+    checkSettlement = () =>
+      checkReconciliation({
+        campaigns: campaignRepository,
+        events: eventRepository,
+        claims: new PostgresClaimRepository(database.db),
+        rpc,
+        chain: scope,
+      });
 
     // What the indexer worker does on every pass.
     reconcile = async () => {
@@ -652,6 +667,12 @@ describeE2e("POC economic loop on a local chain", () => {
         },
         hasUnconfirmedEvents: false,
       },
+    });
+
+    // Independent reconciliation agrees: no mismatches, no unbacked payouts.
+    expect(await checkSettlement()).toMatchObject({
+      campaignsChecked: 1,
+      findings: [],
     });
   }, 120_000);
 });

@@ -28,6 +28,14 @@ groups:
           summary: Indexed paid + refunded exceeds funded for a campaign
           runbook: docs/operations/RUNBOOK.md#vhamaccountingviolation
 
+      - alert: VhamReconciliationFinding
+        expr: sum(vham_reconciliation_findings{kind!="CHAIN_READ_FAILED"}) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Contract, indexed events and issued authorizations disagree
+          runbook: docs/operations/RUNBOOK.md#vhamreconciliationfinding
+
       - alert: VhamSignerUnavailable
         expr: increase(vham_claim_authorizations_total{outcome="SIGNER_UNAVAILABLE"}[10m]) > 0
         labels:

@@ -73,6 +73,24 @@ The API key's address differs from `CampaignManager.authorizedSigner()`; every c
 returns 503. Usually a rotation applied on one side only. Align the API key
 with the on-chain signer. Never "fix" by disabling the check.
 
+### VhamReconciliationFinding
+
+The indexer worker's reconciliation (every `RECONCILIATION_INTERVAL_MS`,
+default 10 min; one-shot: `pnpm --filter @vham/api reconcile`) found a
+disagreement. By kind:
+
+- `UNBACKED_PAYOUT` — a confirmed `RewardClaimed` whose claimant and nonce
+  match no authorization the API issued. Treat as signer compromise (SEV1):
+  [Emergency pause](#emergency-pause), then [Signer rotation](#signer-rotation).
+  After a database restore, first rule out authorizations issued after the
+  backup point (docs/operations/BACKUP_RESTORE.md).
+- `INDEX_MISMATCH` — contract struct and indexed events differ at the same
+  confirmed block: wrong contract/deploy block or a missed log. Re-index;
+  analytics are wrong until fixed, payouts are not affected.
+- `ACCOUNTING_VIOLATION` — see below.
+- `CHAIN_READ_FAILED` — RPC could not serve the historical block (archive
+  access needed); alerts only via VhamRpcDown.
+
 ### VhamSignerUnavailable
 
 The signing service (KMS) times out, errors, or returned a signature that did
