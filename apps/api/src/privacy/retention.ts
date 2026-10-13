@@ -58,6 +58,9 @@ const retiredWallet = (eligibilityIdColumn: SQL) =>
 
 type Executor = Pick<Database, "execute">;
 
+/** Raw `sql` does not serialize Date params with postgres-js: cast an ISO string. */
+const at = (date: Date) => sql`${date.toISOString()}::timestamptz`;
+
 async function count(db: Executor, query: SQL): Promise<number> {
   const rows = await db.execute(query);
   return rows.length;
@@ -76,7 +79,7 @@ async function scrubCampaignData(
   // only here, so they are replaced by an unlinkable placeholder address.
   const targets = sql`SELECT e.id FROM eligibility e
       JOIN campaigns c ON c.id = e.campaign_id
-      WHERE c.end_at < ${cutoffs.unpaidWallets}
+      WHERE c.end_at < ${at(cutoffs.unpaidWallets)}
         ${walletFilter(sql`e.claimant_address`)}
         AND NOT EXISTS (
           SELECT 1 FROM submissions s
@@ -90,7 +93,7 @@ async function scrubCampaignData(
         USING submissions s, campaigns c
         WHERE a.submission_id = s.id
           AND s.campaign_id = c.id
-          AND c.end_at < ${cutoffs.answers}
+          AND c.end_at < ${at(cutoffs.answers)}
           ${walletFilter(sql`s.claimant_address`)}
         RETURNING a.id`,
     );
@@ -101,7 +104,7 @@ async function scrubCampaignData(
         SET participant_key = ${retiredKey(sql`e.id`)}
         FROM campaigns c
         WHERE e.campaign_id = c.id
-          AND c.end_at < ${cutoffs.participantKeys}
+          AND c.end_at < ${at(cutoffs.participantKeys)}
           AND e.participant_key <> ${retiredKey(sql`e.id`)}
           ${walletFilter(sql`e.claimant_address`)}
         RETURNING e.id`,
@@ -152,14 +155,14 @@ export async function applyRetention(
   const authNoncesDeleted = await count(
     db,
     sql`DELETE FROM auth_nonces
-        WHERE expires_at < ${new Date(now.getTime() - policy.authNonceDays * DAY_MS)}
+        WHERE expires_at < ${at(new Date(now.getTime() - policy.authNonceDays * DAY_MS))}
         RETURNING nonce`,
   );
   const authSessionsDeleted = await count(
     db,
     sql`DELETE FROM auth_sessions
         WHERE LEAST(COALESCE(revoked_at, expires_at), expires_at)
-          < ${new Date(now.getTime() - policy.authSessionDays * DAY_MS)}
+          < ${at(new Date(now.getTime() - policy.authSessionDays * DAY_MS))}
         RETURNING id`,
   );
 
@@ -201,7 +204,7 @@ export async function eraseWallet(
     db,
     sql`SELECT DISTINCT e.campaign_id FROM eligibility e
         JOIN campaigns c ON c.id = e.campaign_id
-        WHERE e.claimant_address = ${wallet} AND c.end_at >= ${settled}`,
+        WHERE e.claimant_address = ${wallet} AND c.end_at >= ${at(settled)}`,
   );
 
   return {
