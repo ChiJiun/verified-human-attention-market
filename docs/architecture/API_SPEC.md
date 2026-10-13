@@ -12,6 +12,31 @@
 - Dates/times use RFC 3339 externally.
 - Monetary integer fields use atomic units or explicit decimal strings; never floating-point JSON numbers for settlement.
 
+# Authentication (Sign-In with Ethereum, #37)
+
+1. `POST /v1/auth/nonce` → `{ nonce, expiresAt }` (single-use, 10 min).
+2. The wallet signs an EIP-4361 message with that nonce, `domain = SIWE_DOMAIN`,
+   `chainId = EVM_CHAIN_ID`, `version = 1` and a current `issuedAt`.
+3. `POST /v1/auth/verify { message, signature }` → `{ token, tokenType: "Bearer", address, expiresAt }`.
+   The server checks domain, chain, time window (`issuedAt` ≤ now + 60 s,
+   `expirationTime` / `notBefore`), the signature (EOA offline; ERC-1271/6492
+   smart wallets via RPC when configured) and then **atomically consumes** the
+   nonce, so replays fail with `NONCE_INVALID_OR_USED`.
+4. Send `Authorization: Bearer <token>`. Sessions last up to 12 h (or the
+   message's `expirationTime` if earlier). `GET /v1/auth/session`,
+   `POST /v1/auth/logout` (revokes). Only `sha256(token)` is stored.
+
+Advertiser-only endpoints return `401 UNAUTHENTICATED` without a session and
+`403 NOT_CAMPAIGN_ADVERTISER` when the signed-in wallet is not the campaign's
+advertiser: `POST /v1/campaigns` (body `advertiser` must equal the session
+wallet), `POST /v1/campaigns/:id/publish`, `POST /v1/campaigns/:id/onchain`,
+`GET /v1/campaigns/:id/analytics`. Without `SIWE_DOMAIN`, sign-in returns
+`503 AUTH_NOT_CONFIGURED` and these endpoints stay closed.
+
+Participant endpoints (eligibility, submissions, claim authorization) do not
+require a session in the POC: rewards are bound to the wallet verified with
+World ID, and the contract requires `msg.sender == claimant`.
+
 # Campaigns
 
 ## POST /v1/campaigns
@@ -248,7 +273,7 @@ signing key.
 
 ## GET /v1/campaigns/:id/analytics
 
-Issue #20. **Currently unauthenticated.** It becomes advertiser-only with SIWE (#37).
+Issue #20. Advertiser-only (SIWE session of the campaign's advertiser, #37).
 
 Settlement values come only from reconciled chain events, and submission counts come from persisted server-side results. `confirmed` counts finalized events; `pending` also includes observed, unconfirmed events and is for progress display only.
 

@@ -9,6 +9,8 @@ import {
   publishIntent,
   type OnchainDependencies,
 } from "./onchain.js";
+import { requireWallet } from "../auth/routes.js";
+import type { Authenticate } from "../auth/siwe.js";
 import type { CampaignRepository } from "./repository.js";
 
 const UUID_PATTERN =
@@ -19,6 +21,7 @@ const linkBodySchema = z.object({
 });
 
 export interface OnchainRouteDependencies {
+  authenticate: Authenticate;
   campaigns: CampaignRepository;
   submissions: SubmissionRepository;
   /** null when on-chain integration is not configured. */
@@ -55,6 +58,16 @@ export async function registerOnchainRoutes(
         : null;
 
       if (!campaign) return error(404, notFound);
+      if (
+        !(await requireWallet(
+          dependencies.authenticate,
+          request,
+          reply,
+          campaign.advertiserAddress,
+        ))
+      ) {
+        return reply;
+      }
       if (!dependencies.chain) return error(503, chainMissing);
 
       if (campaign.status !== "draft" || campaign.onchainCampaignId !== null) {
@@ -83,7 +96,20 @@ export async function registerOnchainRoutes(
           .status(status)
           .send({ error: { ...body, requestId: request.id } });
 
-      if (!UUID_PATTERN.test(request.params.id)) return error(404, notFound);
+      const owned = UUID_PATTERN.test(request.params.id)
+        ? await dependencies.campaigns.getById(request.params.id)
+        : null;
+      if (!owned) return error(404, notFound);
+      if (
+        !(await requireWallet(
+          dependencies.authenticate,
+          request,
+          reply,
+          owned.advertiserAddress,
+        ))
+      ) {
+        return reply;
+      }
       if (!dependencies.chain) return error(503, chainMissing);
 
       const parsed = linkBodySchema.safeParse(request.body);
@@ -141,6 +167,17 @@ export async function registerOnchainRoutes(
         return reply
           .status(404)
           .send({ error: { ...notFound, requestId: request.id } });
+      }
+
+      if (
+        !(await requireWallet(
+          dependencies.authenticate,
+          request,
+          reply,
+          campaign.advertiserAddress,
+        ))
+      ) {
+        return reply;
       }
 
       const submissions = await dependencies.submissions.countByCampaign(

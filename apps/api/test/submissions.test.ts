@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { signedInAs } from "./support/auth.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import type { CampaignRecord, CampaignStatus } from "../src/campaigns/types.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
@@ -87,6 +88,7 @@ async function setup() {
   const eligibility = new InMemoryEligibilityRepository();
   const submissions = new InMemorySubmissionRepository(eligibility);
   const app = buildApp({
+    authenticate: signedInAs(),
     campaignRepository: campaigns,
     eligibilityRepository: eligibility,
     submissionRepository: submissions,

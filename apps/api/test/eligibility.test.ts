@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { signedInAs } from "./support/auth.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
@@ -75,6 +76,7 @@ async function setup(
   const eligibilityRepository = new InMemoryEligibilityRepository();
   let current = now;
   const app = buildApp({
+    authenticate: signedInAs(),
     campaignRepository: new InMemoryCampaignRepository(),
     eligibilityRepository,
     worldIdVerifier: worldId,

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { signedInAs } from "./support/auth.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -44,6 +45,7 @@ describe("campaign routes", () => {
   it("creates and retrieves a campaign draft", async () => {
     const repository = new InMemoryCampaignRepository();
     const app = buildApp({
+      authenticate: signedInAs(),
       campaignRepository: repository,
       chainId: 84532,
       now: () => now,
@@ -90,7 +92,10 @@ describe("campaign routes", () => {
   });
 
   it("replays the same idempotent request without creating a second campaign", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const request = {
@@ -113,7 +118,10 @@ describe("campaign routes", () => {
   });
 
   it("rejects reuse of an idempotency key with different input", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const first = await app.inject({
@@ -148,7 +156,10 @@ describe("campaign routes", () => {
   });
 
   it("requires an idempotency key", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -166,7 +177,10 @@ describe("campaign routes", () => {
   });
 
   it("rejects a campaign that starts in the past", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -191,7 +205,10 @@ describe("campaign routes", () => {
   });
 
   it("rejects floating point monetary values", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -215,7 +232,10 @@ describe("campaign routes", () => {
   });
 
   it("returns 404 for unknown campaigns", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -232,7 +252,10 @@ describe("campaign routes", () => {
   });
 
   it("serves the public mission without the answer key", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const created = await app.inject({
@@ -262,7 +285,10 @@ describe("campaign routes", () => {
   });
 
   it("treats answer key ordering as the same idempotent request", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const first = await app.inject({
@@ -291,7 +317,10 @@ describe("campaign routes", () => {
   });
 
   it("rejects a changed mission under the same idempotency key", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     await app.inject({
@@ -328,7 +357,10 @@ describe("campaign routes", () => {
     ],
     ["threshold above question count", { passThreshold: 3 }],
   ])("rejects an invalid mission: %s", async (_label, override) => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -350,7 +382,10 @@ describe("campaign routes", () => {
     "http://example.com/plain-http",
     "file:///etc/passwd",
   ])("rejects non-https content URL %s", async (contentUrl) => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     const response = await app.inject({
@@ -364,7 +399,10 @@ describe("campaign routes", () => {
   });
 
   it("returns 404 instead of failing on malformed campaign ids", async () => {
-    const app = buildApp({ now: () => now });
+    const app = buildApp({
+      authenticate: signedInAs(),
+      now: () => now,
+    });
     apps.push(app);
 
     for (const url of ["/v1/campaigns/not-a-uuid", "/v1/campaigns/x/mission"]) {

@@ -12,10 +12,13 @@ import {
   toMissionDefinition,
 } from "../missions/schemas.js";
 import { toPublicMission } from "../missions/verifier.js";
+import { requireWallet } from "../auth/routes.js";
+import type { Authenticate } from "../auth/siwe.js";
 import { createCampaignSchema } from "./schemas.js";
 import type { CampaignRecord } from "./types.js";
 
 interface CampaignRoutesOptions {
+  authenticate: Authenticate;
   repository: CampaignRepository;
   chainId: number;
   now?: () => Date;
@@ -75,6 +78,18 @@ export async function registerCampaignRoutes(
           details: parsed.error.flatten(),
         },
       });
+    }
+
+    // Only the signed-in wallet may create campaigns as itself (#37).
+    if (
+      !(await requireWallet(
+        options.authenticate,
+        request,
+        reply,
+        parsed.data.advertiser,
+      ))
+    ) {
+      return reply;
     }
 
     const createdAt = now();

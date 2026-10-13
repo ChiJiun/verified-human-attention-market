@@ -198,6 +198,21 @@
 - document emergency powers；
 - separate pause from withdrawal authority。
 
+## T-015 Wallet Impersonation / Session Theft
+
+**Threat:** someone creates campaigns or reads analytics as another advertiser by claiming their address, replays a captured sign-in message, or steals a session token.
+
+**Mitigation (implemented, #37):**
+
+- EIP-4361 Sign-In with Ethereum. Messages are bound to `SIWE_DOMAIN`, the configured chain ID and a time window.
+- Server-issued nonces are consumed atomically on success, so a captured message cannot be replayed.
+- Signatures are verified as EOA signatures, or via ERC-1271/6492 through RPC.
+- Bearer sessions expire after at most 12 h and can be revoked. Only `sha256(token)` is stored, so a database leak does not yield usable tokens.
+- Advertiser-only endpoints require the session wallet to equal the campaign advertiser.
+- Fail closed: without `SIWE_DOMAIN`, nobody can sign in.
+
+**Residual risk:** the bearer token lives in browser memory and is exposed to XSS. Before beta, keep a strict CSP and consider HttpOnly cookies with CSRF protection. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
+
 # POC Risk Limits
 
 Before production:

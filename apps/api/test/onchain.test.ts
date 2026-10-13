@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { signedInAs } from "./support/auth.js";
 import {
   autoLinkCreatedCampaigns,
   syncCampaignStatuses,
@@ -63,6 +64,7 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
     now: () => now,
   };
   const app = buildApp({
+    authenticate: signedInAs(),
     campaignRepository: campaigns,
     eligibilityRepository: eligibility,
     submissionRepository: submissions,
