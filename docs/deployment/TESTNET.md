@@ -1,6 +1,6 @@
 # Base Sepolia Deployment Runbook
 
-> Issue #19. External facts checked on **2026-10-12**. Re-check them immediately before every deployment (AGENTS.md §19).
+> Issue #19. External facts checked on **2026-10-12**, re-checked **2026-10-13** (chain ID 84532, public RPC, and the Circle USDC address were unchanged). Re-check them immediately before every deployment (AGENTS.md §19).
 
 | Fact | Value | Source |
 | --- | --- | --- |
