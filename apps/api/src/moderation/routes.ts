@@ -39,6 +39,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GATED_ROUTES = new Set([
   "GET /v1/campaigns/:id/mission",
   "POST /v1/campaigns/:id/eligibility/verify",
+  "POST /v1/campaigns/:id/world-id/request",
   "POST /v1/campaigns/:id/submissions",
   "POST /v1/campaigns/:id/publish",
 ]);

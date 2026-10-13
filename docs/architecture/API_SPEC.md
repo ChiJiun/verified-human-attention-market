@@ -140,6 +140,20 @@ Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only fr
 
 # World ID / Eligibility
 
+## POST /v1/campaigns/:id/world-id/request
+
+Returns what IDKit needs to open a request (ADR-0007, #12):
+
+```json
+{
+  "appId": "app_…",
+  "action": "vham-campaign-<campaignId>",
+  "rpContext": { "rp_id": "rp_…", "nonce": "0x00…", "created_at": 1791194400, "expires_at": 1791194700, "signature": "0x…" }
+}
+```
+
+`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN`, `503 WORLD_ID_NOT_CONFIGURED` (needs `WORLD_ID_RP_ID` + `RP_SIGNING_KEY`). Moderation-gated; sensitive rate-limit bucket.
+
 ## POST /v1/campaigns/:id/eligibility/verify
 
 See ADR-0007. Request:

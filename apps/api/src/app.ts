@@ -44,7 +44,10 @@ import {
   InMemoryEligibilityRepository,
   type EligibilityRepository,
 } from "./eligibility/repository.js";
-import { registerEligibilityRoutes } from "./eligibility/routes.js";
+import {
+  registerEligibilityRoutes,
+  type WorldIdRequestConfig,
+} from "./eligibility/routes.js";
 import {
   InMemorySubmissionRepository,
   type SubmissionRepository,
@@ -89,6 +92,8 @@ export interface AppDependencies {
   /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
   dailyPayoutLimitAtomic?: bigint | null;
   worldIdVerifier?: WorldIdVerifier;
+  /** RP signing for IDKit requests (#12); null or absent = disabled. */
+  worldIdRequest?: WorldIdRequestConfig | null;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
   /** HMAC secret for participant keys; eligibility fails closed without it. */
@@ -292,6 +297,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
+      worldIdRequest: dependencies.worldIdRequest ?? null,
       now,
     });
 
