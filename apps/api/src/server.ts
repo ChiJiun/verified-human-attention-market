@@ -20,6 +20,7 @@ import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import { PostgresModerationRepository } from "./moderation/repository.js";
 import type { ModerationMode } from "./moderation/routes.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
+import { createRpSigner } from "./identity/rp-signature.js";
 import {
   HttpWorldIdVerifier,
   LocalSimulatedWorldIdVerifier,
@@ -153,6 +154,17 @@ if (!Number.isSafeInteger(trustProxy) || trustProxy < 0) {
   throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
 }
 
+// IDKit RP signing (#12). Needs both the RP id and the server-only key.
+const rpSigningKey = process.env.RP_SIGNING_KEY || null;
+const worldIdRequest =
+  worldIdMode === "live" && worldIdRpId && rpSigningKey
+    ? {
+        signer: createRpSigner(rpSigningKey),
+        rpId: worldIdRpId,
+        appId: process.env.WORLD_ID_APP_ID || null,
+      }
+    : null;
+
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 // Claim signer custody (#23). Production keys live in a KMS/HSM behind a
@@ -207,6 +219,7 @@ const app = buildApp({
   claimSigner,
   dailyPayoutLimitAtomic: BigInt(dailyPayoutLimit),
   worldIdVerifier,
+  worldIdRequest,
   participantKeySecret,
   chainId,
   metricsToken,

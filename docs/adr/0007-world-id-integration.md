@@ -18,9 +18,25 @@ World ID is the anti-Sybil layer (README §6). The current official integration 
 5. **Fail closed:** without `WORLD_ID_RP_ID` and `PARTICIPANT_KEY_SECRET`, the endpoint returns `503 WORLD_ID_NOT_CONFIGURED`. Provider outages return `503`, and no eligibility is written.
 6. Eligibility expires at the campaign `endAt`.
 
+## Update 2026-10-13: RP signature endpoint (#12)
+
+`POST /v1/campaigns/:id/world-id/request` returns the campaign action and an
+`rp_context` (`rp_id`, `nonce`, `created_at`, `expires_at`, `signature`) for
+IDKit. The signature follows the published algorithm
+(https://docs.world.org/world-id/idkit/signatures, checked 2026-10-13):
+EIP-191 secp256k1 over `0x01 ‖ nonce ‖ created_at ‖ expires_at ‖
+hash_to_field(action)`, 300 s TTL. It is implemented with viem's Keccak-256
+and signing (`apps/api/src/identity/rp-signature.ts`) instead of
+`@worldcoin/idkit-core/signing`, because that package cannot be installed in
+the current build environment; the implementation is pinned to the official
+test vectors, so swapping in `signRequest` later is a drop-in change. The key
+(`RP_SIGNING_KEY`) stays server-side; without it the endpoint returns
+`503 WORLD_ID_NOT_CONFIGURED`. The endpoint is moderation-gated and in the
+sensitive rate-limit bucket.
+
 ## Not yet covered
 
-- **RP signature endpoint** (`signRequest` from `@worldcoin/idkit-core/signing`, `RP_SIGNING_KEY`) for the IDKit widget. It needs the IDKit dependency and lands with the user flow (#12).
+- **IDKit widget in the web app** (`@worldcoin/idkit`) — needs the package in the lockfile.
 - **Wallet-bound signal:** IDKit can bind the claimant wallet as the proof `signal` and the backend can check `signal_hash`. This needs keccak256 and lands with the EIP-712 work (#10). Until then, proof relay is mitigated by TLS and the one-wallet-per-human binding.
 - Whether per-campaign actions must be pre-registered in the Developer Portal must be confirmed in the portal before testnet E2E (#13).
 

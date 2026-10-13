@@ -59,6 +59,7 @@ const SENSITIVE_ROUTES = new Set([
   "POST /v1/auth/nonce",
   "POST /v1/auth/verify",
   "POST /v1/campaigns/:id/eligibility/verify",
+  "POST /v1/campaigns/:id/world-id/request",
   "POST /v1/campaigns/:id/reports",
 ]);
 

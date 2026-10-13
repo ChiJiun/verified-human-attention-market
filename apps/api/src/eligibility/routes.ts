@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { campaignAction } from "../identity/world-id.js";
+import type { RpSigner } from "../identity/rp-signature.js";
 import {
   verifyEligibility,
   type EligibilityServiceDependencies,
@@ -15,10 +17,75 @@ const verifyEligibilitySchema = z.object({
   idkitResponse: z.unknown(),
 });
 
+export interface WorldIdRequestConfig {
+  signer: RpSigner;
+  rpId: string;
+  appId: string | null;
+}
+
 export async function registerEligibilityRoutes(
   app: FastifyInstance,
-  dependencies: EligibilityServiceDependencies,
+  dependencies: EligibilityServiceDependencies & {
+    /** RP signing for IDKit requests; null = not configured (#12). */
+    worldIdRequest?: WorldIdRequestConfig | null;
+  },
 ) {
+  /**
+   * Everything IDKit needs to open a World ID request for this campaign:
+   * the campaign action and a fresh RP signature (rp_context). The signing
+   * key never leaves the server (ADR-0007).
+   */
+  app.post<{ Params: { id: string } }>(
+    "/v1/campaigns/:id/world-id/request",
+    async (request, reply) => {
+      const fail = (status: number, code: string, message: string) =>
+        reply.status(status).send({
+          error: { code, message, requestId: request.id },
+        });
+
+      const config = dependencies.worldIdRequest ?? null;
+      const campaign = UUID_PATTERN.test(request.params.id)
+        ? await dependencies.campaigns.getById(request.params.id)
+        : null;
+
+      if (!campaign) {
+        return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
+      }
+
+      const now = dependencies.now();
+
+      if (
+        now >= campaign.endAt ||
+        !["draft", "active"].includes(campaign.status)
+      ) {
+        return fail(409, "CAMPAIGN_NOT_OPEN", "Campaign is not open");
+      }
+
+      if (!config) {
+        return fail(
+          503,
+          "WORLD_ID_NOT_CONFIGURED",
+          "World ID requests are not configured",
+        );
+      }
+
+      const action = campaignAction(campaign.id);
+      const signature = await config.signer.sign({ action, now });
+
+      return reply.send({
+        appId: config.appId,
+        action,
+        rpContext: {
+          rp_id: config.rpId,
+          nonce: signature.nonce,
+          created_at: signature.createdAt,
+          expires_at: signature.expiresAt,
+          signature: signature.sig,
+        },
+      });
+    },
+  );
+
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/eligibility/verify",
     async (request, reply) => {
