@@ -164,6 +164,11 @@ export const submissions = pgTable(
     claimantAddress: text("claimant_address").notNull(),
     result: text("result").notNull(),
     rejectionCode: text("rejection_code"),
+    // Campaign-scoped quality reason codes (#25, ADR-0009).
+    qualityFlags: jsonb("quality_flags")
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     claimNonce: text("claim_nonce"),
     claimSignature: text("claim_signature"),
     claimContractAddress: text("claim_contract_address"),

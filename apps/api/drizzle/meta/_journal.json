@@ -71,6 +71,13 @@
       "when": 1791910000000,
       "tag": "0009_api_clients",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791920000000,
+      "tag": "0010_quality_flags",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,11 @@ import {
   type EngagementRejectionCode,
 } from "../missions/verifier.js";
 import {
+  computeQualityFlags,
+  DEFAULT_QUALITY_CONFIG,
+  type QualityConfig,
+} from "../quality/signals.js";
+import {
   DuplicateCompletionError,
   hashSubmissionRequest,
   SubmissionEligibilityError,
@@ -27,6 +32,7 @@ export interface SubmissionServiceDependencies {
   submissions: SubmissionRepository;
   now: () => Date;
   maxAttempts?: number;
+  quality?: QualityConfig;
 }
 
 export type SubmissionFailureCode =
@@ -148,10 +154,11 @@ export async function submitCompletion(
 
   const maxAttempts = dependencies.maxAttempts ?? MAX_ATTEMPTS_PER_ELIGIBILITY;
 
-  if (
-    (await dependencies.submissions.countByEligibility(eligibility.id)) >=
-    maxAttempts
-  ) {
+  const priorAttempts = await dependencies.submissions.countByEligibility(
+    eligibility.id,
+  );
+
+  if (priorAttempts >= maxAttempts) {
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
@@ -172,6 +179,22 @@ export async function submitCompletion(
     }
   }
 
+  const quality = dependencies.quality ?? DEFAULT_QUALITY_CONFIG;
+  const qualityFlags = computeQualityFlags(
+    {
+      result: evaluation.result,
+      verifiedAt: eligibility.verifiedAt,
+      submittedAt: now,
+      priorAttempts,
+      recentCampaignSubmissions:
+        await dependencies.submissions.countRecentByCampaign(
+          campaign.id,
+          new Date(now.getTime() - quality.burstWindowMs),
+        ),
+    },
+    quality,
+  );
+
   try {
     const result = await dependencies.submissions.recordIdempotent({
       id: randomUUID(),
@@ -184,6 +207,7 @@ export async function submitCompletion(
       result: evaluation.result,
       rejectionCode: evaluation.rejectionCode,
       answers: evaluation.answers,
+      qualityFlags,
       createdAt: now,
     });
 

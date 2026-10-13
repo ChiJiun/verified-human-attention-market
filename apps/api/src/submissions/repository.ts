@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, gte } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { answers, eligibility, submissions } from "../db/schema.js";
@@ -41,7 +41,16 @@ export interface NewSubmission {
   /** Required when rejected, must be null when accepted. */
   rejectionCode: string | null;
   answers: AnswerInput[];
+  /** Quality reason codes (#25); empty when none. */
+  qualityFlags?: string[];
   createdAt: Date;
+}
+
+export interface QualitySummary {
+  /** Accepted submissions carrying at least one quality flag. */
+  flaggedAccepted: number;
+  /** Count per reason code across accepted submissions. */
+  reasons: Record<string, number>;
 }
 
 export interface SubmissionRecord {
@@ -54,6 +63,7 @@ export interface SubmissionRecord {
   claimantAddress: string;
   result: SubmissionResult;
   rejectionCode: string | null;
+  qualityFlags: string[];
   claimNonce: string | null;
   claimIssuedAt: Date | null;
   claimExpiresAt: Date | null;
@@ -113,6 +123,25 @@ export interface SubmissionRepository {
   countByCampaign(
     campaignId: string,
   ): Promise<{ accepted: number; rejected: number }>;
+  /** Submissions (any result) created at or after `since`. */
+  countRecentByCampaign(campaignId: string, since: Date): Promise<number>;
+  qualitySummary(campaignId: string): Promise<QualitySummary>;
+}
+
+function summarize(
+  rows: { result: string; qualityFlags: string[] }[],
+): QualitySummary {
+  const summary: QualitySummary = { flaggedAccepted: 0, reasons: {} };
+
+  for (const row of rows) {
+    if (row.result !== "accepted" || row.qualityFlags.length === 0) continue;
+    summary.flaggedAccepted += 1;
+    for (const flag of row.qualityFlags) {
+      summary.reasons[flag] = (summary.reasons[flag] ?? 0) + 1;
+    }
+  }
+
+  return summary;
 }
 
 /**
@@ -200,6 +229,7 @@ function mapSubmission(
     claimantAddress: row.claimantAddress,
     result: row.result as SubmissionResult,
     rejectionCode: row.rejectionCode,
+    qualityFlags: row.qualityFlags,
     claimNonce: row.claimNonce,
     claimIssuedAt: row.claimIssuedAt,
     claimExpiresAt: row.claimExpiresAt,
@@ -257,6 +287,7 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
             claimantAddress: input.claimantAddress,
             result: input.result,
             rejectionCode: input.rejectionCode,
+            qualityFlags: input.qualityFlags ?? [],
             createdAt: input.createdAt,
             updatedAt: input.createdAt,
           })
@@ -371,6 +402,38 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
     return totals;
   }
 
+  async countRecentByCampaign(
+    campaignId: string,
+    since: Date,
+  ): Promise<number> {
+    const [row] = await this.db
+      .select({ value: count() })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.campaignId, campaignId),
+          gte(submissions.createdAt, since),
+        ),
+      );
+    return row?.value ?? 0;
+  }
+
+  async qualitySummary(campaignId: string): Promise<QualitySummary> {
+    const rows = await this.db
+      .select({
+        result: submissions.result,
+        qualityFlags: submissions.qualityFlags,
+      })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.campaignId, campaignId),
+          eq(submissions.result, "accepted"),
+        ),
+      );
+    return summarize(rows);
+  }
+
   async countByEligibility(eligibilityId: string): Promise<number> {
     const [row] = await this.db
       .select({ value: count() })
@@ -454,6 +517,7 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
       claimantAddress: input.claimantAddress,
       result: input.result,
       rejectionCode: input.rejectionCode,
+      qualityFlags: [...(input.qualityFlags ?? [])],
       claimNonce: null,
       claimIssuedAt: null,
       claimExpiresAt: null,
@@ -511,6 +575,23 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     }
 
     return totals;
+  }
+
+  async countRecentByCampaign(
+    campaignId: string,
+    since: Date,
+  ): Promise<number> {
+    return [...this.records.values()].filter(
+      (record) => record.campaignId === campaignId && record.createdAt >= since,
+    ).length;
+  }
+
+  async qualitySummary(campaignId: string): Promise<QualitySummary> {
+    return summarize(
+      [...this.records.values()].filter(
+        (record) => record.campaignId === campaignId,
+      ),
+    );
   }
 
   async countByEligibility(eligibilityId: string): Promise<number> {

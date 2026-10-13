@@ -288,7 +288,13 @@ Settlement values come only from reconciled chain events, and submission counts 
   "rewardPerCompletion": "1000000",
   "maxCompletions": 10,
   "plannedBudget": "10000000",
-  "submissions": { "accepted": 8, "rejected": 3 },
+  "submissions": {
+    "accepted": 8,
+    "rejected": 3,
+    "flaggedAccepted": 2,
+    "adjustedAccepted": 6,
+    "flagReasons": { "FAST_COMPLETION": 2, "PASSED_ON_RETRY": 1 }
+  },
   "settlement": {
     "confirmed": {
       "status": "active",

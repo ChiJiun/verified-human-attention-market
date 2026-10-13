@@ -227,6 +227,19 @@
 
 **Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
+## T-017 Quality-Signal and Reputation Manipulation
+
+**Threat:** farmers learn the quality rules and pace themselves (wait out `FAST_COMPLETION`, never retry, spread across time to avoid `CAMPAIGN_BURST`); wash behaviour builds a good score to be cashed out later; a competitor floods a campaign to make its completions look flagged.
+
+**Mitigation (#25, ADR-0009):**
+
+- Flags are never shown to participants and do not change payout, so there is nothing to win by gaming them in the MVP.
+- Signals are derived from stored facts and are re-derivable; thresholds are configuration, not code.
+- No cross-campaign reputation exists, so there is no score to farm or wash; one requires its own ADR with a manipulation model.
+- A flood still needs a verified human per submission (World ID) and is visible as `CAMPAIGN_BURST` plus rate-limit metrics.
+
+**Residual risk:** careful farmers are not detected; the signals are a baseline, not proof of attention.
+
 ## T-016 API Key Abuse / Scraping
 
 **Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
