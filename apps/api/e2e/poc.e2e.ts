@@ -127,11 +127,14 @@ describeE2e("POC economic loop on a local chain", () => {
 
   /** Moves chain time and the API clock together. */
   async function travelTo(date: Date) {
-    await testClient.setNextBlockTimestamp({
-      timestamp: BigInt(Math.floor(date.getTime() / 1000)),
-    });
+    // Mined transactions advance chain time; never move it backwards.
+    const latest = await publicClient.getBlock();
+    const target = BigInt(
+      Math.max(Math.floor(date.getTime() / 1000), Number(latest.timestamp) + 1),
+    );
+    await testClient.setNextBlockTimestamp({ timestamp: target });
     await testClient.mine({ blocks: 1 });
-    clock = date;
+    clock = new Date(Number(target) * 1000);
   }
 
   const seconds = (offset: number) => new Date(clock.getTime() + offset * 1000);

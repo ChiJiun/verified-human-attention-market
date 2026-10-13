@@ -252,8 +252,9 @@ contract CampaignManagerTest {
         vm.prank(claimant);
         manager.claim(authorization, oldSignature);
 
+        bytes memory newSignature = _sign(authorization, OTHER_SIGNER_KEY);
         vm.prank(claimant);
-        manager.claim(authorization, _sign(authorization, OTHER_SIGNER_KEY));
+        manager.claim(authorization, newSignature);
         require(token.balanceOf(claimant) == ONE_USDC, "paid by new signer");
     }
 
