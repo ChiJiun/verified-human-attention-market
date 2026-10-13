@@ -6,6 +6,9 @@
 
 ## Conventions
 
+Authentication model, API keys, sandbox, rate limits, error model,
+idempotency and versioning rules: [API_CONTRACT.md](./API_CONTRACT.md) (#26).
+
 - Base path: `/v1`
 - JSON only
 - Mutating endpoints that create durable state require or accept `Idempotency-Key`; repeated keys with identical normalized input return the original result, while changed input returns a conflict.
@@ -304,6 +307,17 @@ Settlement values come only from reconciled chain events, and submission counts 
 ```
 
 `settlement` is `null` until the campaign is linked on-chain.
+
+# API clients (#26)
+
+SIWE session of the advertiser only (API keys get `403 API_KEY_NOT_ALLOWED`).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/api-clients` | `{ name, scopes: ["campaigns:write" \| "analytics:read"], rateLimitPerMinute? }` → `201 { id, key, keyPrefix, scopes, environment, rateLimitPerMinute, createdAt }`; the key is shown once. `409 API_CLIENT_LIMIT_REACHED` above 10 active keys. |
+| `GET /v1/api-clients` | Own keys (no secrets) |
+| `DELETE /v1/api-clients/:id` | Revoke own key → `204` |
+| `POST /v1/admin/api-clients/:id/revoke` | Operator revoke `{ reason }` |
 
 # Moderation (#24)
 
