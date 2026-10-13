@@ -21,6 +21,8 @@ export interface WorldIdRequestConfig {
   signer: RpSigner;
   rpId: string;
   appId: string | null;
+  /** Must match what the verifier expects; defaults to production. */
+  environment?: "production" | "staging";
 }
 
 export async function registerEligibilityRoutes(
@@ -75,6 +77,7 @@ export async function registerEligibilityRoutes(
       return reply.send({
         appId: config.appId,
         action,
+        environment: config.environment ?? "production",
         rpContext: {
           rp_id: config.rpId,
           nonce: signature.nonce,

@@ -162,6 +162,7 @@ const worldIdRequest =
         signer: createRpSigner(rpSigningKey),
         rpId: worldIdRpId,
         appId: process.env.WORLD_ID_APP_ID || null,
+        environment: worldIdEnvironment,
       }
     : null;
 

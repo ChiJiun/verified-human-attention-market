@@ -92,7 +92,12 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     const app = buildApp({
       authenticate: signedInAs(),
       worldIdRequest: configured
-        ? { signer, rpId: "rp_test123", appId: "app_test123" }
+        ? {
+            signer,
+            rpId: "rp_test123",
+            appId: "app_test123",
+            environment: "staging",
+          }
         : null,
       now: () => now,
     });
@@ -137,6 +142,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     const body = response.json<{
       appId: string;
       action: string;
+      environment: string;
       rpContext: {
         rp_id: string;
         nonce: `0x${string}`;
@@ -147,6 +153,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     }>();
     expect(body).toMatchObject({
       appId: "app_test123",
+      environment: "staging",
       action: `vham-campaign-${id}`,
       rpContext: { rp_id: "rp_test123", expires_at: 1_791_194_400 + 300 },
     });

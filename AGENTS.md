@@ -109,11 +109,11 @@ Done on `main`:
 
 Next, in dependency order:
 
-1. **#12 remainder — IDKit widget in `apps/web`** (`IDKitRequestWidget` fed by `POST /v1/campaigns/:id/world-id/request`, which already exists). Needs `@worldcoin/idkit` in the lockfile. Optionally swap the viem RP signer for `signRequest` from `@worldcoin/idkit-core/signing` (same test vectors).
+1. **#12 — live World ID check.** The IDKit widget is wired in `apps/web` (IDKit 4.4.0, `proofOfHuman()`, v4 proofs only; ADR-0007). It has only been verified against the API contract and the simulated mode; the first real proof happens in the Base Sepolia run. Close #12 only after that run.
 2. **#19 remainder** — record the real testnet deployment (`packages/contracts/deployments/84532.json`).
 3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
 
-Dependencies not yet in the lockfile: `@worldcoin/idkit` (web); `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+`@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 `@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
@@ -414,7 +414,7 @@ If a transaction was broadcast and the RPC times out, reconcile by transaction h
 
 ## 13. World ID / privacy rules
 
-World ID integration has **not** yet been completed.
+World ID integration is implemented (ADR-0007) but has not yet been exercised against a real World App / Developer Portal app.
 
 Before implementing it:
 

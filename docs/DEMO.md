@@ -222,6 +222,26 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify（local simulation）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
 4. 回到廣告主頁面，可以看到已付金額和完成數。
 
+### 使用真的 World ID（#12）
+
+本機 demo 用模擬；要接真的 World ID，需要 World App（或官方 simulator / sandbox）和 Developer Portal 的 app。以下依 2026-10-13 查證的官方文件（<https://docs.world.org/world-id/idkit/integrate>、<https://docs.world.org/world-id/idkit/signatures>）：
+
+1. 到 [Developer Portal](https://developer.world.org) 建立 app，並完成 World ID 4.0 的 RP registration，取得 `app_id`、`rp_id` 和 `signing_key`。
+2. API 設定（只放在 API 的環境變數，**不要 commit**，也不要放進任何 `NEXT_PUBLIC_*`）：
+
+   | 變數 | 說明 |
+   | --- | --- |
+   | `WORLD_ID_APP_ID` | `app_…`，回傳給前端開 widget |
+   | `WORLD_ID_RP_ID` | `rp_…`，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
+   | `RP_SIGNING_KEY` | RP 簽章私鑰（32 bytes hex），只在伺服器簽 `rp_context`，是秘密 |
+   | `WORLD_ID_ENVIRONMENT` | `production`（預設）或 `staging`（配合 simulator）。同一個值會回傳給 widget，後端也據此拒絕其他環境的 proof |
+   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
+
+   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。
+3. 前端不要設 `NEXT_PUBLIC_WORLD_ID_MODE=simulated`。參與者按 **Verify with World ID** 後，前端會先向 API 取得 `rp_context`，再開 IDKit widget；IDKit 的結果原封不動送到 `eligibility/verify`。
+4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
+5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
+
 ### 部署到 Base Sepolia
 
 請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。部署需要你自己的 Foundry keystore、RPC 和 Developer Portal 的 World ID app，所以 testnet 部分（#13 剩下的驗收項目）還沒有實際執行。
