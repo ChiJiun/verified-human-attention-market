@@ -97,7 +97,7 @@ Official references:
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ⬜ #11, #12 |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
-| World ID integration | 🟡 Backend verification (ADR-0007, #9) + RP signature endpoint (#12, official test vectors); IDKit web widget pending the `@worldcoin/idkit` dependency |
+| World ID integration | 🟡 Backend verification (ADR-0007, #9), RP signature endpoint and `IDKitRequestWidget` in the mission page (#12, IDKit 4.4.0). Not yet exercised against a real World App / Developer Portal app: that happens in the Base Sepolia run (#13) |
 | Testnet deployment | ⬜ Runbook ready (docs/deployment/TESTNET.md); needs owner keystore + RPC |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
 

@@ -1,6 +1,12 @@
 "use client";
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
+import {
+  IDKitRequestWidget,
+  proofOfHuman,
+  type IDKitResult,
+  type RpContext,
+} from "@worldcoin/idkit";
 import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
@@ -38,6 +44,14 @@ interface Authorization {
   contractAddress: Address;
 }
 
+/** What `POST /world-id/request` returns: everything IDKit needs to open. */
+interface WorldIdRequest {
+  appId: `app_${string}` | null;
+  action: string;
+  environment: "production" | "staging";
+  rpContext: RpContext;
+}
+
 type Step =
   | { kind: "verify" }
   | { kind: "answer" }
@@ -73,6 +87,8 @@ export default function MissionPage() {
   const [step, setStep] = useState<Step>({ kind: "verify" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [worldRequest, setWorldRequest] = useState<WorldIdRequest | null>(null);
+  const [widgetOpen, setWidgetOpen] = useState(false);
 
   const key = (name: string) =>
     `vham:${campaignId}:${wallet?.address.toLowerCase()}:${name}`;
@@ -119,32 +135,53 @@ export default function MissionPage() {
       else if (token) setStep({ kind: "answer" });
     });
 
+  /** Sends the IDKit result, unchanged, with the wallet; never logs it. */
+  async function verifyEligibility(
+    claimant: Address,
+    idkitResponse: unknown,
+  ): Promise<void> {
+    if (!campaignId) return;
+    const { data } = await api<{ eligibilityToken: string }>(
+      `/v1/campaigns/${campaignId}/eligibility/verify`,
+      { method: "POST", body: { claimant, idkitResponse } },
+    );
+    store(key("eligibility"), data.eligibilityToken);
+    setEligibilityToken(data.eligibilityToken);
+  }
+
   const verifyHuman = () =>
     run(async () => {
       if (!wallet || !campaignId) return;
-      if (WORLD_ID_MODE !== "simulated") {
-        throw new Error(
-          "World ID verification needs the IDKit widget, which is not installed yet.",
-        );
+      if (WORLD_ID_MODE === "simulated") {
+        // Local anvil demo only: the API refuses simulated proofs elsewhere.
+        await verifyEligibility(wallet.address, {
+          action: `vham-campaign-${campaignId}`,
+          simulatedHuman: wallet.address.toLowerCase(),
+        });
+        setStep({ kind: "answer" });
+        return;
       }
-      // Local anvil demo only: the API refuses simulated proofs elsewhere.
-      const { data } = await api<{ eligibilityToken: string }>(
-        `/v1/campaigns/${campaignId}/eligibility/verify`,
-        {
-          method: "POST",
-          body: {
-            claimant: wallet.address,
-            idkitResponse: {
-              action: `vham-campaign-${campaignId}`,
-              simulatedHuman: wallet.address.toLowerCase(),
-            },
-          },
-        },
+      // A fresh RP signature per attempt; the signing key stays on the API.
+      const { data } = await api<WorldIdRequest>(
+        `/v1/campaigns/${campaignId}/world-id/request`,
+        { method: "POST" },
       );
-      store(key("eligibility"), data.eligibilityToken);
-      setEligibilityToken(data.eligibilityToken);
-      setStep({ kind: "answer" });
+      if (!data.appId) throw new Error("World ID is not configured.");
+      setWorldRequest(data);
+      setWidgetOpen(true);
     });
+
+  /** Throwing here makes the widget show its error state (host rejected). */
+  async function handleWorldIdVerify(result: IDKitResult) {
+    if (!wallet) throw new Error("Connect your wallet first.");
+    try {
+      await verifyEligibility(wallet.address, result);
+    } catch (caught) {
+      const message = describeError(caught);
+      setError(message);
+      throw new Error(message, { cause: caught });
+    }
+  }
 
   const submit = () =>
     run(async () => {
@@ -285,6 +322,30 @@ export default function MissionPage() {
               : "Verify with World ID"}
           </button>
         </section>
+      )}
+
+      {worldRequest?.appId && (
+        <IDKitRequestWidget
+          open={widgetOpen}
+          onOpenChange={setWidgetOpen}
+          app_id={worldRequest.appId}
+          action={worldRequest.action}
+          rp_context={worldRequest.rpContext}
+          environment={worldRequest.environment}
+          allow_legacy_proofs={false}
+          preset={proofOfHuman()}
+          handleVerify={handleWorldIdVerify}
+          onSuccess={() => {
+            setError(null);
+            setStep({ kind: "answer" });
+          }}
+          onError={(errorCode) => {
+            // The API's reason was already shown by handleWorldIdVerify.
+            if (errorCode === "failed_by_host_app") return;
+            // Code only: the debug report can carry request details.
+            setError(`World ID verification did not complete (${errorCode}).`);
+          }}
+        />
       )}
 
       {wallet &&

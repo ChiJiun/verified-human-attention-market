@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-12
 - **Issue:** #9
-- **Sources (checked 2026-10-12):** https://docs.world.org/world-id/idkit/integrate, https://docs.world.org/world-id/reference/api
+- **Sources (checked 2026-10-12, re-checked 2026-10-13):** https://docs.world.org/world-id/idkit/integrate, https://docs.world.org/world-id/idkit/react, https://docs.world.org/world-id/idkit/signatures, https://docs.world.org/api-reference/developer-portal/verify
 
 ## Context
 
@@ -34,11 +34,23 @@ test vectors, so swapping in `signRequest` later is a drop-in change. The key
 `503 WORLD_ID_NOT_CONFIGURED`. The endpoint is moderation-gated and in the
 sensitive rate-limit bucket.
 
+## Web widget (#12, checked 2026-10-13)
+
+- `apps/web` uses `@worldcoin/idkit` **4.4.0** (pinned) and its `IDKitRequestWidget`.
+- Flow: `POST /v1/campaigns/:id/world-id/request` returns `appId`, `action`, `environment` and a fresh `rpContext`; the widget opens with them; `handleVerify` forwards the IDKit result **unchanged** (plus the claimant wallet) to `POST /v1/campaigns/:id/eligibility/verify` and throws if the API refuses, which puts the widget in its error state (`failed_by_host_app`). The proof is never logged, stored client-side, or echoed; `onError` shows only the error code, never the debug report.
+- `environment` comes from the API (`WORLD_ID_ENVIRONMENT`), so the widget and the backend verifier cannot disagree.
+- Preset `proofOfHuman()` with `allow_legacy_proofs: false`: World ID 4.0 proofs only. v3 and v4 nullifiers for one person differ, so accepting both would let one human obtain two eligibilities for the same campaign unless both were tracked. Revisit only with a dual-nullifier design.
+- `NEXT_PUBLIC_WORLD_ID_MODE=simulated` keeps the local anvil stand-in (the API refuses it on any other chain).
+
+## Per-campaign actions and the Developer Portal (checked 2026-10-13)
+
+The official IDKit, RP-signature and `POST /api/v4/verify/{rp_id}` documentation treats `action` as a free string: it is part of the RP signature (`hash_to_field(action)`), is passed in the request, and is echoed in the verify result. The verify reference lists no "action not found" error (only "App not found or no longer active"), and no page states that each action must be created in the portal first. "Create v4 actions" appears only in the 3.0 → 4.0 migration guide, in the context of migrating existing apps. Conclusion: **no per-campaign pre-registration is required by the documented flow**, and creating one portal action per campaign would not be feasible anyway.
+
+This is read from documentation, not observed against a live app. The Base Sepolia run (#13) is the real test; if the portal rejects unknown actions there, this ADR must change (for example to one registered action plus the campaign id carried in the signal).
+
 ## Not yet covered
 
-- **IDKit widget in the web app** (`@worldcoin/idkit`) — needs the package in the lockfile.
-- **Wallet-bound signal:** IDKit can bind the claimant wallet as the proof `signal` and the backend can check `signal_hash`. This needs keccak256 and lands with the EIP-712 work (#10). Until then, proof relay is mitigated by TLS and the one-wallet-per-human binding.
-- Whether per-campaign actions must be pre-registered in the Developer Portal must be confirmed in the portal before testnet E2E (#13).
+- **Wallet-bound signal:** IDKit can bind the claimant wallet as the proof `signal`, and the backend can check `signal_hash`. This needs keccak256 and a verifier change. Until then, proof relay is mitigated by TLS and the one-wallet-per-human binding.
 
 ## Consequences
 

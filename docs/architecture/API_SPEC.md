@@ -148,6 +148,7 @@ Returns what IDKit needs to open a request (ADR-0007, #12):
 {
   "appId": "app_…",
   "action": "vham-campaign-<campaignId>",
+  "environment": "production",
   "rpContext": { "rp_id": "rp_…", "nonce": "0x00…", "created_at": 1791194400, "expires_at": 1791194700, "signature": "0x…" }
 }
 ```
