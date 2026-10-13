@@ -13,6 +13,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "indexer": "tsx src/indexer-worker.ts",
     "indexer:start": "node dist/indexer-worker.js",
+    "retention": "tsx src/retention-job.ts",
+    "retention:start": "node dist/retention-job.js",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {

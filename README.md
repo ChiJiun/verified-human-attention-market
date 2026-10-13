@@ -75,7 +75,7 @@ Copy `.env.example` to a local `.env` file when environment-specific values are 
 | Layer | Command | Covers | Needs |
 | --- | --- | --- | --- |
 | Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, every API endpoint (in-memory) | nothing |
-| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock | PostgreSQL 16 |
+| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock, retention/erasure | PostgreSQL 16 |
 | Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
 | ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |
 | End-to-end demo | `pnpm --filter @vham/api test:e2e` | full loop on a local chain, with final accounting checked | anvil + PostgreSQL |
@@ -91,7 +91,7 @@ pnpm test && pnpm --filter @vham/api test:e2e
 
 PostgreSQL tests skip when `TEST_DATABASE_URL` is unset. The e2e run wipes its database tables, so use a dedicated database. Only World ID is simulated. See [docs/DEMO.md](docs/DEMO.md) for details and Windows notes. CI runs the `javascript`, `e2e` and `solidity` jobs on every push and reports failures as annotations.
 
-Operating it: `GET /health/ready`, `GET /metrics` (Prometheus; `METRICS_TOKEN`), worker metrics on `INDEXER_METRICS_PORT`, alert rules and responses in [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md).
+Operating it: `GET /health/ready`, `GET /metrics` (Prometheus; `METRICS_TOKEN`), worker metrics on `INDEXER_METRICS_PORT`, alert rules and responses in [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md). Data retention runs in the indexer worker or via `pnpm --filter @vham/api retention` ([policy](docs/privacy/DATA_RETENTION.md)).
 
 ---
 
@@ -965,7 +965,7 @@ Add:
 - [ ] Basic fraud rules
 - [x] Observability
 - [ ] Admin/dispute tooling
-- [ ] Privacy/data retention policy
+- [x] Privacy/data retention policy
 
 ## P2 — Growth
 
@@ -1146,7 +1146,7 @@ Freeze the smallest problem worth proving before implementation begins.
 - [ ] Confirm current World ID integration path.
 - [ ] Decide gas model.
 - [ ] Define first reward model.
-- [ ] Define basic privacy/data-retention boundaries.
+- [x] Define basic privacy/data-retention boundaries.
 - [ ] Create ADRs for the major architecture decisions.
 
 ## Dependencies
@@ -1257,7 +1257,7 @@ Determine whether a real buyer will repeatedly pay for verified human completion
 - [ ] Basic fraud rules.
 - [ ] Basic reputation fields.
 - [x] Observability for API and blockchain failures.
-- [ ] Privacy/data-retention policy.
+- [x] Privacy/data-retention policy.
 - [ ] Admin/dispute tooling.
 
 ## P1 Deliverables
@@ -1414,7 +1414,7 @@ Operate with meaningful real funds and predictable incident handling.
 
 ## Privacy / Abuse
 
-- [ ] Data-retention enforcement.
+- [x] Data-retention enforcement.
 - [ ] User deletion/privacy workflow where applicable.
 - [ ] Malicious campaign/content moderation.
 - [ ] Phishing/scam controls.

@@ -9,11 +9,14 @@ import {
   IdempotencyConflictError,
   PostgresCampaignRepository,
 } from "../src/campaigns/repository.js";
+import { PostgresAuthRepository } from "../src/auth/repository.js";
 import { PostgresClaimRepository } from "../src/claims/repository.js";
 import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import {
   answers,
+  authNonces,
+  authSessions,
   campaigns,
   chainEvents,
   eligibility,
@@ -27,6 +30,7 @@ import {
   toMissionDefinition,
 } from "../src/missions/schemas.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
+import { applyRetention, eraseWallet } from "../src/privacy/retention.js";
 import {
   hashSubmissionRequest,
   PostgresSubmissionRepository,
@@ -77,6 +81,8 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     await database.db.delete(campaigns);
     await database.db.delete(chainEvents);
     await database.db.delete(reconciliationState);
+    await database.db.delete(authNonces);
+    await database.db.delete(authSessions);
   }
 
   beforeAll(async () => {
@@ -331,6 +337,197 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   describe("chain indexer persistence", () => {
     defineIndexerContract({
       repository: () => new PostgresChainEventRepository(database.db),
+    });
+  });
+
+  describe("retention (#22)", () => {
+    const eligibilityRepository = new PostgresEligibilityRepository(
+      database.db,
+    );
+    const submissionRepository = new PostgresSubmissionRepository(database.db);
+    const HEX64 = /^[0-9a-f]{64}$/;
+    const ADDRESS = /^0x[0-9a-f]{40}$/;
+
+    /** One participant with one submission (and one stored answer). */
+    async function participant(
+      campaignId: string,
+      wallet: string,
+      result: "accepted" | "rejected",
+    ) {
+      const participantKey = randomUUID().replace(/-/g, "").repeat(2);
+      const { eligibility: record } =
+        await eligibilityRepository.recordIdempotent({
+          id: randomUUID(),
+          campaignId,
+          participantKey,
+          claimantAddress: wallet,
+          provider: "world_id",
+          verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+          expiresAt: new Date("2026-10-05T11:20:00.000Z"),
+        });
+      const submissionAnswers = [
+        { questionId: "q1", normalizedAnswer: "a", score: "1" },
+      ];
+      const { submission } = await submissionRepository.recordIdempotent({
+        id: randomUUID(),
+        campaignId,
+        eligibilityId: record.id,
+        missionId: await missionIdFor(campaignId),
+        idempotencyKey: randomUUID(),
+        requestHash: hashSubmissionRequest({
+          campaignId,
+          claimantAddress: wallet,
+          answers: submissionAnswers,
+        }),
+        claimantAddress: wallet,
+        result,
+        rejectionCode: result === "rejected" ? "BELOW_THRESHOLD" : null,
+        answers: submissionAnswers,
+        createdAt: new Date("2026-10-05T10:30:00.000Z"),
+      });
+
+      return {
+        eligibilityId: record.id,
+        submissionId: submission.id,
+        participantKey,
+      };
+    }
+
+    async function load(ids: { eligibilityId: string; submissionId: string }) {
+      const [eligibilityRow] = await database.db
+        .select()
+        .from(eligibility)
+        .where(eq(eligibility.id, ids.eligibilityId));
+      const [submissionRow] = await database.db
+        .select()
+        .from(submissions)
+        .where(eq(submissions.id, ids.submissionId));
+      const answerRows = await database.db
+        .select()
+        .from(answers)
+        .where(eq(answers.submissionId, ids.submissionId));
+
+      return {
+        participantKey: eligibilityRow!.participantKey,
+        eligibilityWallet: eligibilityRow!.claimantAddress,
+        submissionWallet: submissionRow!.claimantAddress,
+        result: submissionRow!.result,
+        answers: answerRows.length,
+      };
+    }
+
+    it("erases one wallet only after claim issuance has settled", async () => {
+      const campaignId = await createCampaign();
+      const erased = `0x${"4".repeat(40)}`;
+      const kept = `0x${"5".repeat(40)}`;
+      const target = await participant(campaignId, erased, "rejected");
+      const other = await participant(campaignId, kept, "rejected");
+
+      // Before end + authorization TTL: nothing is touched yet.
+      const early = await eraseWallet(
+        database.db,
+        erased,
+        new Date("2026-10-05T11:20:00.000Z"),
+      );
+      expect(early.campaignsStillOpen).toBe(1);
+      expect((await load(target)).answers).toBe(1);
+
+      const result = await eraseWallet(
+        database.db,
+        erased,
+        new Date("2026-10-05T12:00:00.000Z"),
+      );
+      expect(result).toMatchObject({
+        answersDeleted: 1,
+        participantKeysRetired: 1,
+        walletLinksPseudonymized: 1,
+        campaignsStillOpen: 0,
+      });
+
+      const after = await load(target);
+      expect(after.answers).toBe(0);
+      expect(after.participantKey).toMatch(HEX64);
+      expect(after.participantKey).not.toBe(target.participantKey);
+      expect(after.eligibilityWallet).toMatch(ADDRESS);
+      expect(after.eligibilityWallet).not.toBe(erased);
+      expect(after.submissionWallet).not.toBe(erased);
+
+      // Other participants are untouched.
+      expect(await load(other)).toMatchObject({
+        participantKey: other.participantKey,
+        eligibilityWallet: kept,
+        answers: 1,
+      });
+    });
+
+    it("applies the retention policy idempotently and keeps settlement facts", async () => {
+      const campaignId = await createCampaign();
+      const paidWallet = `0x${"6".repeat(40)}`;
+      const unpaidWallet = `0x${"7".repeat(40)}`;
+      const paid = await participant(campaignId, paidWallet, "accepted");
+      const unpaid = await participant(campaignId, unpaidWallet, "rejected");
+
+      // 25 days after the campaign ended: within every retention window.
+      await applyRetention(database.db, new Date("2026-10-30T12:00:00.000Z"));
+      expect(await load(unpaid)).toMatchObject({
+        participantKey: unpaid.participantKey,
+        eligibilityWallet: unpaidWallet,
+        answers: 1,
+      });
+
+      const auth = new PostgresAuthRepository(database.db);
+      await auth.createNonce(
+        "old-nonce-123456",
+        new Date("2026-10-01T00:00:00.000Z"),
+        new Date("2026-10-01T00:10:00.000Z"),
+      );
+      await auth.createSession({
+        sessionId: randomUUID(),
+        tokenHash: "a".repeat(64),
+        address: paidWallet,
+        chainId: 84532,
+        createdAt: new Date("2026-10-01T00:00:00.000Z"),
+        expiresAt: new Date("2026-10-01T12:00:00.000Z"),
+      });
+
+      const result = await applyRetention(
+        database.db,
+        new Date("2026-11-10T12:00:00.000Z"),
+      );
+      expect(result.answersDeleted).toBeGreaterThanOrEqual(2);
+      expect(result.authNoncesDeleted).toBeGreaterThanOrEqual(1);
+      expect(result.authSessionsDeleted).toBeGreaterThanOrEqual(1);
+
+      // Paid participant: wallet and result stay (they match on-chain claims).
+      const paidAfter = await load(paid);
+      expect(paidAfter).toMatchObject({
+        eligibilityWallet: paidWallet,
+        submissionWallet: paidWallet,
+        result: "accepted",
+        answers: 0,
+      });
+      expect(paidAfter.participantKey).not.toBe(paid.participantKey);
+
+      // Unpaid participant: no remaining link to the wallet or the human.
+      const unpaidAfter = await load(unpaid);
+      expect(unpaidAfter.result).toBe("rejected");
+      expect(unpaidAfter.answers).toBe(0);
+      expect(unpaidAfter.eligibilityWallet).toMatch(ADDRESS);
+      expect(unpaidAfter.eligibilityWallet).not.toBe(unpaidWallet);
+      expect(unpaidAfter.submissionWallet).toBe(unpaidAfter.eligibilityWallet);
+      expect(unpaidAfter.participantKey).not.toBe(unpaid.participantKey);
+
+      // Idempotent: a second run changes nothing.
+      expect(
+        await applyRetention(database.db, new Date("2026-11-10T12:00:00.000Z")),
+      ).toEqual({
+        answersDeleted: 0,
+        participantKeysRetired: 0,
+        walletLinksPseudonymized: 0,
+        authNoncesDeleted: 0,
+        authSessionsDeleted: 0,
+      });
+      expect(await load(unpaid)).toEqual(unpaidAfter);
     });
   });
 });
