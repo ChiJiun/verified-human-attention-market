@@ -313,7 +313,35 @@ Process liveness only.
 
 ## GET /health/ready
 
-Checks required dependencies such as database and configured chain RPC without exposing secrets.
+Checks the database and, when a chain is configured, the RPC (`eth_blockNumber`).
+Returns `503` if any check fails. Only check names and `ok`/`error` are returned,
+never URLs, hosts or error messages:
+
+```json
+{
+  "status": "ok",
+  "checks": { "process": "ok", "database": "ok", "chain": "ok" },
+  "indexerLagBlocks": "2"
+}
+```
+
+`indexerLagBlocks` is `null` before the indexer's first pass and absent without
+a chain. Lag does not fail readiness (the API still serves); it is alerted on.
+
+# Observability (#21)
+
+- Every response carries `x-request-id`. A caller-supplied `x-request-id`
+  matching `[A-Za-z0-9._-]{8,128}` is reused (and logged as `requestId`);
+  otherwise the API generates a UUID.
+- Logs are structured JSON (pino). Authorization headers, cookies, proofs,
+  signatures, private keys and nullifiers are redacted; request bodies are
+  never logged. Rejections on critical paths are logged with route outcome
+  and campaign id only.
+- `GET /metrics` — Prometheus text format. Protected by
+  `Authorization: Bearer $METRICS_TOKEN` when set. The indexer worker exposes
+  its own `/metrics` on `INDEXER_METRICS_PORT`.
+
+See `docs/operations/RUNBOOK.md` for the metric list, alerts and responses.
 
 # Error Shape
 

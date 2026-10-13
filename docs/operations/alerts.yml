@@ -1,0 +1,83 @@
+# Prometheus alerting rules for the VHAM POC (#21).
+# Load with: rule_files: ["docs/operations/alerts.yml"]
+# Responses for each alert: docs/operations/RUNBOOK.md
+groups:
+  - name: vham-settlement
+    rules:
+      - alert: VhamPayoutAnomaly
+        expr: increase(vham_payout_anomalies_total[10m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Claim authorizations issued above the configured rate
+          runbook: docs/operations/RUNBOOK.md#vhampayoutanomaly
+
+      - alert: VhamSignerMismatch
+        expr: increase(vham_claim_authorizations_total{outcome="SIGNER_MISMATCH"}[10m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: API signer key differs from the contract's claim signer
+          runbook: docs/operations/RUNBOOK.md#vhamsignermismatch
+
+      - alert: VhamAccountingViolation
+        expr: vham_reconciliation_accounting_violations > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Indexed paid + refunded exceeds funded for a campaign
+          runbook: docs/operations/RUNBOOK.md#vhamaccountingviolation
+
+  - name: vham-chain
+    rules:
+      - alert: VhamIndexerLag
+        expr: vham_indexer_lag_blocks > 50
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Indexer is more than 50 blocks behind the chain head
+          runbook: docs/operations/RUNBOOK.md#vhamindexerlag
+
+      - alert: VhamIndexerStalled
+        expr: time() - vham_indexer_last_success_timestamp_seconds > 300
+        labels:
+          severity: page
+        annotations:
+          summary: No successful indexer pass in 5 minutes
+          runbook: docs/operations/RUNBOOK.md#vhamindexerstalled
+
+      - alert: VhamReorgBeyondConfirmations
+        expr: increase(vham_indexer_passes_total{result="reorg_beyond_confirmations"}[1h]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Reorg deeper than the confirmation depth; worker stopped
+          runbook: docs/operations/RUNBOOK.md#vhamreorgbeyondconfirmations
+
+      - alert: VhamRpcDown
+        expr: vham_rpc_up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: API cannot reach the chain RPC
+          runbook: docs/operations/RUNBOOK.md#vhamrpcdown
+
+  - name: vham-api
+    rules:
+      - alert: VhamWorldIdUnavailable
+        expr: increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
+        labels:
+          severity: warn
+        annotations:
+          summary: World ID verification is failing on the provider side
+          runbook: docs/operations/RUNBOOK.md#vhamworldidunavailable
+
+      - alert: VhamServerErrors
+        expr: sum(increase(vham_http_requests_total{status=~"5.."}[10m])) > 10
+        labels:
+          severity: warn
+        annotations:
+          summary: Elevated 5xx responses
+          runbook: docs/operations/RUNBOOK.md#vhamservererrors

@@ -86,10 +86,12 @@ Official references:
 | Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
 | Advertiser analytics | ✅ Reconciled, advertiser-only via SIWE (#20, #37) |
+| Observability | ✅ Request ids, redacted JSON logs, Prometheus metrics, payout anomaly alert, runbook (#21) |
 | Web flows | ⬜ #11, #12 |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9); IDKit widget + RP signing with #12 |
 | Testnet deployment | ⬜ Runbook ready (docs/deployment/TESTNET.md); needs owner keystore + RPC |
+| Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
 
 ## Remaining Gate Before Implementation
 

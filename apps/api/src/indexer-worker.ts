@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import {
   autoLinkCreatedCampaigns,
@@ -8,6 +10,7 @@ import { PostgresChainEventRepository } from "./chain/events-repository.postgres
 import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
+import { MetricsRegistry } from "./observability/metrics.js";
 
 /**
  * Long-running chain indexer process (issue #17).
@@ -48,6 +51,58 @@ const config = {
   maxBlockRange,
 };
 
+// Prometheus metrics for the worker (#21). Optional: INDEXER_METRICS_PORT.
+const metrics = new MetricsRegistry();
+const gauges = {
+  head: metrics.gauge("vham_indexer_head_block", "Chain head at the last pass"),
+  confirmed: metrics.gauge(
+    "vham_indexer_confirmed_block",
+    "Latest confirmed block indexed",
+  ),
+  lag: metrics.gauge("vham_indexer_lag_blocks", "Head minus confirmed block"),
+  lastSuccess: metrics.gauge(
+    "vham_indexer_last_success_timestamp_seconds",
+    "Unix time of the last successful pass",
+  ),
+  violations: metrics.gauge(
+    "vham_reconciliation_accounting_violations",
+    "Campaigns whose paid + refunded exceeds funded (must be 0)",
+  ),
+  ambiguous: metrics.gauge(
+    "vham_reconciliation_ambiguous_campaigns",
+    "On-chain campaigns that need manual linking",
+  ),
+};
+const passes = metrics.counter(
+  "vham_indexer_passes_total",
+  "Indexer passes by result",
+);
+const metricsPort = process.env.INDEXER_METRICS_PORT
+  ? Number(process.env.INDEXER_METRICS_PORT)
+  : null;
+
+if (
+  metricsPort !== null &&
+  (!Number.isInteger(metricsPort) || metricsPort < 1 || metricsPort > 65_535)
+) {
+  throw new Error("INDEXER_METRICS_PORT must be a TCP port");
+}
+
+const metricsServer =
+  metricsPort === null
+    ? null
+    : createServer((request, response) => {
+        if (request.url !== "/metrics") {
+          response.writeHead(404).end();
+          return;
+        }
+        response
+          .writeHead(200, {
+            "content-type": "text/plain; version=0.0.4; charset=utf-8",
+          })
+          .end(metrics.render());
+      }).listen(metricsPort, "0.0.0.0");
+
 let stopping = false;
 const stop = () => {
   stopping = true;
@@ -70,6 +125,9 @@ let backoffMs = pollMs;
 while (!stopping) {
   try {
     const result = await indexOnce(rpc, repository, config);
+    gauges.head.set(Number(result.head));
+    gauges.confirmed.set(Number(result.confirmedThrough));
+    gauges.lag.set(Number(result.head - result.confirmedThrough));
     log("info", "indexer pass", {
       head: result.head.toString(),
       confirmedThrough: result.confirmedThrough.toString(),
@@ -107,6 +165,11 @@ while (!stopping) {
       });
     }
 
+    gauges.violations.set(statuses.accountingViolations.length);
+    gauges.ambiguous.set(autoLinked.ambiguous.length);
+    gauges.lastSuccess.set(Math.floor(Date.now() / 1000));
+    passes.inc({ result: "success" });
+
     if (statuses.accountingViolations.length > 0) {
       log("error", "ACCOUNTING VIOLATION: paid + refunded exceeds funded", {
         campaignIds: statuses.accountingViolations,
@@ -115,6 +178,13 @@ while (!stopping) {
 
     backoffMs = pollMs;
   } catch (error) {
+    passes.inc({
+      result:
+        error instanceof ReorgBeyondConfirmationsError
+          ? "reorg_beyond_confirmations"
+          : "failure",
+    });
+
     if (error instanceof ReorgBeyondConfirmationsError) {
       // Do not guess: settlement data may be wrong. Requires an operator.
       log("error", error.message, { block: error.blockNumber.toString() });
@@ -131,4 +201,5 @@ while (!stopping) {
   await new Promise((resolve) => setTimeout(resolve, backoffMs));
 }
 
+metricsServer?.close();
 await database.close();
