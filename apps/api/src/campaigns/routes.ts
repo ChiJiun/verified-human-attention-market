@@ -26,7 +26,7 @@ interface CampaignRoutesOptions {
   repository: CampaignRepository;
   chainId: number;
   now?: () => Date;
-  contentUrlPolicy?: ContentUrlPolicy;
+  contentUrlPolicy?: ContentUrlPolicy | undefined;
   /** Runs after create and on idempotent replays (e.g. moderation state). */
   onCampaignCreated?: (campaign: CampaignRecord) => Promise<void>;
 }
