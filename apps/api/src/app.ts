@@ -39,6 +39,13 @@ import {
 } from "./submissions/repository.js";
 import { registerSubmissionRoutes } from "./submissions/routes.js";
 import {
+  generateRequestId,
+  LOGGER_REDACT_PATHS,
+  registerInstrumentation,
+} from "./observability/instrumentation.js";
+import { MetricsRegistry } from "./observability/metrics.js";
+import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
+import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
@@ -61,13 +68,22 @@ export interface AppDependencies {
   /** HMAC secret for participant keys; eligibility fails closed without it. */
   participantKeySecret?: string | null;
   chainId?: number;
+  metrics?: MetricsRegistry;
+  /** Bearer token for GET /metrics; null or absent = unauthenticated. */
+  metricsToken?: string | null;
+  payoutAnomalies?: PayoutAnomalyDetector;
   close?: () => Promise<void>;
   now?: () => Date;
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
   const app = Fastify({
-    logger: process.env.NODE_ENV !== "test",
+    logger:
+      process.env.NODE_ENV === "test"
+        ? false
+        : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
+    genReqId: generateRequestId,
+    requestIdLogLabel: "requestId",
   });
 
   const campaignRepository =
@@ -91,29 +107,80 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const authenticate =
     dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   const chainId = dependencies.chainId ?? 84532;
+  const chain = dependencies.chain ?? null;
+  const metrics = dependencies.metrics ?? new MetricsRegistry();
+
+  const indexerLag = metrics.gauge(
+    "vham_indexer_lag_blocks",
+    "Chain head minus the indexer's latest confirmed block",
+  );
+  const chainHead = metrics.gauge("vham_chain_head_block", "Latest RPC block");
+  const rpcUp = metrics.gauge("vham_rpc_up", "1 when the chain RPC answers");
+
+  /** Head and confirmed-cursor lag; throws when the RPC is unreachable. */
+  async function chainStatus() {
+    if (!chain) return null;
+
+    let head: bigint;
+    try {
+      head = await chain.rpc.blockNumber();
+    } catch (error) {
+      rpcUp.set(0);
+      throw error;
+    }
+    rpcUp.set(1);
+    chainHead.set(Number(head));
+
+    const cursor = await chain.events.getCursor({
+      chainId: chain.chain.chainId,
+      contractAddress: chain.chain.contractAddress,
+    });
+    const lag = cursor ? head - cursor.latestConfirmedBlock : null;
+    if (lag !== null) indexerLag.set(Number(lag));
+    return { head, lag };
+  }
+
+  registerInstrumentation(app, {
+    metrics,
+    payoutAnomalies:
+      dependencies.payoutAnomalies ?? new PayoutAnomalyDetector(),
+    metricsToken: dependencies.metricsToken ?? null,
+    now,
+    collect: async () => {
+      await chainStatus();
+    },
+  });
 
   app.get("/health/live", async () => ({ status: "ok" }));
 
   app.get("/health/ready", async (_request, reply) => {
+    const checks: Record<string, string> = { process: "ok" };
+    let indexerLagBlocks: string | null | undefined;
+
     try {
       await campaignRepository.ping();
-
-      return {
-        status: "ok",
-        checks: {
-          process: "ok",
-          database: "ok",
-        },
-      };
+      checks.database = "ok";
     } catch {
-      return reply.status(503).send({
-        status: "error",
-        checks: {
-          process: "ok",
-          database: "error",
-        },
-      });
+      checks.database = "error";
     }
+
+    if (chain) {
+      try {
+        const status = await chainStatus();
+        checks.chain = "ok";
+        indexerLagBlocks = status?.lag?.toString() ?? null;
+      } catch {
+        checks.chain = "error";
+      }
+    }
+
+    const healthy = Object.values(checks).every((value) => value === "ok");
+    // Only check names and states: never URLs, hosts or error messages.
+    return reply.status(healthy ? 200 : 503).send({
+      status: healthy ? "ok" : "error",
+      checks,
+      ...(indexerLagBlocks === undefined ? {} : { indexerLagBlocks }),
+    });
   });
 
   app.register(async (instance) => {
@@ -144,7 +211,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       authenticate,
       campaigns: campaignRepository,
       submissions: submissionRepository,
-      chain: dependencies.chain ?? null,
+      chain,
     });
 
     await registerSubmissionRoutes(instance, {

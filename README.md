@@ -74,7 +74,7 @@ Copy `.env.example` to a local `.env` file when environment-specific values are 
 
 | Layer | Command | Covers | Needs |
 | --- | --- | --- | --- |
-| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, every API endpoint (in-memory) | nothing |
+| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, every API endpoint (in-memory) | nothing |
 | PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock | PostgreSQL 16 |
 | Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
 | ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |
@@ -90,6 +90,8 @@ pnpm test && pnpm --filter @vham/api test:e2e
 ```
 
 PostgreSQL tests skip when `TEST_DATABASE_URL` is unset. The e2e run wipes its database tables, so use a dedicated database. Only World ID is simulated. See [docs/DEMO.md](docs/DEMO.md) for details and Windows notes. CI runs the `javascript`, `e2e` and `solidity` jobs on every push and reports failures as annotations.
+
+Operating it: `GET /health/ready`, `GET /metrics` (Prometheus; `METRICS_TOKEN`), worker metrics on `INDEXER_METRICS_PORT`, alert rules and responses in [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md).
 
 ---
 
@@ -957,11 +959,11 @@ Add:
 ## P1 — MVP quality
 
 - [ ] Campaign expiration/refund
-- [ ] Event indexer
-- [ ] Advertiser analytics
+- [x] Event indexer
+- [x] Advertiser analytics
 - [ ] Basic reputation
 - [ ] Basic fraud rules
-- [ ] Observability
+- [x] Observability
 - [ ] Admin/dispute tooling
 - [ ] Privacy/data retention policy
 
@@ -1249,12 +1251,12 @@ Determine whether a real buyer will repeatedly pay for verified human completion
 - [ ] Campaign expiration/refund.
 - [ ] Basic advertiser dashboard.
 - [ ] User mission feed.
-- [ ] Basic campaign analytics.
-- [ ] Event indexing.
-- [ ] Mission result storage.
+- [x] Basic campaign analytics.
+- [x] Event indexing.
+- [x] Mission result storage.
 - [ ] Basic fraud rules.
 - [ ] Basic reputation fields.
-- [ ] Observability for API and blockchain failures.
+- [x] Observability for API and blockchain failures.
 - [ ] Privacy/data-retention policy.
 - [ ] Admin/dispute tooling.
 

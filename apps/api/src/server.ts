@@ -71,6 +71,14 @@ const worldIdVerifier =
         })
       : new UnconfiguredWorldIdVerifier();
 
+// Optional bearer token for GET /metrics (scraper credential, not a secret
+// worth a key manager, but keep it out of logs and the repository).
+const metricsToken = process.env.METRICS_TOKEN || null;
+
+if (metricsToken !== null && metricsToken.length < 16) {
+  throw new Error("METRICS_TOKEN must be at least 16 characters");
+}
+
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 const claimSigner = process.env.CLAIM_SIGNER_PRIVATE_KEY
@@ -99,6 +107,7 @@ const app = buildApp({
   worldIdVerifier,
   participantKeySecret,
   chainId,
+  metricsToken,
   chain: chainConfig
     ? {
         rpc: new JsonRpcClient(chainConfig.rpcUrl),
@@ -113,6 +122,10 @@ const app = buildApp({
     : null,
   close: database.close,
 });
+
+if (!metricsToken) {
+  app.log.warn("GET /metrics is unauthenticated: set METRICS_TOKEN");
+}
 
 if (!siweDomain) {
   app.log.warn("SIWE sign-in is disabled: set SIWE_DOMAIN");
