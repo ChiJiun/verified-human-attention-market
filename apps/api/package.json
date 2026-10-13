@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "indexer": "tsx src/indexer-worker.ts",
-    "indexer:start": "node dist/indexer-worker.js"
+    "indexer:start": "node dist/indexer-worker.js",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "drizzle-orm": "0.45.3",

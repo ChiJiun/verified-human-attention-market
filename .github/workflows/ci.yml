@@ -97,6 +97,95 @@ jobs:
           fi
           exit "$status"
 
+  e2e:
+    # Local-chain end-to-end POC (issue #13): real contracts on anvil, real
+    # API + PostgreSQL; only World ID is simulated.
+    runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vham_e2e
+      E2E_RPC_URL: http://127.0.0.1:8545
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vham_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vham_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.4
+
+      - name: Build contracts
+        working-directory: packages/contracts
+        run: forge build
+
+      - name: Start anvil
+        run: |
+          anvil --silent > anvil.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -sf -X POST -H "content-type: application/json" \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+              "$E2E_RPC_URL" > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::anvil did not start"
+          exit 1
+
+      - name: End-to-end POC
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
+        run: |
+          pnpm --filter @vham/api test:e2e 2>&1 | tee e2e.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            python3 - <<'PY'
+          import re
+          lines = open("e2e.log", encoding="utf-8", errors="replace").read().splitlines()
+          blocks, current = [], None
+          for line in lines:
+              if re.search(r"FAIL|Error|AssertionError|expected", line):
+                  current = [line.strip()]
+                  blocks.append(current)
+              elif current is not None and len(current) < 25:
+                  current.append(line.rstrip())
+          if not blocks:
+              blocks = [lines[-40:]]
+          for block in blocks[:9]:
+              print("::error::" + "%0A".join(block)[:4000])
+          PY
+          fi
+          exit "$status"
+
   solidity:
     runs-on: ubuntu-latest
     defaults:
