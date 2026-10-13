@@ -423,6 +423,8 @@ describe("error model (#26)", () => {
       "signer.ts",
       "world-id.ts",
       "catalog.ts",
+      // Reconciliation finding kinds, not HTTP error codes.
+      "check.ts",
     ]);
     const files: string[] = [];
     const walk = (dir: string) => {
