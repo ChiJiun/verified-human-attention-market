@@ -212,7 +212,7 @@ const app = buildApp({
   metricsToken,
   apiClientRepository: new PostgresApiClientRepository(database.db),
   rateLimits,
-  trustProxy: trustProxy === 0 ? false : trustProxy,
+  trustProxyHops: trustProxy,
   moderationRepository: new PostgresModerationRepository(database.db),
   moderation: { mode: moderationMode, operators, advertiserAllowlist },
   contentUrlPolicy: { allowedDomains: allowedContentDomains },
