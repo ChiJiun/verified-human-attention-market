@@ -74,6 +74,8 @@ export interface AppDependencies {
   /** Overrides session lookup (tests of non-auth features). */
   authenticate?: Authenticate;
   claimSigner?: ClaimSigner | null;
+  /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
+  dailyPayoutLimitAtomic?: bigint | null;
   worldIdVerifier?: WorldIdVerifier;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
@@ -267,6 +269,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       submissions: submissionRepository,
       claims: claimRepository,
       signer: dependencies.claimSigner ?? null,
+      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
       chain: dependencies.chain
         ? {
             chainId: dependencies.chain.chain.chainId,

@@ -28,6 +28,22 @@ groups:
           summary: Indexed paid + refunded exceeds funded for a campaign
           runbook: docs/operations/RUNBOOK.md#vhamaccountingviolation
 
+      - alert: VhamSignerUnavailable
+        expr: increase(vham_claim_authorizations_total{outcome="SIGNER_UNAVAILABLE"}[10m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Signing service failed or returned an unverifiable signature
+          runbook: docs/operations/RUNBOOK.md#vhamsignerunavailable
+
+      - alert: VhamDailyPayoutLimit
+        expr: increase(vham_claim_authorizations_total{outcome="DAILY_LIMIT_REACHED"}[30m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: 24 h payout limit reached; new claims are refused
+          runbook: docs/operations/RUNBOOK.md#vhamdailypayoutlimit
+
   - name: vham-chain
     rules:
       - alert: VhamIndexerLag

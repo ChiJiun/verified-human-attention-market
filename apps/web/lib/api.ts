@@ -97,6 +97,9 @@ export function describeError(error: unknown): string {
     CAMPAIGN_NOT_APPROVED:
       "This campaign is awaiting moderation review and cannot be published or joined yet.",
     CAMPAIGN_TAKEN_DOWN: "This campaign was removed after review.",
+    SIGNER_UNAVAILABLE: "Rewards are temporarily unavailable. Please retry.",
+    DAILY_LIMIT_REACHED:
+      "Today's reward limit has been reached. Please try again later.",
     UNSAFE_CONTENT_URL:
       "The content URL is not allowed (https on a public domain, no credentials or ports).",
   };
