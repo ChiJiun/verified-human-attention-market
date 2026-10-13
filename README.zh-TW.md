@@ -68,6 +68,53 @@ forge test -vv
 
 需要環境變數時，將 `.env.example` 複製成自己的 `.env`；不得把真實 private key、API key 或其他 credential commit 進 repository。
 
+### 測試說明
+
+| 層級 | 指令 | 內容 | 需要 |
+| --- | --- | --- | --- |
+| 單元 + API 測試 | `pnpm test` | 驗證器、World ID、SIWE、EIP-712 授權、indexer、鏈上對帳、各 API 端點（記憶體版） | 無 |
+| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖 | PostgreSQL 16 |
+| 合約 | `cd packages/contracts && forge test -vv` | 單元、fuzz、stateful invariant（預算守恆、完成上限）、部署腳本、事件 topic | Foundry |
+| ABI 一致性 | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | 共用 ABI 與編譯結果一致 | Foundry |
+| 端到端 demo | `pnpm --filter @vham/api test:e2e` | 本機鏈上跑完整流程：登入 → 建立 → 入金 → 驗證 → 作答 → 簽授權 → 鏈上領取 → 關閉 → 退款，最後核對金額 | anvil + PostgreSQL，見下方 |
+
+**PostgreSQL（給整合測試和 e2e 用）：**
+
+```bash
+docker run --rm --name vham-pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham_test \
+  postgres:16-alpine
+export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_test
+pnpm test
+```
+
+沒有設定 `TEST_DATABASE_URL` 時，PostgreSQL 測試會 skip，不會失敗。CI 一定會跑這些測試。
+
+**端到端 demo（三個終端機）：**
+
+```bash
+# 1. 資料庫：同上的 docker run，資料庫名改用 vham_e2e（每次執行都會清空資料表）
+# 2. 本機鏈（Windows 請在 WSL 裡執行）
+anvil
+# 3. 編譯合約並執行
+(cd packages/contracts && forge build)
+export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
+export E2E_RPC_URL=http://127.0.0.1:8545
+pnpm --filter @vham/api test:e2e
+```
+
+Windows PowerShell 請改用 `$env:TEST_DATABASE_URL = "..."` 設定變數。完整步驟、預期輸出和注意事項見 [docs/DEMO.md](docs/DEMO.md)。e2e 只模擬 World ID（需要 World App），其餘都是真的元件。
+
+**只跑部分測試：**
+
+```bash
+pnpm --filter @vham/api exec vitest run auth        # 依檔名過濾
+pnpm --filter @vham/api exec vitest run -t "reorg"  # 依測試名稱過濾
+cd packages/contracts && forge test --match-contract EventTopicsTest -vv
+```
+
+**CI：** 每次 push 都會跑 `javascript`（typecheck、lint、test、build、format）、`e2e`（本機鏈端到端）、`solidity`（fmt、build、ABI 檢查、test）三個 job。失敗原因會寫成 GitHub annotation，在 PR 的 Checks 頁就看得到。
+
 ---
 
 ## 1. 要解決的問題
