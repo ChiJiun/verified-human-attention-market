@@ -88,7 +88,7 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-Status as of 2026-10-12 (verify against GitHub, which is authoritative):
+Status as of 2026-10-13 (verify against GitHub, which is authoritative):
 
 Done on `main`:
 
@@ -102,14 +102,18 @@ Done on `main`:
 - #10 EIP-712 claim authorization: live on-chain checks, cap = paid + unexpired outstanding, reissue of expired unredeemed authorizations
 - #37 Sign-In with Ethereum; advertiser-only endpoints
 - #13 (local part): `e2e` CI job runs the full economic loop on anvil, see `docs/DEMO.md`
+- #11 advertiser web flow; #12 participant flow with simulated World ID on anvil
+- M2: #21 observability, #22 privacy/retention, #24 moderation, #23 signer custody + payout limits (ADR-0008)
+- M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
+- #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
 Next, in dependency order:
 
-1. **#11 / #12 — web flows** (wallet connect, SIWE, IDKit + RP signature endpoint, claim UX). Needs `wagmi`, `@tanstack/react-query`, `@worldcoin/idkit` in `apps/web` and `@worldcoin/idkit-core` in `apps/api`.
+1. **#12 remainder — real World ID** (IDKit widget + RP signature endpoint). Needs `@worldcoin/idkit` in `apps/web` and `@worldcoin/idkit-core` in `apps/api`.
 2. **#19 remainder** — import the canonical ABI from `@vham/shared` at runtime; record the real testnet deployment.
 3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
 
-Dependencies not yet in the lockfile: `viem` (web), `wagmi` + `@tanstack/react-query` + `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). `viem` is already in `apps/api`. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+Dependencies not yet in the lockfile: `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
@@ -599,7 +603,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is **#11 / #12** (see §4), unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is the **#12 remainder** (real World ID), then #19/#13 on Base Sepolia (see §4), unless GitHub state shows that work has already advanced.
 
 ---
 
