@@ -198,6 +198,9 @@ export async function registerOnchainRoutes(
       const submissions = await dependencies.submissions.countByCampaign(
         campaign.id,
       );
+      const quality = await dependencies.submissions.qualitySummary(
+        campaign.id,
+      );
       const budget = (
         BigInt(campaign.rewardAtomic) * BigInt(campaign.maxCompletions)
       ).toString();
@@ -229,6 +232,10 @@ export async function registerOnchainRoutes(
         submissions: {
           accepted: submissions.accepted,
           rejected: submissions.rejected,
+          // Fraud-adjusted view (#25): raw accepted minus flagged accepted.
+          flaggedAccepted: quality.flaggedAccepted,
+          adjustedAccepted: submissions.accepted - quality.flaggedAccepted,
+          flagReasons: quality.reasons,
         },
         settlement,
       });

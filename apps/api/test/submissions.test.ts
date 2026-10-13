@@ -144,6 +144,48 @@ async function setup() {
 }
 
 describe("POST /v1/campaigns/:id/submissions", () => {
+  it("records quality reason codes for advertisers but never shows them to participants (#25)", async () => {
+    const { app, campaignId, verify, submit, setNow } = await setup();
+
+    // Submitted the same second as verification: too fast to have read.
+    const fast = await submit("fast", {
+      eligibilityToken: await verify("human-fast", WALLET_A),
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+    expect(fast.statusCode).toBe(201);
+    expect(fast.body).not.toContain("FAST_COMPLETION");
+    expect(fast.body).not.toContain("quality");
+
+    // Wrong, then right on the second attempt, after a realistic read.
+    const token = await verify("human-retry", WALLET_B);
+    setNow(new Date("2026-10-05T10:30:30.000Z"));
+    await submit("retry-1", {
+      eligibilityToken: token,
+      claimant: WALLET_B,
+      answers: WRONG,
+    });
+    await submit("retry-2", {
+      eligibilityToken: token,
+      claimant: WALLET_B,
+      answers: CORRECT,
+    });
+
+    const analytics = await app.inject({
+      method: "GET",
+      url: `/v1/campaigns/${campaignId}/analytics`,
+    });
+    expect(analytics.json()).toMatchObject({
+      submissions: {
+        accepted: 2,
+        rejected: 1,
+        flaggedAccepted: 2,
+        adjustedAccepted: 0,
+        flagReasons: { FAST_COMPLETION: 1, PASSED_ON_RETRY: 1 },
+      },
+    });
+  });
+
   it("accepts a verified human with correct answers", async () => {
     const { verify, submit } = await setup();
     const token = await verify("human-1", WALLET_A);

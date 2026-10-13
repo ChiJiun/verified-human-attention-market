@@ -67,6 +67,7 @@ Official references:
 | ADR-0006 On-chain Exposure Limits | ✅ Accepted |
 | ADR-0007 World ID Integration | ✅ Accepted |
 | ADR-0008 Signer Custody and Payout Limits | ✅ Accepted |
+| ADR-0009 Quality Signals and Reputation Scope | ✅ Accepted |
 | API Spec v0 | ✅ Drafted |
 | Contract Spec v0 | ✅ Drafted |
 | Data Model v0 | ✅ Drafted |
@@ -93,6 +94,7 @@ Official references:
 | Signer custody / payout limits | ✅ KMS signing service, rotation + pause drills, 24 h limit (#23, ADR-0008) |
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
+| Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ⬜ #11, #12 |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9); IDKit widget + RP signing with #12 |

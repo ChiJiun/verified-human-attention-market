@@ -425,6 +425,8 @@ describe("error model (#26)", () => {
       "catalog.ts",
       // Reconciliation finding kinds, not HTTP error codes.
       "check.ts",
+      // Quality reason codes are analytics data, not HTTP error codes.
+      "signals.ts",
     ]);
     const files: string[] = [];
     const walk = (dir: string) => {

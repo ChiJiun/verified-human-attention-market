@@ -29,6 +29,7 @@
 | Payout wallet, paid (accepted) | same | Personal data, also public on-chain | Life of the campaign record (settlement, disputes) | — |
 | Mission answers | `answers` | Behavior | Campaign end + 30 days, then deleted | `applyRetention` |
 | Submission result, rejection code, claim nonce/signature | `submissions` | Settlement / aggregate | Life of the campaign record | — |
+| Quality reason codes (#25) | `submissions.quality_flags` | Behaviour-derived, campaign-scoped, no identity | Life of the campaign record; shown to advertisers only as aggregates | — |
 | Advertiser wallet, campaign content | `campaigns`, `missions` | Business record | Life of the campaign record | — |
 | SIWE nonces | `auth_nonces` | Security | Expiry + 1 day | `applyRetention` |
 | SIWE sessions (address, `sha256(token)`) | `auth_sessions` | Security / personal | Expiry or revocation + 30 days | `applyRetention` |

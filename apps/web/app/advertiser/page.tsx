@@ -29,7 +29,13 @@ interface Analytics {
   onchainCampaignId: string | null;
   status: string;
   plannedBudget: string;
-  submissions: { accepted: number; rejected: number };
+  submissions: {
+    accepted: number;
+    rejected: number;
+    flaggedAccepted: number;
+    adjustedAccepted: number;
+    flagReasons: Record<string, number>;
+  };
   settlement: {
     confirmed: {
       funded: string;
@@ -372,6 +378,14 @@ export default function AdvertiserPage() {
               <dd>
                 {analytics.submissions.accepted} /{" "}
                 {analytics.submissions.rejected}
+              </dd>
+              <dt>Quality-adjusted accepted</dt>
+              <dd>
+                {analytics.submissions.adjustedAccepted}
+                {analytics.submissions.flaggedAccepted > 0 &&
+                  ` (${Object.entries(analytics.submissions.flagReasons)
+                    .map(([reason, count]) => `${reason} ×${count}`)
+                    .join(", ")})`}
               </dd>
               {analytics.settlement && (
                 <>
