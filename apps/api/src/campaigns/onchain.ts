@@ -35,10 +35,12 @@ export async function readOnchainCampaign(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: string,
   onchainCampaignId: string,
+  block?: bigint,
 ): Promise<OnchainCampaign | null> {
   const result = await rpc.call(
     contractAddress,
     `${FUNCTION_SELECTORS.campaigns}${word(BigInt(onchainCampaignId))}`,
+    block,
   );
   const body = result.startsWith("0x") ? result.slice(2) : result;
 

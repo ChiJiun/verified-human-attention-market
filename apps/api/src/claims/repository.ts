@@ -1,4 +1,4 @@
-import { and, count, eq, gt, ne, sql } from "drizzle-orm";
+import { and, count, eq, gt, isNotNull, ne, sql } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
 import type { Database } from "../db/client.js";
@@ -43,8 +43,15 @@ export interface ClaimIssueResult {
   created: boolean;
 }
 
+export interface IssuedClaim {
+  claimant: string;
+  nonce: string;
+}
+
 export interface ClaimRepository {
   issueOnce(input: ClaimIssueInput): Promise<ClaimIssueResult>;
+  /** Latest authorization per accepted submission (for reconciliation). */
+  listIssuedClaims(campaignId: string): Promise<IssuedClaim[]>;
 }
 
 function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
@@ -208,6 +215,23 @@ export class PostgresClaimRepository implements ClaimRepository {
       return { claim, created: true };
     });
   }
+
+  async listIssuedClaims(campaignId: string): Promise<IssuedClaim[]> {
+    const rows = await this.db
+      .select({
+        claimant: submissions.claimantAddress,
+        nonce: submissions.claimNonce,
+      })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.campaignId, campaignId),
+          eq(submissions.result, "accepted"),
+          isNotNull(submissions.claimNonce),
+        ),
+      );
+    return rows.map((row) => ({ claimant: row.claimant, nonce: row.nonce! }));
+  }
 }
 
 /** Test/local repository with the same one-time issuance and cap behavior. */
@@ -296,5 +320,14 @@ export class InMemoryClaimRepository implements ClaimRepository {
     } finally {
       release();
     }
+  }
+
+  async listIssuedClaims(campaignId: string): Promise<IssuedClaim[]> {
+    return [...this.records.values()]
+      .filter((record) => record.campaignId === campaignId)
+      .map((record) => ({
+        claimant: record.claim.payload.claimant.toLowerCase(),
+        nonce: record.claim.payload.nonce.toLowerCase(),
+      }));
   }
 }

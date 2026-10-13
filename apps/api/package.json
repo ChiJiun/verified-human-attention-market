@@ -15,6 +15,8 @@
     "indexer:start": "node dist/indexer-worker.js",
     "retention": "tsx src/retention-job.ts",
     "retention:start": "node dist/retention-job.js",
+    "reconcile": "tsx src/reconcile-job.ts",
+    "reconcile:start": "node dist/reconcile-job.js",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {

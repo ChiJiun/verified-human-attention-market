@@ -186,6 +186,13 @@ jobs:
           fi
           exit "$status"
 
+      # Production-readiness drill (#29): the database the e2e run just
+      # filled must survive pg_dump → pg_restore unchanged.
+      - name: Backup and restore drill
+        env:
+          PG_TOOLS: docker run --rm -i --network host postgres:16-alpine
+        run: scripts/db/backup-restore-check.sh "$TEST_DATABASE_URL"
+
   solidity:
     runs-on: ubuntu-latest
     defaults:
