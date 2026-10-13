@@ -9,6 +9,8 @@ import {
   IdempotencyConflictError,
   PostgresCampaignRepository,
 } from "../src/campaigns/repository.js";
+import { PostgresClaimRepository } from "../src/claims/repository.js";
+import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import {
   answers,
@@ -25,7 +27,10 @@ import {
   toMissionDefinition,
 } from "../src/missions/schemas.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
-import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
+import {
+  hashSubmissionRequest,
+  PostgresSubmissionRepository,
+} from "../src/submissions/repository.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
 
@@ -247,6 +252,78 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       createCampaign,
       missionIdFor,
     }));
+  });
+
+  it("persists one signed claim under concurrent retries", async () => {
+    const campaignId = await createCampaign();
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: "7",
+      publishTxHash: `0x${"a".repeat(64)}`,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    const claimantAddress = `0x${"3".repeat(40)}`;
+    const eligibilityRecord = await new PostgresEligibilityRepository(
+      database.db,
+    ).recordIdempotent({
+      id: randomUUID(),
+      campaignId,
+      participantKey: "e".repeat(64),
+      claimantAddress,
+      provider: "world_id",
+      verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+      expiresAt: new Date("2026-10-05T11:20:00.000Z"),
+    });
+    const answers = [{ questionId: "q1", normalizedAnswer: "a", score: "1" }];
+    const submissionRecord = await new PostgresSubmissionRepository(
+      database.db,
+    ).recordIdempotent({
+      id: randomUUID(),
+      campaignId,
+      eligibilityId: eligibilityRecord.eligibility.id,
+      missionId: await missionIdFor(campaignId),
+      idempotencyKey: randomUUID(),
+      requestHash: hashSubmissionRequest({
+        campaignId,
+        claimantAddress,
+        answers,
+      }),
+      claimantAddress,
+      result: "accepted",
+      rejectionCode: null,
+      answers,
+      createdAt: new Date("2026-10-05T10:30:00.000Z"),
+    });
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const claims = new PostgresClaimRepository(database.db);
+    const now = new Date("2026-10-05T10:31:00.000Z");
+    const input = {
+      campaignId,
+      submissionId: submissionRecord.submission.id,
+      now,
+      canIssue: true,
+      sign: () =>
+        signer.sign({
+          campaignId: 7n,
+          claimant: claimantAddress as `0x${string}`,
+          amount: 1000000n,
+          chainId: 84532,
+          contractAddress: `0x${"2".repeat(40)}`,
+          issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
+        }),
+    };
+    const [first, second] = await Promise.all([
+      claims.issueOnce(input),
+      claims.issueOnce(input),
+    ]);
+    expect(first.claim.signature).toBe(second.claim.signature);
+    expect([first.created, second.created].sort()).toEqual([false, true]);
+    const [saved] = await database.db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.id, input.submissionId));
+    expect(saved?.claimSignature).toBe(first.claim.signature);
+    expect(saved?.claimNonce).toBe(first.claim.payload.nonce);
   });
 
   describe("chain indexer persistence", () => {

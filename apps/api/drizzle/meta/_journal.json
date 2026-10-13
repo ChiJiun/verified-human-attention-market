@@ -43,6 +43,13 @@
       "when": 1791772680174,
       "tag": "0005_campaign_publish",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791777885091,
+      "tag": "0006_little_infant_terrible",
+      "breakpoints": true
     }
   ]
 }

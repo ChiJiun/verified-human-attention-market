@@ -62,6 +62,14 @@ contract CampaignManagerTest {
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
 
+    // Cross-language fixture: apps/api/test/claims.test.ts computes the same
+    // value from the viem EIP-712 type definition.
+    function test_ClaimAuthorizationTypehashMatchesBackend() public view {
+        assert(
+            manager.CLAIM_AUTHORIZATION_TYPEHASH() == 0x86a1a13468402e9b0394c5b7beb1420b8cc67d43a7a2711d5a0a49d0d2d6408b
+        );
+    }
+
     MockUSDC private token;
     CampaignManager private manager;
 

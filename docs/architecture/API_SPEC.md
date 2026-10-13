@@ -222,6 +222,23 @@ Accepted response:
 }
 ```
 
+# Claims
+
+## POST /v1/campaigns/:id/submissions/:submissionId/authorization
+
+Body: `{ "eligibilityToken": "<opaque token returned by verification>" }`.
+
+Only an accepted submission bound to that verified campaign and claimant can
+receive an authorization. Fresh issuance requires an active, linked campaign;
+an existing unexpired authorization may be retrieved after close. The server's
+signer must match the contract's current signer.
+The response contains the exact EIP-712 `ClaimAuthorization` fields,
+`signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
+are decimal strings. A retry before expiry returns the same signed payload;
+concurrent requests cannot issue a second authorization. After expiry, the
+one-time POC authorization returns `410 AUTHORIZATION_EXPIRED`. The API never
+returns or logs the private signing key.
+
 # Analytics
 
 ## GET /v1/campaigns/:id/analytics

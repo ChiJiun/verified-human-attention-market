@@ -1,4 +1,6 @@
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
+import { PostgresClaimRepository } from "./claims/repository.js";
+import { createClaimSigner } from "./claims/signer.js";
 import { buildApp } from "./app.js";
 import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
@@ -55,11 +57,16 @@ const worldIdVerifier = worldIdRpId
 
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
+const claimSigner = process.env.CLAIM_SIGNER_PRIVATE_KEY
+  ? createClaimSigner(process.env.CLAIM_SIGNER_PRIVATE_KEY)
+  : null;
 
 const app = buildApp({
   campaignRepository,
   eligibilityRepository: new PostgresEligibilityRepository(database.db),
   submissionRepository: new PostgresSubmissionRepository(database.db),
+  claimRepository: new PostgresClaimRepository(database.db),
+  claimSigner,
   worldIdVerifier,
   participantKeySecret,
   chainId,
