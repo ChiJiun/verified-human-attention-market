@@ -109,11 +109,11 @@ Done on `main`:
 
 Next, in dependency order:
 
-1. **#12 remainder — real World ID** (IDKit widget + RP signature endpoint). Needs `@worldcoin/idkit` in `apps/web` and `@worldcoin/idkit-core` in `apps/api`.
+1. **#12 remainder — IDKit widget in `apps/web`** (`IDKitRequestWidget` fed by `POST /v1/campaigns/:id/world-id/request`, which already exists). Needs `@worldcoin/idkit` in the lockfile. Optionally swap the viem RP signer for `signRequest` from `@worldcoin/idkit-core/signing` (same test vectors).
 2. **#19 remainder** — record the real testnet deployment (`packages/contracts/deployments/84532.json`).
 3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
 
-Dependencies not yet in the lockfile: `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+Dependencies not yet in the lockfile: `@worldcoin/idkit` (web); `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 `@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
