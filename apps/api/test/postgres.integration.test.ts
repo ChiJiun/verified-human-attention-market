@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -15,13 +15,9 @@ import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import {
   answers,
-  authNonces,
-  authSessions,
   campaigns,
-  chainEvents,
   eligibility,
   missions,
-  reconciliationState,
   submissions,
 } from "../src/db/schema.js";
 import { PostgresChainEventRepository } from "../src/chain/events-repository.postgres.js";
@@ -30,6 +26,10 @@ import {
   toMissionDefinition,
 } from "../src/missions/schemas.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
+import {
+  ModerationError,
+  PostgresModerationRepository,
+} from "../src/moderation/repository.js";
 import { applyRetention, eraseWallet } from "../src/privacy/retention.js";
 import {
   hashSubmissionRequest,
@@ -71,18 +71,11 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   const database = createDatabase(databaseUrl);
   const repository = new PostgresCampaignRepository(database.db);
 
-  // Financial rows reference campaigns with ON DELETE RESTRICT, so clean up
-  // children first.
+  // TRUNCATE: row triggers forbid deleting submissions and audit entries.
   async function truncateAll() {
-    await database.db.delete(answers);
-    await database.db.delete(submissions);
-    await database.db.delete(eligibility);
-    await database.db.delete(missions);
-    await database.db.delete(campaigns);
-    await database.db.delete(chainEvents);
-    await database.db.delete(reconciliationState);
-    await database.db.delete(authNonces);
-    await database.db.delete(authSessions);
+    await database.db.execute(
+      sql`TRUNCATE answers, submissions, eligibility, moderation_actions, campaign_reports, campaign_moderation, missions, campaigns, chain_events, reconciliation_state, auth_nonces, auth_sessions`,
+    );
   }
 
   beforeAll(async () => {
@@ -337,6 +330,179 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   describe("chain indexer persistence", () => {
     defineIndexerContract({
       repository: () => new PostgresChainEventRepository(database.db),
+    });
+  });
+
+  describe("moderation and settlement integrity (#24)", () => {
+    const moderation = new PostgresModerationRepository(database.db);
+    const at = new Date("2026-10-05T10:05:00.000Z");
+
+    it("persists transitions with an append-only audit trail", async () => {
+      const campaignId = await createCampaign();
+
+      await moderation.initialize(
+        campaignId,
+        "pending_review",
+        "system",
+        "awaiting review",
+        at,
+      );
+      // Idempotent: a replayed creation does not reset or duplicate state.
+      await moderation.initialize(campaignId, "approved", "system", "x", at);
+      expect((await moderation.getState(campaignId))?.status).toBe(
+        "pending_review",
+      );
+
+      const report = await moderation.createReport({
+        campaignId,
+        reason: "phishing",
+        details: null,
+        at,
+      });
+      await moderation.applyAction({
+        campaignId,
+        action: "approve",
+        actor: "operator:0x1",
+        reason: "ok",
+        reportId: null,
+        at,
+      });
+      await moderation.applyAction({
+        campaignId,
+        action: "take_down",
+        actor: "operator:0x1",
+        reason: "confirmed phishing",
+        reportId: report.id,
+        at: new Date("2026-10-05T10:06:00.000Z"),
+      });
+      await expect(
+        moderation.applyAction({
+          campaignId,
+          action: "reject",
+          actor: "operator:0x1",
+          reason: "late",
+          reportId: null,
+          at,
+        }),
+      ).rejects.toBeInstanceOf(ModerationError);
+      await moderation.resolveReport({
+        reportId: report.id,
+        resolution: "actioned",
+        actor: "operator:0x1",
+        reason: "taken down",
+        at: new Date("2026-10-05T10:07:00.000Z"),
+      });
+
+      expect((await moderation.getState(campaignId))?.status).toBe(
+        "taken_down",
+      );
+      const actions = await moderation.listActions(campaignId);
+      expect(actions.map((action) => action.action)).toEqual([
+        "approve",
+        "take_down",
+        "resolve_report",
+      ]);
+      expect(
+        (await moderation.listByStatus("taken_down", 10)).map(
+          (state) => state.campaignId,
+        ),
+      ).toContain(campaignId);
+
+      // The audit trail cannot be rewritten or removed.
+      await expect(
+        database.db.execute(
+          sql`UPDATE moderation_actions SET reason = 'nothing happened' WHERE campaign_id = ${campaignId}`,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        database.db.execute(
+          sql`DELETE FROM moderation_actions WHERE campaign_id = ${campaignId}`,
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("serializes concurrent operator actions", async () => {
+      const campaignId = await createCampaign();
+      const results = await Promise.allSettled(
+        ["approve", "reject"].map((action) =>
+          moderation.applyAction({
+            campaignId,
+            action: action as "approve" | "reject",
+            actor: "operator:0x1",
+            reason: "race",
+            reportId: null,
+            at,
+          }),
+        ),
+      );
+      const states = results.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value.status] : [],
+      );
+
+      // Both from pending_review is impossible: exactly one wins, unless
+      // reject ran first and approve (allowed from rejected) followed.
+      const actions = await moderation.listActions(campaignId);
+      expect(actions).toHaveLength(states.length);
+      expect(actions[0]?.fromStatus).toBe("pending_review");
+      if (actions[1]) {
+        expect(actions[1].fromStatus).toBe(actions[0]?.toStatus);
+      }
+    });
+
+    it("forbids rewriting or deleting submission results", async () => {
+      const campaignId = await createCampaign();
+      const wallet = `0x${"8".repeat(40)}`;
+      const { eligibility: record } = await new PostgresEligibilityRepository(
+        database.db,
+      ).recordIdempotent({
+        id: randomUUID(),
+        campaignId,
+        participantKey: "d".repeat(64),
+        claimantAddress: wallet,
+        provider: "world_id",
+        verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+        expiresAt: new Date("2026-10-05T11:20:00.000Z"),
+      });
+      const submissionAnswers = [
+        { questionId: "q1", normalizedAnswer: "b", score: "0" },
+      ];
+      const { submission } = await new PostgresSubmissionRepository(
+        database.db,
+      ).recordIdempotent({
+        id: randomUUID(),
+        campaignId,
+        eligibilityId: record.id,
+        missionId: await missionIdFor(campaignId),
+        idempotencyKey: randomUUID(),
+        requestHash: hashSubmissionRequest({
+          campaignId,
+          claimantAddress: wallet,
+          answers: submissionAnswers,
+        }),
+        claimantAddress: wallet,
+        result: "rejected",
+        rejectionCode: "BELOW_THRESHOLD",
+        answers: submissionAnswers,
+        createdAt: new Date("2026-10-05T10:30:00.000Z"),
+      });
+
+      await expect(
+        database.db
+          .update(submissions)
+          .set({ result: "accepted", rejectionCode: null })
+          .where(eq(submissions.id, submission.id)),
+      ).rejects.toThrow();
+      await expect(
+        database.db
+          .delete(submissions)
+          .where(eq(submissions.id, submission.id)),
+      ).rejects.toThrow();
+
+      // Retention may still pseudonymize the wallet (#22).
+      await database.db
+        .update(submissions)
+        .set({ claimantAddress: `0x${"9".repeat(40)}` })
+        .where(eq(submissions.id, submission.id));
     });
   });
 

@@ -327,3 +327,98 @@ export const authSessions = pgTable(
     index("auth_sessions_address_idx").on(table.address),
   ],
 );
+
+/** Current moderation state per campaign (#24). No row = pending_review. */
+export const campaignModeration = pgTable(
+  "campaign_moderation",
+  {
+    campaignId: uuid("campaign_id")
+      .primaryKey()
+      .references(() => campaigns.id, { onDelete: "restrict" }),
+    status: text("status").notNull(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (table) => [
+    index("campaign_moderation_status_idx").on(table.status),
+    check(
+      "campaign_moderation_status_check",
+      sql`${table.status} IN ('pending_review', 'approved', 'rejected', 'taken_down')`,
+    ),
+  ],
+);
+
+/** Participant/public abuse reports. Reporter identity is not stored. */
+export const campaignReports = pgTable(
+  "campaign_reports",
+  {
+    id: uuid("id").primaryKey(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "restrict" }),
+    reason: text("reason").notNull(),
+    details: text("details"),
+    status: text("status").notNull().default("open"),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true, mode: "date" }),
+    resolvedBy: text("resolved_by"),
+  },
+  (table) => [
+    index("campaign_reports_status_idx").on(table.status, table.createdAt),
+    index("campaign_reports_campaign_idx").on(table.campaignId),
+    check(
+      "campaign_reports_reason_check",
+      sql`${table.reason} IN ('phishing', 'malware', 'scam', 'misleading', 'offensive', 'broken_link', 'other')`,
+    ),
+    check(
+      "campaign_reports_status_check",
+      sql`${table.status} IN ('open', 'dismissed', 'actioned')`,
+    ),
+    check(
+      "campaign_reports_details_length",
+      sql`${table.details} IS NULL OR char_length(${table.details}) <= 500`,
+    ),
+  ],
+);
+
+/** Append-only operator audit trail (UPDATE/DELETE rejected by trigger). */
+export const moderationActions = pgTable(
+  "moderation_actions",
+  {
+    id: uuid("id").primaryKey(),
+    campaignId: uuid("campaign_id")
+      .notNull()
+      .references(() => campaigns.id, { onDelete: "restrict" }),
+    action: text("action").notNull(),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status"),
+    actor: text("actor").notNull(),
+    reason: text("reason").notNull(),
+    reportId: uuid("report_id").references(() => campaignReports.id, {
+      onDelete: "restrict",
+    }),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+  },
+  (table) => [
+    index("moderation_actions_campaign_idx").on(
+      table.campaignId,
+      table.createdAt,
+    ),
+    check(
+      "moderation_actions_action_check",
+      sql`${table.action} IN ('approve', 'reject', 'take_down', 'reinstate', 'resolve_report')`,
+    ),
+    check(
+      "moderation_actions_reason_length",
+      sql`char_length(${table.reason}) BETWEEN 1 AND 1000`,
+    ),
+  ],
+);

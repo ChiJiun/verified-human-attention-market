@@ -305,6 +305,36 @@ Settlement values come only from reconciled chain events, and submission counts 
 
 `settlement` is `null` until the campaign is linked on-chain.
 
+# Moderation (#24)
+
+Policy and permissions: [docs/operations/MODERATION.md](../operations/MODERATION.md).
+
+`POST /v1/campaigns` rejects unsafe content URLs with
+`400 UNSAFE_CONTENT_URL` (`reason`: `NOT_HTTPS`, `HAS_CREDENTIALS`, `IP_HOST`,
+`INTERNAL_HOST`, `NON_DEFAULT_PORT`, `TOO_LONG`, `DOMAIN_NOT_ALLOWED`).
+
+Gate: `GET /mission`, `POST /eligibility/verify`, `POST /submissions` and
+`POST /publish` return `403 CAMPAIGN_NOT_APPROVED` until the campaign is
+approved, and `410 CAMPAIGN_TAKEN_DOWN` after a take-down. Claim
+authorization is not gated: completed work stays payable.
+
+## POST /v1/campaigns/:id/reports
+
+Public, no identity stored. `{ "reason": "phishing" | "malware" | "scam" | "misleading" | "offensive" | "broken_link" | "other", "details"?: string ≤ 500 }`
+→ `201 { reportId, status: "open" }`.
+
+## Operator endpoints
+
+SIWE session of a wallet in `OPERATOR_ADDRESSES`; otherwise `401` / `403 NOT_OPERATOR`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/admin/moderation?status=pending_review` | Review queue (≤ 100) with content URL and advertiser |
+| `GET /v1/admin/campaigns/:id/moderation` | Status, full audit trail, reports |
+| `POST /v1/admin/campaigns/:id/moderation` | `{ action: approve \| reject \| take_down \| reinstate, reason, reportId? }`; `409 INVALID_TRANSITION` |
+| `GET /v1/admin/reports?status=open` | Reports by status |
+| `POST /v1/admin/reports/:reportId/resolve` | `{ resolution: dismissed \| actioned, reason }`; `409 REPORT_ALREADY_RESOLVED` |
+
 # Health
 
 ## GET /health/live

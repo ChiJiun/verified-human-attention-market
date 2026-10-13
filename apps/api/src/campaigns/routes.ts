@@ -14,6 +14,10 @@ import {
 import { toPublicMission } from "../missions/verifier.js";
 import { requireWallet } from "../auth/routes.js";
 import type { Authenticate } from "../auth/siwe.js";
+import {
+  checkContentUrl,
+  type ContentUrlPolicy,
+} from "../moderation/url-policy.js";
 import { createCampaignSchema } from "./schemas.js";
 import type { CampaignRecord } from "./types.js";
 
@@ -22,6 +26,9 @@ interface CampaignRoutesOptions {
   repository: CampaignRepository;
   chainId: number;
   now?: () => Date;
+  contentUrlPolicy?: ContentUrlPolicy;
+  /** Runs after create and on idempotent replays (e.g. moderation state). */
+  onCampaignCreated?: (campaign: CampaignRecord) => Promise<void>;
 }
 
 const UUID_PATTERN =
@@ -76,6 +83,22 @@ export async function registerCampaignRoutes(
           message: "Campaign input is invalid",
           requestId: request.id,
           details: parsed.error.flatten(),
+        },
+      });
+    }
+
+    const urlViolation = checkContentUrl(
+      parsed.data.contentUrl,
+      options.contentUrlPolicy,
+    );
+
+    if (urlViolation) {
+      return reply.status(400).send({
+        error: {
+          code: "UNSAFE_CONTENT_URL",
+          message: "contentUrl is not allowed",
+          reason: urlViolation,
+          requestId: request.id,
         },
       });
     }
@@ -144,6 +167,8 @@ export async function registerCampaignRoutes(
           definitionHash: hashMissionDefinition(missionDefinition),
         },
       });
+
+      await options.onCampaignCreated?.(result.campaign);
 
       return reply
         .status(result.created ? 201 : 200)

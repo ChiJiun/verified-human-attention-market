@@ -74,8 +74,8 @@ Copy `.env.example` to a local `.env` file when environment-specific values are 
 
 | Layer | Command | Covers | Needs |
 | --- | --- | --- | --- |
-| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, every API endpoint (in-memory) | nothing |
-| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock, retention/erasure | PostgreSQL 16 |
+| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, moderation, every API endpoint (in-memory) | nothing |
+| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock, retention/erasure, audit triggers | PostgreSQL 16 |
 | Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
 | ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |
 | End-to-end demo | `pnpm --filter @vham/api test:e2e` | full loop on a local chain, with final accounting checked | anvil + PostgreSQL |
@@ -964,7 +964,7 @@ Add:
 - [ ] Basic reputation
 - [ ] Basic fraud rules
 - [x] Observability
-- [ ] Admin/dispute tooling
+- [x] Admin/dispute tooling
 - [x] Privacy/data retention policy
 
 ## P2 — Growth
@@ -1258,7 +1258,7 @@ Determine whether a real buyer will repeatedly pay for verified human completion
 - [ ] Basic reputation fields.
 - [x] Observability for API and blockchain failures.
 - [x] Privacy/data-retention policy.
-- [ ] Admin/dispute tooling.
+- [x] Admin/dispute tooling.
 
 ## P1 Deliverables
 

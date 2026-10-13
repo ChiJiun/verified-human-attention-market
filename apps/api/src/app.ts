@@ -39,6 +39,18 @@ import {
 } from "./submissions/repository.js";
 import { registerSubmissionRoutes } from "./submissions/routes.js";
 import {
+  InMemoryModerationRepository,
+  type ModerationRepository,
+} from "./moderation/repository.js";
+import {
+  moderationOnCreate,
+  OPEN_MODERATION,
+  registerModerationGate,
+  registerModerationRoutes,
+  type ModerationConfig,
+} from "./moderation/routes.js";
+import type { ContentUrlPolicy } from "./moderation/url-policy.js";
+import {
   generateRequestId,
   LOGGER_REDACT_PATHS,
   registerInstrumentation,
@@ -72,6 +84,10 @@ export interface AppDependencies {
   /** Bearer token for GET /metrics; null or absent = unauthenticated. */
   metricsToken?: string | null;
   payoutAnomalies?: PayoutAnomalyDetector;
+  moderationRepository?: ModerationRepository;
+  /** Defaults to open mode (tests); server.ts requires review off anvil. */
+  moderation?: ModerationConfig;
+  contentUrlPolicy?: ContentUrlPolicy;
   close?: () => Promise<void>;
   now?: () => Date;
 }
@@ -151,6 +167,16 @@ export function buildApp(dependencies: AppDependencies = {}) {
     },
   });
 
+  const moderationRepository =
+    dependencies.moderationRepository ?? new InMemoryModerationRepository();
+  const moderationConfig = dependencies.moderation ?? OPEN_MODERATION;
+
+  registerModerationGate(app, {
+    moderation: moderationRepository,
+    campaigns: campaignRepository,
+    config: moderationConfig,
+  });
+
   app.get("/health/live", async () => ({ status: "ok" }));
 
   app.get("/health/ready", async (_request, reply) => {
@@ -196,6 +222,20 @@ export function buildApp(dependencies: AppDependencies = {}) {
       authenticate,
       repository: campaignRepository,
       chainId,
+      now,
+      contentUrlPolicy: dependencies.contentUrlPolicy,
+      onCampaignCreated: moderationOnCreate({
+        moderation: moderationRepository,
+        config: moderationConfig,
+        now,
+      }),
+    });
+
+    await registerModerationRoutes(instance, {
+      moderation: moderationRepository,
+      campaigns: campaignRepository,
+      authenticate,
+      config: moderationConfig,
       now,
     });
 

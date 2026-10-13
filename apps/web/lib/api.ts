@@ -94,6 +94,11 @@ export function describeError(error: unknown): string {
     CAMPAIGN_CAP_REACHED:
       "All rewards for this campaign are currently allocated. Try again later.",
     CHAIN_UNAVAILABLE: "The chain is unreachable. Please retry shortly.",
+    CAMPAIGN_NOT_APPROVED:
+      "This campaign is awaiting moderation review and cannot be published or joined yet.",
+    CAMPAIGN_TAKEN_DOWN: "This campaign was removed after review.",
+    UNSAFE_CONTENT_URL:
+      "The content URL is not allowed (https on a public domain, no credentials or ports).",
   };
 
   return messages[error.code] ?? `Request failed (${error.code}).`;

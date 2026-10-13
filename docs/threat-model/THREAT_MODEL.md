@@ -151,6 +151,14 @@
 - warning/interstitial rules；
 - report/takedown path。
 
+**Implemented (#24, `docs/operations/MODERATION.md`):**
+
+- Review gate: campaigns are not published or served until an operator approves them (allowlisted advertisers excepted); enforced by the API, `MODERATION_MODE=open` refused off anvil.
+- URL policy at creation: https only, no credentials, IP literals, internal hosts or custom ports; optional domain allowlist.
+- Anonymous reports, take-down (410 for new participants) and reinstate, all with reasons in an append-only audit trail.
+
+**Residual risk:** a reviewed page can change after approval (bait-and-switch); mitigated by reports and take-down, not prevented. A campaign created directly on the contract cannot be served, but its on-chain existence cannot be prevented.
+
 ## T-011 Publisher Attribution Fraud
 
 **Threat:** future publisher fakes referrals/completions to increase revenue share。
@@ -208,6 +216,8 @@
 - timelock/multisig where appropriate for production；
 - document emergency powers；
 - separate pause from withdrawal authority。
+
+**Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
 ## T-015 Wallet Impersonation / Session Theft
 
