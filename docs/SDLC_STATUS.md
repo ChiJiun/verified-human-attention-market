@@ -83,7 +83,7 @@ Official references:
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
-| Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config (#19); testnet record pending |
+| Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config; API and web both use the canonical ABI at runtime (#19); testnet record pending |
 | Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
 | Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |

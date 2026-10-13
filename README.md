@@ -91,6 +91,8 @@ pnpm test && pnpm --filter @vham/api test:e2e
 
 PostgreSQL tests skip when `TEST_DATABASE_URL` is unset. The e2e run wipes its database tables, so use a dedicated database. Only World ID is simulated. See [docs/DEMO.md](docs/DEMO.md) for details and Windows notes. CI runs the `javascript`, `e2e` and `solidity` jobs on every push and reports failures as annotations.
 
+`pnpm install` also builds `@vham/shared` (the canonical contract ABI used by API and web); after changing it run `pnpm --filter @vham/shared build`.
+
 Operating it: `GET /health/ready`, `GET /metrics` (Prometheus; `METRICS_TOKEN`), worker metrics on `INDEXER_METRICS_PORT`, alert rules and responses in [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md). Data retention runs in the indexer worker or via `pnpm --filter @vham/api retention` ([policy](docs/privacy/DATA_RETENTION.md)).
 
 ---
