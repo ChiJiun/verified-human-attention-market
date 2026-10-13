@@ -98,16 +98,18 @@ Done on `main`:
 - #9 World ID eligibility, backend side (ADR-0007)
 - `POST /v1/campaigns/:id/submissions` (eligibility + verifier + persistence, 2-attempt cap)
 - #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config (still open for runtime ABI import and the real testnet deployment record)
+- #17 reorg-safe chain indexer; #16 verified on-chain linking + status sync; #20 analytics
+- #10 EIP-712 claim authorization: live on-chain checks, cap = paid + unexpired outstanding, reissue of expired unredeemed authorizations
+- #37 Sign-In with Ethereum; advertiser-only endpoints
+- #13 (local part): `e2e` CI job runs the full economic loop on anvil, see `docs/DEMO.md`
 
 Next, in dependency order:
 
-1. **#10 — EIP-712 claim authorization service.** Must also cap outstanding (unexpired, unclaimed) authorizations at `maxCompletions − paidCompletions` under a row lock, otherwise late participants receive signatures the contract will reject with `CompletionLimitReached`. Wire `@vham/shared` (ABI) into the API here.
-2. **#37 — SIWE wallet authentication** (blocks #11 and advertiser-only #20).
-3. **#17 — chain event indexer / reconciliation**, then **#16 — publish + on-chain create/fund reconciliation** (sets campaign `active`), then **#20 — analytics**.
-4. **#11 / #12 — web flows** (wallet connect, IDKit + RP signature endpoint, claim UX).
-5. **#13 — E2E**: local anvil first (can run in CI), then Base Sepolia (needs the owner's keystore, RPC and World ID app).
+1. **#11 / #12 — web flows** (wallet connect, SIWE, IDKit + RP signature endpoint, claim UX). Needs `wagmi`, `@tanstack/react-query`, `@worldcoin/idkit` in `apps/web` and `@worldcoin/idkit-core` in `apps/api`.
+2. **#19 remainder** — import the canonical ABI from `@vham/shared` at runtime; record the real testnet deployment.
+3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
 
-Dependencies not yet in the lockfile: `viem` (api, web), `wagmi` + `@tanstack/react-query` + `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). Do not hand-roll keccak/secp256k1/EIP-712 signing.
+Dependencies not yet in the lockfile: `viem` (web), `wagmi` + `@tanstack/react-query` + `@worldcoin/idkit` (web), `@worldcoin/idkit-core` (api, RP signing). `viem` is already in `apps/api`. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
@@ -597,7 +599,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is **#10** (see §4), unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is **#11 / #12** (see §4), unless GitHub state shows that work has already advanced.
 
 ---
 

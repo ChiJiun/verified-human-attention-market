@@ -289,3 +289,41 @@ export const reconciliationState = pgTable(
   },
   (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
 );
+
+/** Single-use SIWE nonces (issue #37). */
+export const authNonces = pgTable("auth_nonces", {
+  nonce: text("nonce").primaryKey(),
+  createdAt: timestamp("created_at", {
+    withTimezone: true,
+    mode: "date",
+  }).notNull(),
+  expiresAt: timestamp("expires_at", {
+    withTimezone: true,
+    mode: "date",
+  }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true, mode: "date" }),
+});
+
+/** Wallet sessions. Only a sha256 of the bearer token is stored. */
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    id: uuid("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    address: text("address").notNull(),
+    chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "date" }),
+  },
+  (table) => [
+    uniqueIndex("auth_sessions_token_hash_uq").on(table.tokenHash),
+    index("auth_sessions_address_idx").on(table.address),
+  ],
+);

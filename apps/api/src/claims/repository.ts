@@ -1,4 +1,4 @@
-import { and, count, eq, isNotNull } from "drizzle-orm";
+import { and, count, eq, gt, ne } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
 import type { Database } from "../db/client.js";
@@ -11,7 +11,7 @@ export class ClaimIssueError extends Error {
       | "SUBMISSION_NOT_ACCEPTED"
       | "CAMPAIGN_NOT_ACTIVE"
       | "CAMPAIGN_CAP_REACHED"
-      | "AUTHORIZATION_EXPIRED",
+      | "ALREADY_CLAIMED",
   ) {
     super(code);
   }
@@ -22,6 +22,10 @@ export interface ClaimIssueInput {
   campaignId: string;
   now: Date;
   canIssue: boolean;
+  /** Live `claimedWallet(campaignId, claimant)`: this wallet was paid. */
+  alreadyClaimed: boolean;
+  /** Live on-chain paid completions for the campaign. */
+  onchainPaidCompletions: number;
   sign: () => Promise<SignedClaim>;
 }
 
@@ -61,6 +65,7 @@ function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
   };
 }
 
+/** Unexpired stored authorization, or null if none / expired. */
 function restoreClaim(
   row: typeof submissions.$inferSelect,
   campaign: typeof campaigns.$inferSelect,
@@ -69,7 +74,7 @@ function restoreClaim(
   const claim = storedClaim(row);
   if (!claim) return null;
   if (row.claimExpiresAt!.getTime() <= now.getTime()) {
-    throw new ClaimIssueError("AUTHORIZATION_EXPIRED");
+    return null;
   }
   if (!campaign.onchainCampaignId) {
     throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
@@ -114,21 +119,33 @@ export class PostgresClaimRepository implements ClaimRepository {
       const prior = restoreClaim(row, campaign, input.now);
       if (prior) return { claim: prior, created: false };
 
+      // Reissue only if no earlier authorization was redeemed: the contract
+      // pays each wallet once, so a new nonce cannot cause a second payout.
+      if (input.alreadyClaimed) {
+        throw new ClaimIssueError("ALREADY_CLAIMED");
+      }
+
       if (!input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
 
-      const [issued] = await tx
+      // Every unexpired authorization must stay redeemable:
+      // paid on-chain + outstanding (unexpired, other submissions) < cap.
+      const [outstanding] = await tx
         .select({ value: count() })
         .from(submissions)
         .where(
           and(
             eq(submissions.campaignId, input.campaignId),
-            isNotNull(submissions.claimNonce),
+            gt(submissions.claimExpiresAt, input.now),
+            ne(submissions.id, input.submissionId),
           ),
         );
 
-      if ((issued?.value ?? 0) >= campaign.maxCompletions) {
+      if (
+        (outstanding?.value ?? 0) + input.onchainPaidCompletions >=
+        campaign.maxCompletions
+      ) {
         throw new ClaimIssueError("CAMPAIGN_CAP_REACHED");
       }
 
@@ -165,8 +182,10 @@ export class PostgresClaimRepository implements ClaimRepository {
 
 /** Test/local repository with the same one-time issuance and cap behavior. */
 export class InMemoryClaimRepository implements ClaimRepository {
-  private readonly records = new Map<string, SignedClaim>();
-  private readonly counts = new Map<string, number>();
+  private readonly records = new Map<
+    string,
+    { campaignId: string; claim: SignedClaim }
+  >();
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -186,12 +205,14 @@ export class InMemoryClaimRepository implements ClaimRepository {
     });
     await previous;
     try {
+      const unexpired = (claim: SignedClaim) =>
+        Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
       const existing = this.records.get(input.submissionId);
-      if (existing) {
-        if (Number(existing.payload.expiresAt) * 1000 <= input.now.getTime()) {
-          throw new ClaimIssueError("AUTHORIZATION_EXPIRED");
-        }
-        return { claim: existing, created: false };
+      if (existing && unexpired(existing.claim)) {
+        return { claim: existing.claim, created: false };
+      }
+      if (input.alreadyClaimed) {
+        throw new ClaimIssueError("ALREADY_CLAIMED");
       }
 
       const [submission, campaign] = await Promise.all([
@@ -208,15 +229,23 @@ export class InMemoryClaimRepository implements ClaimRepository {
       if (!campaign || !input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
-      if ((this.counts.get(input.campaignId) ?? 0) >= campaign.maxCompletions) {
+      const outstanding = [...this.records.entries()].filter(
+        ([submissionId, record]) =>
+          submissionId !== input.submissionId &&
+          record.campaignId === input.campaignId &&
+          unexpired(record.claim),
+      ).length;
+      if (
+        outstanding + input.onchainPaidCompletions >=
+        campaign.maxCompletions
+      ) {
         throw new ClaimIssueError("CAMPAIGN_CAP_REACHED");
       }
       const claim = await input.sign();
-      this.records.set(input.submissionId, claim);
-      this.counts.set(
-        input.campaignId,
-        (this.counts.get(input.campaignId) ?? 0) + 1,
-      );
+      this.records.set(input.submissionId, {
+        campaignId: input.campaignId,
+        claim,
+      });
       return { claim, created: true };
     } finally {
       release();

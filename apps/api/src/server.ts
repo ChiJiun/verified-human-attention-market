@@ -1,3 +1,7 @@
+import { createPublicClient, http } from "viem";
+
+import { PostgresAuthRepository } from "./auth/repository.js";
+import { verifyEoaSignature } from "./auth/siwe.js";
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { PostgresClaimRepository } from "./claims/repository.js";
 import { createClaimSigner } from "./claims/signer.js";
@@ -61,7 +65,20 @@ const claimSigner = process.env.CLAIM_SIGNER_PRIVATE_KEY
   ? createClaimSigner(process.env.CLAIM_SIGNER_PRIVATE_KEY)
   : null;
 
+// Sign-In with Ethereum (#37). Without SIWE_DOMAIN, sign-in is disabled and
+// every advertiser-only endpoint returns 401 (fail closed).
+const siweDomain = process.env.SIWE_DOMAIN || null;
+// With an RPC, smart-contract wallets (ERC-1271/6492) can sign in too.
+const publicClient = chainConfig
+  ? createPublicClient({ transport: http(chainConfig.rpcUrl) })
+  : null;
+
 const app = buildApp({
+  authRepository: new PostgresAuthRepository(database.db),
+  siwe: siweDomain ? { domain: siweDomain, chainId } : null,
+  verifySignature: publicClient
+    ? (input) => publicClient.verifyMessage(input)
+    : verifyEoaSignature,
   campaignRepository,
   eligibilityRepository: new PostgresEligibilityRepository(database.db),
   submissionRepository: new PostgresSubmissionRepository(database.db),
@@ -84,6 +101,10 @@ const app = buildApp({
     : null,
   close: database.close,
 });
+
+if (!siweDomain) {
+  app.log.warn("SIWE sign-in is disabled: set SIWE_DOMAIN");
+}
 
 if (!worldIdRpId || !participantKeySecret) {
   app.log.warn(

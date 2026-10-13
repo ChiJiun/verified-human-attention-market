@@ -302,6 +302,8 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       submissionId: submissionRecord.submission.id,
       now,
       canIssue: true,
+      alreadyClaimed: false,
+      onchainPaidCompletions: 0,
       sign: () =>
         signer.sign({
           campaignId: 7n,

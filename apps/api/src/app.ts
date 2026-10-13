@@ -1,4 +1,17 @@
 import Fastify from "fastify";
+
+import {
+  InMemoryAuthRepository,
+  type AuthRepository,
+} from "./auth/repository.js";
+import { registerAuthRoutes } from "./auth/routes.js";
+import {
+  sessionAuthenticator,
+  verifyEoaSignature,
+  type Authenticate,
+  type SignatureVerifier,
+  type SiweConfig,
+} from "./auth/siwe.js";
 import { registerClaimRoutes } from "./claims/routes.js";
 import {
   InMemoryClaimRepository,
@@ -35,6 +48,12 @@ export interface AppDependencies {
   eligibilityRepository?: EligibilityRepository;
   submissionRepository?: SubmissionRepository;
   claimRepository?: ClaimRepository;
+  authRepository?: AuthRepository;
+  /** SIWE domain/chain; null or absent = sign-in disabled (fail closed). */
+  siwe?: SiweConfig | null;
+  verifySignature?: SignatureVerifier;
+  /** Overrides session lookup (tests of non-auth features). */
+  authenticate?: Authenticate;
   claimSigner?: ClaimSigner | null;
   worldIdVerifier?: WorldIdVerifier;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
@@ -67,6 +86,10 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const worldIdVerifier =
     dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
   const now = dependencies.now ?? (() => new Date());
+  const authRepository =
+    dependencies.authRepository ?? new InMemoryAuthRepository();
+  const authenticate =
+    dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   const chainId = dependencies.chainId ?? 84532;
 
   app.get("/health/live", async () => ({ status: "ok" }));
@@ -94,7 +117,16 @@ export function buildApp(dependencies: AppDependencies = {}) {
   });
 
   app.register(async (instance) => {
+    await registerAuthRoutes(instance, {
+      repository: authRepository,
+      config: dependencies.siwe ?? null,
+      verifySignature: dependencies.verifySignature ?? verifyEoaSignature,
+      authenticate,
+      now,
+    });
+
     await registerCampaignRoutes(instance, {
+      authenticate,
       repository: campaignRepository,
       chainId,
       now,
@@ -109,6 +141,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     });
 
     await registerOnchainRoutes(instance, {
+      authenticate,
       campaigns: campaignRepository,
       submissions: submissionRepository,
       chain: dependencies.chain ?? null,

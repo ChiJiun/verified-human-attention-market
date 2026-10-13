@@ -50,6 +50,13 @@
       "when": 1791777885091,
       "tag": "0006_little_infant_terrible",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791853978712,
+      "tag": "0007_siwe_auth",
+      "breakpoints": true
     }
   ]
 }
