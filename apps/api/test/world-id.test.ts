@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   campaignAction,
   HttpWorldIdVerifier,
+  LocalSimulatedWorldIdVerifier,
   normalizeNullifier,
 } from "../src/identity/world-id.js";
 
@@ -210,5 +211,40 @@ describe("normalizeNullifier", () => {
     expect(normalizeNullifier("abc")).toBeNull();
     expect(normalizeNullifier("0x")).toBeNull();
     expect(normalizeNullifier("-1")).toBeNull();
+  });
+});
+
+describe("LocalSimulatedWorldIdVerifier", () => {
+  it("can only be constructed for the local anvil chain", () => {
+    expect(() => new LocalSimulatedWorldIdVerifier(84532)).toThrow();
+    expect(() => new LocalSimulatedWorldIdVerifier(8453)).toThrow();
+    expect(() => new LocalSimulatedWorldIdVerifier(31337)).not.toThrow();
+  });
+
+  it("checks the action and derives a stable nullifier", async () => {
+    const verifier = new LocalSimulatedWorldIdVerifier(31337);
+    const first = await verifier.verify({
+      action: ACTION,
+      idkitResponse: { action: ACTION, simulatedHuman: "alice" },
+    });
+    const again = await verifier.verify({
+      action: ACTION,
+      idkitResponse: { action: ACTION, simulatedHuman: "alice" },
+    });
+
+    expect(first.ok).toBe(true);
+    expect(again).toEqual(first);
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        idkitResponse: { action: "other", simulatedHuman: "alice" },
+      }),
+    ).toEqual({ ok: false, code: "ACTION_MISMATCH" });
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        idkitResponse: { action: ACTION },
+      }),
+    ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
   });
 });

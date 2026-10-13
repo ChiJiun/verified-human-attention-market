@@ -391,6 +391,14 @@ export default function AdvertiserPage() {
           ) : (
             <p>Loading…</p>
           )}
+          {analytics?.status === "active" && (
+            <p>
+              Participant link:{" "}
+              <a href={`/mission?campaign=${campaignId}`}>
+                {`/mission?campaign=${campaignId}`}
+              </a>
+            </p>
+          )}
           {analytics?.settlement?.hasUnconfirmedEvents && (
             <p className="note">
               Some on-chain activity is still being confirmed.

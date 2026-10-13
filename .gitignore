@@ -27,3 +27,4 @@ Thumbs.db
 broadcast/
 packages/contracts/cache/
 packages/contracts/out/
+packages/contracts/deployments/31337.json

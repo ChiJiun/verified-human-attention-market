@@ -74,6 +74,26 @@ export function describeError(error: unknown): string {
     WRONG_DOMAIN:
       "Sign-in domain mismatch: set SIWE_DOMAIN to this site's host.",
     WRONG_CHAIN: "Sign-in chain mismatch.",
+    INVALID_ELIGIBILITY:
+      "This verification belongs to another wallet or campaign. Verify again.",
+    ELIGIBILITY_EXPIRED: "Your verification expired with the campaign.",
+    PARTICIPANT_WALLET_MISMATCH:
+      "You already verified for this campaign with a different wallet.",
+    WALLET_ALREADY_BOUND:
+      "This wallet is already used by another person in this campaign.",
+    WORLD_ID_NOT_CONFIGURED: "World ID is not configured on this API.",
+    VERIFICATION_FAILED: "World ID verification failed.",
+    CAMPAIGN_NOT_OPEN: "This campaign is no longer open.",
+    CAMPAIGN_NOT_ACTIVE: "This campaign is not active right now.",
+    CAMPAIGN_NOT_STARTED: "This campaign has not started yet.",
+    CAMPAIGN_ENDED: "This campaign has ended.",
+    MALFORMED_ANSWERS: "Please answer every question.",
+    ATTEMPT_LIMIT_REACHED: "You have used all attempts for this campaign.",
+    ALREADY_COMPLETED: "You already completed this campaign.",
+    ALREADY_CLAIMED: "This reward was already paid to your wallet.",
+    CAMPAIGN_CAP_REACHED:
+      "All rewards for this campaign are currently allocated. Try again later.",
+    CHAIN_UNAVAILABLE: "The chain is unreachable. Please retry shortly.",
   };
 
   return messages[error.code] ?? `Request failed (${error.code}).`;
