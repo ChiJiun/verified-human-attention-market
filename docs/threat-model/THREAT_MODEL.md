@@ -175,6 +175,17 @@
 - retention policy；
 - privacy review before reputation expansion。
 
+**Implemented (#22, `docs/privacy/DATA_RETENTION.md`):**
+
+- Proofs and nullifiers are never stored; only a campaign-scoped HMAC participant key, retired 30 days after campaign end.
+- Unpaid wallet ↔ campaign links are pseudonymized 30 days after campaign end; paid wallets stay only because the chain already publishes them.
+- Answers are deleted 30 days after campaign end; SIWE nonces/sessions are purged.
+- Logs never contain request bodies and redact proofs, signatures, keys and nullifiers.
+- Advertisers get aggregates only; no API exports per-person data.
+- Wallet erasure command; reputation/analytics features must pass the policy's checklist.
+
+**Residual risk:** paid claims are public on-chain (`wallet ↔ campaign`) and cannot be erased; a database leak before retention runs exposes wallet ↔ campaign links (but not World ID identifiers).
+
 ## T-013 RPC Failure / Reorg
 
 **Threat:** backend misclassifies chain state after timeout/reorg。

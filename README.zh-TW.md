@@ -73,7 +73,7 @@ forge test -vv
 | 層級 | 指令 | 內容 | 需要 |
 | --- | --- | --- | --- |
 | 單元 + API 測試 | `pnpm test` | 驗證器、World ID、SIWE、EIP-712 授權、indexer、鏈上對帳、metrics/告警、各 API 端點（記憶體版） | 無 |
-| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖 | PostgreSQL 16 |
+| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖、資料保存/刪除 | PostgreSQL 16 |
 | 合約 | `cd packages/contracts && forge test -vv` | 單元、fuzz、stateful invariant（預算守恆、完成上限）、部署腳本、事件 topic | Foundry |
 | ABI 一致性 | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | 共用 ABI 與編譯結果一致 | Foundry |
 | 端到端 demo | `pnpm --filter @vham/api test:e2e` | 本機鏈上跑完整流程：登入 → 建立 → 入金 → 驗證 → 作答 → 簽授權 → 鏈上領取 → 關閉 → 退款，最後核對金額 | anvil + PostgreSQL，見下方 |
@@ -115,7 +115,7 @@ cd packages/contracts && forge test --match-contract EventTopicsTest -vv
 
 **CI：** 每次 push 都會跑 `javascript`（typecheck、lint、test、build、format）、`e2e`（本機鏈端到端）、`solidity`（fmt、build、ABI 檢查、test）三個 job。失敗原因會寫成 GitHub annotation，在 PR 的 Checks 頁就看得到。
 
-**維運：** `GET /health/ready`（資料庫 + 鏈 RPC、indexer 落後區塊數）、`GET /metrics`（Prometheus，可用 `METRICS_TOKEN` 保護）、indexer worker 在 `INDEXER_METRICS_PORT` 提供 metrics；告警規則與處理步驟見 [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md)。
+**維運：** `GET /health/ready`（資料庫 + 鏈 RPC、indexer 落後區塊數）、`GET /metrics`（Prometheus，可用 `METRICS_TOKEN` 保護）、indexer worker 在 `INDEXER_METRICS_PORT` 提供 metrics；告警規則與處理步驟見 [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md)。資料保存/刪除由 indexer worker 定期執行，或手動 `pnpm --filter @vham/api retention`（政策見 [docs/privacy/DATA_RETENTION.md](docs/privacy/DATA_RETENTION.md)）。
 
 ---
 

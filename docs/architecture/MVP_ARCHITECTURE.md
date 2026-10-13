@@ -91,7 +91,7 @@ flowchart TB
 - engagement evaluation；
 - comprehension result；
 - fraud rules；
-- reputation computation；
+- reputation computation（必須遵守 `docs/privacy/DATA_RETENTION.md` 的 Reputation 規則）；
 - analytics metadata；
 - issuing claim authorization。
 

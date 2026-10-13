@@ -11,6 +11,7 @@ import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { MetricsRegistry } from "./observability/metrics.js";
+import { applyRetention } from "./privacy/retention.js";
 
 /**
  * Long-running chain indexer process (issue #17).
@@ -103,6 +104,18 @@ const metricsServer =
           .end(metrics.render());
       }).listen(metricsPort, "0.0.0.0");
 
+// Retention (#22) piggybacks on the worker; 0 disables (then schedule
+// `pnpm --filter @vham/api retention` instead).
+const retentionIntervalMs = Number(
+  process.env.RETENTION_INTERVAL_MS ?? 60 * 60_000,
+);
+
+if (!Number.isSafeInteger(retentionIntervalMs) || retentionIntervalMs < 0) {
+  throw new Error("RETENTION_INTERVAL_MS must be a non-negative integer");
+}
+
+let lastRetentionAt = 0;
+
 let stopping = false;
 const stop = () => {
   stopping = true;
@@ -174,6 +187,22 @@ while (!stopping) {
       log("error", "ACCOUNTING VIOLATION: paid + refunded exceeds funded", {
         campaignIds: statuses.accountingViolations,
       });
+    }
+
+    if (
+      retentionIntervalMs > 0 &&
+      Date.now() - lastRetentionAt >= retentionIntervalMs
+    ) {
+      lastRetentionAt = Date.now();
+      try {
+        log("info", "retention applied", {
+          ...(await applyRetention(database.db, new Date())),
+        });
+      } catch (error) {
+        log("error", "retention failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     backoffMs = pollMs;

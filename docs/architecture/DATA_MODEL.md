@@ -127,10 +127,13 @@ Unique key: `(chain_id, tx_hash, log_index)`. Also `contract_address` and decode
 
 Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), and `latest_observed_block`. Each confirmed batch commits events and cursor in one transaction.
 
-## Data Retention Principles
+## Data Retention
 
-- do not retain full World ID proof longer than required for verification/debug policy;
-- never log proof payloads by default;
-- store the minimum campaign-specific participant key needed for duplicate prevention;
-- define deletion/retention policy before public beta;
-- avoid free-text mission answers in POC unless required.
+Policy, per-table retention periods and the erasure workflow:
+[docs/privacy/DATA_RETENTION.md](../privacy/DATA_RETENTION.md) (#22).
+
+- World ID proofs and nullifiers are never stored.
+- `eligibility.participant_key` is a campaign-scoped HMAC, retired 30 days after campaign end.
+- Unpaid `claimant_address` values are pseudonymized and `answers` deleted 30 days after campaign end.
+- `auth_nonces` / `auth_sessions` are purged after expiry.
+- No free-text mission answers in the POC.

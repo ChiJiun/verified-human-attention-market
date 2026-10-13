@@ -87,6 +87,7 @@ Official references:
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
 | Advertiser analytics | ✅ Reconciled, advertiser-only via SIWE (#20, #37) |
 | Observability | ✅ Request ids, redacted JSON logs, Prometheus metrics, payout anomaly alert, runbook (#21) |
+| Privacy / retention | ✅ Policy, scheduled enforcement, wallet erasure (#22, docs/privacy/DATA_RETENTION.md) |
 | Web flows | ⬜ #11, #12 |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9); IDKit widget + RP signing with #12 |
