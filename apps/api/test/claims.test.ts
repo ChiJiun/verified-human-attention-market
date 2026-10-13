@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import Fastify from "fastify";
-import { hashTypedData, keccak256, stringToHex, verifyTypedData } from "viem";
+import {
+  hashTypedData,
+  keccak256,
+  stringToHex,
+  toFunctionSelector,
+  verifyTypedData,
+} from "viem";
 
 import type { CampaignRecord } from "../src/campaigns/types.js";
 import { InMemoryClaimRepository } from "../src/claims/repository.js";
@@ -50,6 +56,12 @@ const eligibility = {
 function fixture() {
   let current = NOW;
   let rpcSigner = signer.address;
+  const chainState = {
+    paidCompletions: 0,
+    closedAt: 0,
+    endTime: Math.floor(END.getTime() / 1000),
+    claimed: false,
+  };
   let currentCampaign = campaign;
   let currentSubmission = submission;
   let currentEligibility = eligibility;
@@ -57,8 +69,35 @@ function fixture() {
     async () => currentSubmission,
     async () => currentCampaign,
   );
+  const word = (value: bigint | number) =>
+    BigInt(value).toString(16).padStart(64, "0");
   const rpc = {
-    call: async () => `0x${"0".repeat(24)}${rpcSigner.slice(2)}`,
+    call: async (_to: string, data: string) => {
+      if (data.startsWith(toFunctionSelector("authorizedSigner()"))) {
+        return `0x${"0".repeat(24)}${rpcSigner.slice(2)}`;
+      }
+      if (data.startsWith("0x141961bc")) {
+        // campaigns(uint256)
+        return `0x${[
+          word(BigInt(`0x${"aa".repeat(20)}`)),
+          word(currentCampaign.maxCompletions * 1_000_000),
+          word(chainState.paidCompletions * 1_000_000),
+          word(1_000_000),
+          word(currentCampaign.maxCompletions),
+          word(chainState.paidCompletions),
+          word(Math.floor(START.getTime() / 1000)),
+          word(chainState.endTime),
+          word(chainState.closedAt),
+          word(chainState.closedAt === 0 ? 1 : 2),
+        ].join("")}`;
+      }
+      if (
+        data.startsWith(toFunctionSelector("claimedWallet(uint256,address)"))
+      ) {
+        return `0x${word(chainState.claimed ? 1 : 0)}`;
+      }
+      throw new Error(`unexpected eth_call ${data.slice(0, 10)}`);
+    },
   };
 
   const dependencies = {
@@ -90,6 +129,7 @@ function fixture() {
     setNow: (value: Date) => {
       current = value;
     },
+    chainState,
     setRpcSigner: (value: typeof signer.address) => {
       rpcSigner = value;
     },
@@ -191,10 +231,73 @@ describe("EIP-712 claim authorization", () => {
       ok: true,
       created: false,
     });
+    // Expired and the campaign is closed: no fresh liability is created.
     f.setNow(new Date("2026-10-12T01:26:00.000Z"));
     expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
       ok: false,
-      code: "AUTHORIZATION_EXPIRED",
+      code: "CAMPAIGN_NOT_ACTIVE",
+    });
+  });
+
+  it("reissues an expired, unredeemed authorization with a new nonce", async () => {
+    const f = fixture();
+    const first = await authorizeClaim(f.dependencies, f.input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+    const reissued = await authorizeClaim(f.dependencies, f.input);
+
+    expect(reissued).toMatchObject({ ok: true, created: true });
+    if (!reissued.ok) return;
+    expect(reissued.claim.payload.nonce).not.toBe(first.claim.payload.nonce);
+    expect(reissued.claim.payload.issuedAt).toBe(
+      BigInt(Math.floor(Date.parse("2026-10-12T01:26:00.000Z") / 1000)),
+    );
+  });
+
+  it("never reissues once the wallet was paid on-chain", async () => {
+    const f = fixture();
+    await authorizeClaim(f.dependencies, f.input);
+    f.chainState.claimed = true;
+    f.chainState.paidCompletions = 1;
+    f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      code: "ALREADY_CLAIMED",
+    });
+  });
+
+  it("caps paid plus outstanding authorizations at maxCompletions", async () => {
+    const f = fixture();
+    f.setCampaign({ ...campaign, maxCompletions: 2 });
+    f.chainState.paidCompletions = 1;
+    expect((await authorizeClaim(f.dependencies, f.input)).ok).toBe(true);
+
+    // A second human while one is paid and one is outstanding: cap reached.
+    f.setSubmission({ ...submission!, id: "submission-2" });
+    const second = { ...f.input, submissionId: "submission-2" };
+    expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_CAP_REACHED",
+    });
+
+    // The first authorization expires unredeemed and frees its slot.
+    f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+    expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
+      ok: true,
+      created: true,
+    });
+  });
+
+  it("stops issuing as soon as the campaign is closed on-chain", async () => {
+    const f = fixture();
+    f.chainState.closedAt = Math.floor(NOW.getTime() / 1000) - 5;
+
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_NOT_ACTIVE",
     });
   });
 

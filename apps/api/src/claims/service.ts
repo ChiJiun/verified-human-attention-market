@@ -5,6 +5,7 @@ import type { CampaignRepository } from "../campaigns/repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
+import { readClaimChainState } from "./chain-state.js";
 import { ClaimIssueError, type ClaimRepository } from "./repository.js";
 import type { ClaimSigner, SignedClaim } from "./signer.js";
 
@@ -85,6 +86,26 @@ export async function authorizeClaim(
     return { ok: false, status: 503, code: "SIGNER_MISMATCH" };
   }
 
+  // Live contract state: paid completions, close status and whether this
+  // wallet was already paid. Indexed events lag by the confirmation depth.
+  let chainState: Awaited<ReturnType<typeof readClaimChainState>>;
+  try {
+    chainState = await readClaimChainState(
+      chain.rpc,
+      chain.contractAddress,
+      campaign.onchainCampaignId,
+      submission.claimantAddress as Address,
+    );
+  } catch {
+    return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
+  }
+
+  if (!chainState) {
+    return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+  }
+
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+
   try {
     const result = await dependencies.claims.issueOnce({
       submissionId: submission.id,
@@ -93,7 +114,12 @@ export async function authorizeClaim(
       canIssue:
         campaign.status === "active" &&
         now >= campaign.startAt &&
-        now < campaign.endAt,
+        now < campaign.endAt &&
+        // The contract rejects authorizations issued after close/end.
+        chainState.closedAt === 0 &&
+        nowSeconds < chainState.endTime,
+      alreadyClaimed: chainState.alreadyClaimed,
+      onchainPaidCompletions: chainState.paidCompletions,
       sign: () =>
         signer.sign({
           campaignId: BigInt(campaign.onchainCampaignId!),
@@ -110,7 +136,7 @@ export async function authorizeClaim(
     if (error instanceof ClaimIssueError) {
       return {
         ok: false,
-        status: error.code === "AUTHORIZATION_EXPIRED" ? 410 : 409,
+        status: 409,
         code: error.code,
       };
     }

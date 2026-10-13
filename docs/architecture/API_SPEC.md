@@ -235,9 +235,14 @@ signer must match the contract's current signer.
 The response contains the exact EIP-712 `ClaimAuthorization` fields,
 `signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
 are decimal strings. A retry before expiry returns the same signed payload;
-concurrent requests cannot issue a second authorization. After expiry, the
-one-time POC authorization returns `410 AUTHORIZATION_EXPIRED`. The API never
-returns or logs the private signing key.
+concurrent requests cannot issue a second authorization. After expiry, an
+unredeemed authorization is reissued with a new nonce while the campaign is
+still active and under its cap; once the wallet has been paid the endpoint
+returns `409 ALREADY_CLAIMED`. Other errors: `409 CAMPAIGN_CAP_REACHED`
+(paid + outstanding authorizations reached `maxCompletions`), `409
+CAMPAIGN_NOT_ACTIVE` (including closed on-chain), and `503 CHAIN_UNAVAILABLE` /
+`SIGNER_MISMATCH` (fail closed). The API never returns or logs the private
+signing key.
 
 # Analytics
 

@@ -83,12 +83,27 @@ This closes an important refund race: after the issuance deadline plus the maxim
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
-authorization request returns the same active signature. The POC does not
-reissue an expired authorization; callers receive `AUTHORIZATION_EXPIRED`.
-Issuance is serialized per campaign and capped at `maxCompletions` so the
-backend cannot create more distinct signed reward liabilities than the
-campaign's completion limit. The service also checks the contract's current
-authorized signer via RPC before signing.
+authorization request returns the same active signature.
+
+Before signing, the service reads **live** contract state via `eth_call`: the
+current `authorizedSigner`, `campaigns(id)` (paid completions, `closedAt`,
+`endTime`) and `claimedWallet(id, claimant)`. Indexed events lag by the
+confirmation depth; these reads do not. RPC failures fail closed.
+
+- **Cap:** under the campaign row lock, a new authorization is issued only if
+  `onchain paidCompletions + unexpired authorizations of other submissions <
+  maxCompletions`. Every unexpired signature therefore stays redeemable, and
+  late participants never receive a signature the contract would reject with
+  `CompletionLimitReached`. An already-paid authorization that has not yet
+  expired is counted twice, which only errs on the safe side.
+- **Expiry:** an authorization that expired unredeemed is **reissued** with a
+  new nonce and `issuedAt` (still subject to the cap and an active, open
+  campaign). The contract pays each wallet once per campaign
+  (`claimedWallet`), so reissuing cannot cause a second payout. If the wallet
+  was already paid, the request returns `409 ALREADY_CLAIMED`.
+- **Close:** issuance stops as soon as `closedAt != 0` on-chain, so no
+  authorization is issued after the issuance deadline that the refund grace
+  period relies on.
 
 Submission endpoint accepts an `Idempotency-Key`.
 

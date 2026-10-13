@@ -32,7 +32,7 @@ const word = (value: bigint) => value.toString(16).padStart(64, "0");
 
 /** Reads `campaigns(id)` via eth_call (10 static words). */
 export async function readOnchainCampaign(
-  rpc: ChainRpc,
+  rpc: Pick<ChainRpc, "call">,
   contractAddress: string,
   onchainCampaignId: string,
 ): Promise<OnchainCampaign | null> {
