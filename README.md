@@ -70,6 +70,27 @@ forge test -vv
 
 Copy `.env.example` to a local `.env` file when environment-specific values are needed. Never commit real keys or credentials.
 
+### Testing
+
+| Layer | Command | Covers | Needs |
+| --- | --- | --- | --- |
+| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, every API endpoint (in-memory) | nothing |
+| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock | PostgreSQL 16 |
+| Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
+| ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |
+| End-to-end demo | `pnpm --filter @vham/api test:e2e` | full loop on a local chain, with final accounting checked | anvil + PostgreSQL |
+
+```bash
+docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham_e2e postgres:16-alpine
+anvil                                   # second terminal (WSL on Windows)
+(cd packages/contracts && forge build)
+export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
+export E2E_RPC_URL=http://127.0.0.1:8545
+pnpm test && pnpm --filter @vham/api test:e2e
+```
+
+PostgreSQL tests skip when `TEST_DATABASE_URL` is unset. The e2e run wipes its database tables, so use a dedicated database. Only World ID is simulated. See [docs/DEMO.md](docs/DEMO.md) for details and Windows notes. CI runs the `javascript`, `e2e` and `solidity` jobs on every push and reports failures as annotations.
+
 ---
 
 ## 1. Problem
