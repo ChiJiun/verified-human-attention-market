@@ -6,6 +6,18 @@ import {
 } from "./auth/repository.js";
 import { registerAuthRoutes } from "./auth/routes.js";
 import {
+  InMemoryApiClientRepository,
+  type ApiClientRepository,
+} from "./api-clients/repository.js";
+import {
+  apiClientSession,
+  DEFAULT_RATE_LIMITS,
+  registerApiClientGate,
+  registerApiClientRoutes,
+  type RateLimitConfig,
+} from "./api-clients/routes.js";
+import { registerErrorModel } from "./errors/catalog.js";
+import {
   sessionAuthenticator,
   verifyEoaSignature,
   type Authenticate,
@@ -90,6 +102,11 @@ export interface AppDependencies {
   /** Defaults to open mode (tests); server.ts requires review off anvil. */
   moderation?: ModerationConfig;
   contentUrlPolicy?: ContentUrlPolicy;
+  apiClientRepository?: ApiClientRepository;
+  /** null or absent = no rate limiting (tests); server.ts enables it. */
+  rateLimits?: RateLimitConfig | null;
+  /** Fastify trustProxy (hop count) so request.ip is the client's. */
+  trustProxy?: number | boolean;
   close?: () => Promise<void>;
   now?: () => Date;
 }
@@ -101,6 +118,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
         ? false
         : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
     genReqId: generateRequestId,
+    trustProxy: dependencies.trustProxy ?? false,
     requestIdLogLabel: "requestId",
   });
 
@@ -122,9 +140,19 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const now = dependencies.now ?? (() => new Date());
   const authRepository =
     dependencies.authRepository ?? new InMemoryAuthRepository();
-  const authenticate =
-    dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   const chainId = dependencies.chainId ?? 84532;
+  const sessions =
+    dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
+  // API keys (#26) act as their advertiser; otherwise SIWE sessions.
+  const authenticate: Authenticate = async (request) =>
+    request.apiClient
+      ? apiClientSession(request.apiClient, chainId)
+      : sessions(request);
+  const apiEnvironment: "sandbox" | "live" = [31337, 84532].includes(chainId)
+    ? "sandbox"
+    : "live";
+  const apiClientRepository =
+    dependencies.apiClientRepository ?? new InMemoryApiClientRepository();
   const chain = dependencies.chain ?? null;
   const metrics = dependencies.metrics ?? new MetricsRegistry();
 
@@ -157,6 +185,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
     if (lag !== null) indexerLag.set(Number(lag));
     return { head, lag };
   }
+
+  registerErrorModel(app);
+  registerApiClientGate(app, {
+    clients: apiClientRepository,
+    environment: apiEnvironment,
+    rateLimits: dependencies.rateLimits ?? null,
+    metrics,
+    now,
+  });
 
   registerInstrumentation(app, {
     metrics,
@@ -231,6 +268,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
         config: moderationConfig,
         now,
       }),
+    });
+
+    await registerApiClientRoutes(instance, {
+      clients: apiClientRepository,
+      authenticate,
+      environment: apiEnvironment,
+      operators: moderationConfig.operators,
+      rateLimits: dependencies.rateLimits ?? DEFAULT_RATE_LIMITS,
+      now,
     });
 
     await registerModerationRoutes(instance, {

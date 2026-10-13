@@ -422,3 +422,44 @@ export const moderationActions = pgTable(
     ),
   ],
 );
+
+/**
+ * External API clients (#26). A client acts as one advertiser wallet with
+ * limited scopes. Only sha256(key) is stored; the key is shown once.
+ */
+export const apiClients = pgTable(
+  "api_clients",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    advertiserAddress: text("advertiser_address").notNull(),
+    keyPrefix: text("key_prefix").notNull(),
+    keyHash: text("key_hash").notNull(),
+    scopes: jsonb("scopes").$type<string[]>().notNull(),
+    environment: text("environment").notNull(),
+    rateLimitPerMinute: integer("rate_limit_per_minute").notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true, mode: "date" }),
+    revokedBy: text("revoked_by"),
+    revokedReason: text("revoked_reason"),
+  },
+  (table) => [
+    uniqueIndex("api_clients_key_hash_uq").on(table.keyHash),
+    index("api_clients_advertiser_idx").on(table.advertiserAddress),
+    check(
+      "api_clients_environment_check",
+      sql`${table.environment} IN ('sandbox', 'live')`,
+    ),
+    check(
+      "api_clients_advertiser_address_format",
+      sql`${table.advertiserAddress} ~ '^0x[0-9a-f]{40}$'`,
+    ),
+    check(
+      "api_clients_rate_limit_positive",
+      sql`${table.rateLimitPerMinute} > 0`,
+    ),
+  ],
+);

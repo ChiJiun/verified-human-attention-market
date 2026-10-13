@@ -227,6 +227,18 @@
 
 **Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
+## T-016 API Key Abuse / Scraping
+
+**Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
+
+**Mitigation (implemented, #26):**
+
+- Keys are scoped (`campaigns:write`, `analytics:read`), bound to one advertiser and environment, stored as `sha256` only, and can never reach admin, key-management or session endpoints.
+- Owner and operator revocation take effect on the next request; creation and revocation are audit-logged.
+- Per-key, per-IP and stricter per-route (sign-in, eligibility, reports) rate limits with metrics.
+
+**Residual risk:** limits are per instance and per IP; distributed abuse needs an edge/WAF limit in front of the API.
+
 ## T-015 Wallet Impersonation / Session Theft
 
 **Threat:** someone creates campaigns or reads analytics as another advertiser by claiming their address, replays a captured sign-in message, or steals a session token.

@@ -74,7 +74,7 @@ Copy `.env.example` to a local `.env` file when environment-specific values are 
 
 | Layer | Command | Covers | Needs |
 | --- | --- | --- | --- |
-| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, moderation, every API endpoint (in-memory) | nothing |
+| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, moderation, API keys and rate limits, every API endpoint (in-memory) | nothing |
 | PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock, retention/erasure, audit triggers | PostgreSQL 16 |
 | Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
 | ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |

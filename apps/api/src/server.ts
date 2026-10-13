@@ -1,5 +1,7 @@
 import { createPublicClient, http } from "viem";
 
+import { PostgresApiClientRepository } from "./api-clients/repository.js";
+import { DEFAULT_RATE_LIMITS } from "./api-clients/routes.js";
 import { PostgresAuthRepository } from "./auth/repository.js";
 import { verifyEoaSignature } from "./auth/siwe.js";
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
@@ -117,6 +119,40 @@ const allowedContentDomains = process.env.CONTENT_DOMAIN_ALLOWLIST
       .filter((value) => value.length > 0)
   : null;
 
+// Rate limits (#26), per API instance. Env overrides; all must be positive.
+const positiveInt = (name: string, fallback: number) => {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+};
+const rateLimits = {
+  anonymousPerMinute: positiveInt(
+    "RATE_LIMIT_ANONYMOUS_PER_MINUTE",
+    DEFAULT_RATE_LIMITS.anonymousPerMinute,
+  ),
+  sensitivePerMinute: positiveInt(
+    "RATE_LIMIT_SENSITIVE_PER_MINUTE",
+    DEFAULT_RATE_LIMITS.sensitivePerMinute,
+  ),
+  defaultClientPerMinute: positiveInt(
+    "RATE_LIMIT_CLIENT_DEFAULT_PER_MINUTE",
+    DEFAULT_RATE_LIMITS.defaultClientPerMinute,
+  ),
+  maxClientPerMinute: positiveInt(
+    "RATE_LIMIT_CLIENT_MAX_PER_MINUTE",
+    DEFAULT_RATE_LIMITS.maxClientPerMinute,
+  ),
+};
+// Number of trusted reverse-proxy hops in front of the API (0 = none), so
+// per-IP limits see the client address rather than the proxy's.
+const trustProxy = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+
+if (!Number.isSafeInteger(trustProxy) || trustProxy < 0) {
+  throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
+}
+
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 // Claim signer custody (#23). Production keys live in a KMS/HSM behind a
@@ -174,6 +210,9 @@ const app = buildApp({
   participantKeySecret,
   chainId,
   metricsToken,
+  apiClientRepository: new PostgresApiClientRepository(database.db),
+  rateLimits,
+  trustProxy: trustProxy === 0 ? false : trustProxy,
   moderationRepository: new PostgresModerationRepository(database.db),
   moderation: { mode: moderationMode, operators, advertiserAllowlist },
   contentUrlPolicy: { allowedDomains: allowedContentDomains },
