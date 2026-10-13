@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/campaign-manager-abi.ts",
+    "./chains": "./src/chains.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

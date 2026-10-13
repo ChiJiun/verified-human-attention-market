@@ -134,6 +134,29 @@ pnpm --filter @vham/api indexer    # 鏈上事件索引 + campaign 狀態同步
 - **`WORLD_ID_RP_ID` + `PARTICIPANT_KEY_SECRET`**：沒設定時，資格驗證一律回 503。
 - **`CLAIM_SIGNER_PRIVATE_KEY`**：沒設定時不會簽授權。它必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰。
 
+### 廣告主前端（#11）
+
+```bash
+# API 端（.env）：SIWE_DOMAIN 必須等於前端網址的 host
+SIWE_DOMAIN=localhost:3000
+
+# 前端
+export API_URL=http://localhost:3001        # Next 把 /api/* 轉發到這裡
+export NEXT_PUBLIC_CHAIN_ID=84532           # 本機 anvil 用 31337
+pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
+```
+
+頁面流程：
+
+1. 連接瀏覽器錢包；網路不對時會顯示切換按鈕。
+2. 用 Sign-In with Ethereum 登入。
+3. 填寫 campaign（獎勵用十進位 USDC 輸入，內部以整數 atomic units 換算），並設計 1–3 題理解測驗。
+4. 按「Create on-chain」送出 createCampaign，API 驗證交易後完成連結。
+5. 按「Approve & fund」核准並入金。
+6. indexer 確認後，狀態變成 active，頁面會顯示預算與成效。
+
+交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續自動對帳。重新整理頁面後也只會繼續對帳原本那筆交易，不會再送一次。
+
 ### 部署到 Base Sepolia
 
 請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。部署需要你自己的 Foundry keystore、RPC 和 Developer Portal 的 World ID app，所以 testnet 部分（#13 剩下的驗收項目）還沒有實際執行。

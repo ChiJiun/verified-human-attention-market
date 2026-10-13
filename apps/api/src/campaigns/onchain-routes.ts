@@ -45,6 +45,21 @@ export async function registerOnchainRoutes(
     message: "On-chain integration is not configured",
   };
 
+  // Public chain settings for wallets (contract addresses are public data).
+  app.get("/v1/chain", async (request, reply) => {
+    if (!dependencies.chain) {
+      return reply
+        .status(503)
+        .send({ error: { ...chainMissing, requestId: request.id } });
+    }
+
+    return reply.send({
+      chainId: dependencies.chain.chain.chainId,
+      campaignManager: dependencies.chain.chain.contractAddress,
+      usdc: dependencies.chain.chain.usdcAddress,
+    });
+  });
+
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/publish",
     async (request, reply) => {

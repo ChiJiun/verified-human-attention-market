@@ -1,0 +1,80 @@
+/** Thin client for the API, reached same-origin through /api (next.config). */
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+  ) {
+    super(`${status} ${code}`);
+    this.name = "ApiError";
+  }
+}
+
+export interface ApiOptions {
+  method?: "GET" | "POST";
+  body?: unknown;
+  token?: string | null;
+  idempotencyKey?: string;
+}
+
+export async function api<T>(
+  path: string,
+  options: ApiOptions = {},
+): Promise<{ status: number; data: T }> {
+  const headers: Record<string, string> = {};
+
+  if (options.body !== undefined) {
+    headers["content-type"] = "application/json";
+  }
+  if (options.token) {
+    headers.authorization = `Bearer ${options.token}`;
+  }
+  if (options.idempotencyKey) {
+    headers["idempotency-key"] = options.idempotencyKey;
+  }
+
+  const response = await fetch(`/api${path}`, {
+    method: options.method ?? "GET",
+    headers,
+    ...(options.body !== undefined
+      ? { body: JSON.stringify(options.body) }
+      : {}),
+  });
+  const data = (await response.json().catch(() => ({}))) as T & {
+    error?: { code?: string };
+  };
+
+  if (!response.ok && response.status !== 202) {
+    throw new ApiError(response.status, data.error?.code ?? "UNKNOWN_ERROR");
+  }
+
+  return { status: response.status, data };
+}
+
+/** Human-readable messages for the error codes the UI can hit. */
+export function describeError(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? error.message : "Unexpected error";
+  }
+
+  const messages: Record<string, string> = {
+    UNAUTHENTICATED: "Please sign in with your wallet first.",
+    NOT_CAMPAIGN_ADVERTISER: "This wallet is not the campaign's advertiser.",
+    INVALID_CAMPAIGN: "Some campaign fields are invalid.",
+    CAMPAIGN_START_IN_PAST: "The start time must be in the future.",
+    CAMPAIGN_START_PASSED:
+      "The start time has passed; create a new campaign with a later start.",
+    CHAIN_NOT_CONFIGURED: "The API has no chain configuration.",
+    PARAMETERS_MISMATCH:
+      "The on-chain campaign does not match this draft. Use the values shown.",
+    ADVERTISER_MISMATCH: "The transaction was sent from a different wallet.",
+    ALREADY_LINKED: "This draft is already linked to an on-chain campaign.",
+    AUTH_NOT_CONFIGURED: "Sign-in is disabled on this API (SIWE_DOMAIN).",
+    NONCE_INVALID_OR_USED: "Sign-in expired. Please try again.",
+    WRONG_DOMAIN:
+      "Sign-in domain mismatch: set SIWE_DOMAIN to this site's host.",
+    WRONG_CHAIN: "Sign-in chain mismatch.",
+  };
+
+  return messages[error.code] ?? `Request failed (${error.code}).`;
+}
