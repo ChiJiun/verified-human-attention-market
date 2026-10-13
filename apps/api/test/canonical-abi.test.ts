@@ -60,7 +60,7 @@ describe("API contract fragments match the canonical ABI", () => {
         toFunctionSelector(signature(fragment as never)),
       );
       expect(
-        (canonical as { outputs: { type: string }[] }).outputs.map(
+        (canonical as unknown as { outputs: { type: string }[] }).outputs.map(
           (output) => output.type,
         ),
       ).toEqual(fragment.outputs.map((output) => output.type));
