@@ -157,6 +157,68 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 
 交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續自動對帳。重新整理頁面後也只會繼續對帳原本那筆交易，不會再送一次。
 
+### 完整網頁 demo：本機鏈 + 前端（#11 / #12）
+
+用瀏覽器錢包實際操作「廣告主建立、入金 → 使用者作答、領取」。World ID 在這個模式下是模擬的：`WORLD_ID_MODE=simulated` 只能在本機 anvil（chain 31337）啟用，換成其他鏈 API 會拒絕啟動。
+
+下面用到的都是 anvil 啟動時印出的**公開測試帳號**，只能用在本機，絕不要拿到任何真實網路上。
+
+| 角色 | 帳號 | 地址 |
+| --- | --- | --- |
+| 部署者 | anvil #0 | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` |
+| claim 簽名者 | anvil #1 | `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` |
+| 廣告主（匯入瀏覽器錢包） | anvil #2 | `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` |
+| 使用者（匯入另一個錢包或帳號） | anvil #3 | `0x90F79bf6EB2c4f870365E785982E1f101E93b906` |
+
+```bash
+# 終端機 1：資料庫（同上的 docker run，資料庫名改用 vham）
+# 終端機 2：本機鏈。每 2 秒產生一個區塊，indexer 才有確認數可以等
+anvil --block-time 2
+
+# 終端機 3：部署 mock USDC + CampaignManager，並給廣告主 100 mock USDC
+cd packages/contracts && forge build
+CLAIM_SIGNER_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
+ADVERTISER_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC \
+forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+cat deployments/31337.json      # 記下 campaignManager、usdc、deployBlock
+```
+
+API 和 indexer 的環境變數（例如寫在 `.env`，**不要 commit**）：
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+EVM_CHAIN_ID=31337
+EVM_RPC_URL=http://127.0.0.1:8545
+USDC_ADDRESS=<deployments/31337.json 的 usdc>
+CAMPAIGN_MANAGER_ADDRESS=<campaignManager>
+CAMPAIGN_MANAGER_DEPLOY_BLOCK=<deployBlock>
+CLAIM_SIGNER_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+SIWE_DOMAIN=localhost:3000
+WORLD_ID_MODE=simulated
+PARTICIPANT_KEY_SECRET=local-demo-secret-at-least-32-characters
+INDEXER_CONFIRMATIONS=2
+```
+
+API 和 indexer 不會自動讀 `.env`，請先在終端機 4、5 載入：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
+
+```bash
+# 終端機 4：API（會先跑 migration）
+pnpm --filter @vham/api db:migrate && pnpm --filter @vham/api dev
+# 終端機 5：indexer
+pnpm --filter @vham/api indexer
+# 終端機 6：前端
+API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MODE=simulated \
+  pnpm --filter @vham/web dev
+```
+
+在瀏覽器錢包新增網路：RPC `http://127.0.0.1:8545`，Chain ID `31337`。
+
+1. **廣告主（anvil #2）：** 打開 http://localhost:3000/advertiser，依序連接錢包、登入、建立 campaign。開始時間要設在幾分鐘後。接著按 Create on-chain，再按 Approve & fund，等狀態變成 `active` 後，複製頁面上的 participant link。
+2. **等到開始時間後**（本機鏈時間跟著真實時間走）：
+3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify（local simulation）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
+4. 回到廣告主頁面，可以看到已付金額和完成數。
+
 ### 部署到 Base Sepolia
 
 請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。部署需要你自己的 Foundry keystore、RPC 和 Developer Portal 的 World ID app，所以 testnet 部分（#13 剩下的驗收項目）還沒有實際執行。

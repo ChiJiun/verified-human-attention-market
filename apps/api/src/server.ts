@@ -14,6 +14,7 @@ import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
 import {
   HttpWorldIdVerifier,
+  LocalSimulatedWorldIdVerifier,
   UnconfiguredWorldIdVerifier,
   type WorldIdEnvironment,
 } from "./identity/world-id.js";
@@ -52,12 +53,23 @@ if (!["production", "staging"].includes(worldIdEnvironment)) {
 }
 
 const worldIdRpId = process.env.WORLD_ID_RP_ID;
-const worldIdVerifier = worldIdRpId
-  ? new HttpWorldIdVerifier({
-      rpId: worldIdRpId,
-      environment: worldIdEnvironment,
-    })
-  : new UnconfiguredWorldIdVerifier();
+const worldIdMode = process.env.WORLD_ID_MODE ?? "live";
+
+if (!["live", "simulated"].includes(worldIdMode)) {
+  throw new Error("WORLD_ID_MODE must be live or simulated");
+}
+
+// Simulation proves nothing: the constructor throws unless the chain is the
+// local anvil chain, so the API cannot start this way anywhere with value.
+const worldIdVerifier =
+  worldIdMode === "simulated"
+    ? new LocalSimulatedWorldIdVerifier(chainId)
+    : worldIdRpId
+      ? new HttpWorldIdVerifier({
+          rpId: worldIdRpId,
+          environment: worldIdEnvironment,
+        })
+      : new UnconfiguredWorldIdVerifier();
 
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
@@ -106,7 +118,9 @@ if (!siweDomain) {
   app.log.warn("SIWE sign-in is disabled: set SIWE_DOMAIN");
 }
 
-if (!worldIdRpId || !participantKeySecret) {
+if (worldIdMode === "simulated") {
+  app.log.warn("WORLD_ID_MODE=simulated: local anvil demo only");
+} else if (!worldIdRpId || !participantKeySecret) {
   app.log.warn(
     "World ID eligibility is disabled: set WORLD_ID_RP_ID and PARTICIPANT_KEY_SECRET",
   );

@@ -206,3 +206,51 @@ export class UnconfiguredWorldIdVerifier implements WorldIdVerifier {
     return { ok: false, code: "WORLD_ID_NOT_CONFIGURED" };
   }
 }
+
+/** Local anvil chain id: the only chain where simulation is allowed. */
+export const LOCAL_DEV_CHAIN_ID = 31337;
+
+/**
+ * Local-development stand-in for World ID, for demos on anvil only.
+ *
+ * The "proof" is `{ action, simulatedHuman }`. It proves nothing, so the
+ * constructor refuses any chain other than the local anvil chain, where no
+ * real value exists. The server also refuses to start in this mode
+ * elsewhere.
+ */
+export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
+  constructor(chainId: number) {
+    if (chainId !== LOCAL_DEV_CHAIN_ID) {
+      throw new Error(
+        `Simulated World ID is only allowed on the local chain ${LOCAL_DEV_CHAIN_ID}`,
+      );
+    }
+  }
+
+  async verify(request: {
+    action: string;
+    idkitResponse: unknown;
+  }): Promise<WorldIdResult> {
+    const proof = z
+      .object({
+        action: z.string(),
+        simulatedHuman: z.string().min(1).max(100),
+      })
+      .safeParse(request.idkitResponse);
+
+    if (!proof.success) {
+      return { ok: false, code: "INVALID_PROOF_PAYLOAD" };
+    }
+
+    if (proof.data.action !== request.action) {
+      return { ok: false, code: "ACTION_MISMATCH" };
+    }
+
+    return {
+      ok: true,
+      nullifier: BigInt(
+        `0x${Buffer.from(proof.data.simulatedHuman).toString("hex")}`,
+      ).toString(10),
+    };
+  }
+}
