@@ -230,6 +230,54 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
+    function test_SignerRotationRevokesOldSignatures() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("rotation"));
+        bytes memory oldSignature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.Unauthorized.selector);
+        vm.prank(advertiser);
+        manager.setAuthorizedSigner(vm.addr(OTHER_SIGNER_KEY));
+
+        vm.expectRevert(CampaignManager.ZeroAddress.selector);
+        manager.setAuthorizedSigner(address(0));
+
+        manager.setAuthorizedSigner(vm.addr(OTHER_SIGNER_KEY));
+        require(manager.authorizedSigner() == vm.addr(OTHER_SIGNER_KEY), "rotated");
+
+        vm.expectRevert(CampaignManager.InvalidSignature.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, oldSignature);
+
+        bytes memory newSignature = _sign(authorization, OTHER_SIGNER_KEY);
+        vm.prank(claimant);
+        manager.claim(authorization, newSignature);
+        require(token.balanceOf(claimant) == ONE_USDC, "paid by new signer");
+    }
+
+    function test_OnlyOwnerCanPauseAndPauseBlocksRefunds() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+
+        vm.expectRevert(CampaignManager.Unauthorized.selector);
+        vm.prank(advertiser);
+        manager.pause();
+
+        manager.pause();
+        vm.warp(endTime + 1 days);
+
+        vm.expectRevert(CampaignManager.Paused.selector);
+        vm.prank(advertiser);
+        manager.refundUnusedBudget(campaignId);
+
+        manager.unpause();
+        vm.prank(advertiser);
+        manager.refundUnusedBudget(campaignId);
+        require(token.balanceOf(advertiser) == ONE_USDC * MAX_COMPLETIONS, "refund after unpause");
+    }
+
     function test_CompletionLimitReached() public {
         uint256 campaignId = _createAndFund(1);
         vm.warp(startTime);

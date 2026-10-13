@@ -1,4 +1,4 @@
-import { and, count, eq, gt, ne } from "drizzle-orm";
+import { and, count, eq, gt, ne, sql } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
 import type { Database } from "../db/client.js";
@@ -11,7 +11,8 @@ export class ClaimIssueError extends Error {
       | "SUBMISSION_NOT_ACCEPTED"
       | "CAMPAIGN_NOT_ACTIVE"
       | "CAMPAIGN_CAP_REACHED"
-      | "ALREADY_CLAIMED",
+      | "ALREADY_CLAIMED"
+      | "DAILY_LIMIT_REACHED",
   ) {
     super(code);
   }
@@ -27,7 +28,15 @@ export interface ClaimIssueInput {
   /** Live on-chain paid completions for the campaign. */
   onchainPaidCompletions: number;
   sign: () => Promise<SignedClaim>;
+  /**
+   * Global 24 h payout-liability circuit breaker (#23): rewards of all
+   * authorizations issued in the last 24 h, plus this one, must stay within
+   * `limitAtomic`. Serialized with an advisory lock in PostgreSQL.
+   */
+  dailyLimit?: { limitAtomic: bigint; rewardAtomic: bigint } | null;
 }
+
+export const DAY_MS = 24 * 60 * 60_000;
 
 export interface ClaimIssueResult {
   claim: SignedClaim;
@@ -149,6 +158,27 @@ export class PostgresClaimRepository implements ClaimRepository {
         throw new ClaimIssueError("CAMPAIGN_CAP_REACHED");
       }
 
+      if (input.dailyLimit) {
+        // One global lock: concurrent issuances cannot overshoot the limit.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext('vham:daily-payout-limit'))`,
+        );
+        const since = new Date(input.now.getTime() - DAY_MS).toISOString();
+        const [issued] = await tx.execute<{ total: string }>(
+          sql`SELECT COALESCE(SUM(c.reward_atomic), 0)::text AS total
+              FROM submissions s JOIN campaigns c ON c.id = s.campaign_id
+              WHERE s.claim_issued_at > ${since}::timestamptz
+                AND s.id <> ${input.submissionId}`,
+        );
+
+        if (
+          BigInt(issued?.total ?? "0") + input.dailyLimit.rewardAtomic >
+          input.dailyLimit.limitAtomic
+        ) {
+          throw new ClaimIssueError("DAILY_LIMIT_REACHED");
+        }
+      }
+
       const claim = await input.sign();
       if (
         claim.payload.campaignId !== BigInt(campaign.onchainCampaignId) ||
@@ -240,6 +270,22 @@ export class InMemoryClaimRepository implements ClaimRepository {
         campaign.maxCompletions
       ) {
         throw new ClaimIssueError("CAMPAIGN_CAP_REACHED");
+      }
+      if (input.dailyLimit) {
+        const since = BigInt(Math.floor((input.now.getTime() - DAY_MS) / 1000));
+        const issued = [...this.records.entries()]
+          .filter(
+            ([submissionId, record]) =>
+              submissionId !== input.submissionId &&
+              record.claim.payload.issuedAt > since,
+          )
+          .reduce((sum, [, record]) => sum + record.claim.payload.amount, 0n);
+        if (
+          issued + input.dailyLimit.rewardAtomic >
+          input.dailyLimit.limitAtomic
+        ) {
+          throw new ClaimIssueError("DAILY_LIMIT_REACHED");
+        }
       }
       const claim = await input.sign();
       this.records.set(input.submissionId, {

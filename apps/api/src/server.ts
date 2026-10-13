@@ -4,7 +4,11 @@ import { PostgresAuthRepository } from "./auth/repository.js";
 import { verifyEoaSignature } from "./auth/siwe.js";
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { PostgresClaimRepository } from "./claims/repository.js";
-import { createClaimSigner } from "./claims/signer.js";
+import {
+  createClaimSigner,
+  createRemoteClaimSigner,
+  type ClaimSigner,
+} from "./claims/signer.js";
 import { buildApp } from "./app.js";
 import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
@@ -115,9 +119,36 @@ const allowedContentDomains = process.env.CONTENT_DOMAIN_ALLOWLIST
 
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
-const claimSigner = process.env.CLAIM_SIGNER_PRIVATE_KEY
-  ? createClaimSigner(process.env.CLAIM_SIGNER_PRIVATE_KEY)
-  : null;
+// Claim signer custody (#23). Production keys live in a KMS/HSM behind a
+// signing service (CLAIM_SIGNER_URL); a plaintext key in the environment is
+// accepted only on the local chain and Base Sepolia.
+const LOCAL_KEY_CHAINS = new Set([31337, 84532]);
+let claimSigner: ClaimSigner | null = null;
+
+if (process.env.CLAIM_SIGNER_URL) {
+  const remote = createRemoteClaimSigner({
+    url: process.env.CLAIM_SIGNER_URL,
+    address: process.env.CLAIM_SIGNER_ADDRESS ?? "",
+    authorization: process.env.CLAIM_SIGNER_AUTHORIZATION || null,
+  });
+  // Fail fast if the service is down or does not hold the configured key.
+  await remote.checkAvailable();
+  claimSigner = remote;
+} else if (process.env.CLAIM_SIGNER_PRIVATE_KEY) {
+  if (!LOCAL_KEY_CHAINS.has(chainId)) {
+    throw new Error(
+      "CLAIM_SIGNER_PRIVATE_KEY is only allowed on chains 31337 and 84532; use CLAIM_SIGNER_URL",
+    );
+  }
+  claimSigner = createClaimSigner(process.env.CLAIM_SIGNER_PRIVATE_KEY);
+}
+
+// Global 24 h liability circuit breaker. Default: 100 test USDC.
+const dailyPayoutLimit = process.env.DAILY_PAYOUT_LIMIT_ATOMIC ?? "100000000";
+
+if (!/^[1-9][0-9]{0,30}$/.test(dailyPayoutLimit)) {
+  throw new Error("DAILY_PAYOUT_LIMIT_ATOMIC must be a positive integer");
+}
 
 // Sign-In with Ethereum (#37). Without SIWE_DOMAIN, sign-in is disabled and
 // every advertiser-only endpoint returns 401 (fail closed).
@@ -138,6 +169,7 @@ const app = buildApp({
   submissionRepository: new PostgresSubmissionRepository(database.db),
   claimRepository: new PostgresClaimRepository(database.db),
   claimSigner,
+  dailyPayoutLimitAtomic: BigInt(dailyPayoutLimit),
   worldIdVerifier,
   participantKeySecret,
   chainId,

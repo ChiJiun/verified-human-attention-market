@@ -62,17 +62,31 @@ More than `perCampaign` (10) authorizations for one campaign, or `global` (50)
 overall, within 5 minutes. Possible signer abuse or a fraud wave.
 
 1. Check `vham_submissions_total` and logs (`alert="payout_anomaly"`, `campaignId`).
-2. If unexpected: pause the contract (`pause()` from the owner) — claims stop,
-   budgets are preserved. Unset `CLAIM_SIGNER_PRIVATE_KEY` and restart the API
-   to stop issuance (claims then return `503 AUTHORIZATION_UNAVAILABLE`).
-3. If the key may be exposed: rotate with `setAuthorizedSigner` (old signatures stop
-   verifying), update the API key, unpause.
+2. If unexpected: run [Emergency pause](#emergency-pause). To also stop
+   issuance, unset the signer (`CLAIM_SIGNER_URL` / `CLAIM_SIGNER_PRIVATE_KEY`)
+   and restart the API (claims then return `503 AUTHORIZATION_UNAVAILABLE`).
+3. If the key may be exposed: run [Signer rotation](#signer-rotation).
 
 ### VhamSignerMismatch
 
 The API key's address differs from `CampaignManager.authorizedSigner()`; every claim
 returns 503. Usually a rotation applied on one side only. Align the API key
 with the on-chain signer. Never "fix" by disabling the check.
+
+### VhamSignerUnavailable
+
+The signing service (KMS) times out, errors, or returned a signature that did
+not recover to `CLAIM_SIGNER_ADDRESS`. Claims return `503 SIGNER_UNAVAILABLE`;
+nothing was issued. Check the signing service and KMS health. A recovery
+mismatch means the service signed with another key or payload: treat it as a
+possible compromise and rotate.
+
+### VhamDailyPayoutLimit
+
+Authorized rewards in the last 24 h reached `DAILY_PAYOUT_LIMIT_ATOMIC`; new
+claims return `503 DAILY_LIMIT_REACHED` (existing authorizations still work).
+If the volume is legitimate, raise the limit through a reviewed config change;
+otherwise treat as VhamPayoutAnomaly.
 
 ### VhamAccountingViolation
 
@@ -110,6 +124,34 @@ eligibility is recorded on failure.
 
 Group `vham_http_requests_total{status=~"5.."}` by route, then search logs for
 `"level":50` with that route's `requestId`s.
+
+## Emergency procedures (#23, ADR-0008)
+
+Both are exercised in CI (`CampaignManager.t.sol` and the local-chain E2E).
+
+### Emergency pause
+
+1. Owner (multisig in production) calls `CampaignManager.pause()`:
+   `cast send $CAMPAIGN_MANAGER_ADDRESS "pause()" --account <owner>`.
+2. Effect: every `claim`, `fundCampaign` and `refundUnusedBudget` reverts
+   with `Paused`. Nothing can move funds out — the owner has no withdrawal.
+3. Verify: `cast call $CAMPAIGN_MANAGER_ADDRESS "paused()(bool)"` → `true`;
+   the indexer logs a `PausedStateChanged` event.
+4. Investigate, fix, then `unpause()`. Authorizations that expired during the
+   pause are reissued on the participant's next request.
+
+### Signer rotation
+
+1. Create the new key in the KMS and add it to the signing service.
+2. Owner calls `setAuthorizedSigner(<new address>)`. From that block, every
+   signature of the old key fails with `InvalidSignature`, and the API
+   returns `SIGNER_MISMATCH` until step 3.
+3. Set `CLAIM_SIGNER_ADDRESS` to the new address and restart the API. The
+   startup check confirms the signing service holds it.
+4. Disable the old key in the KMS. Participants holding an old-key signature
+   request a new one (same submission, reissued).
+
+For local/testnet keys, step 1 is a new `CLAIM_SIGNER_PRIVATE_KEY`.
 
 ## Dashboard
 

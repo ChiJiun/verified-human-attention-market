@@ -18,6 +18,7 @@ import {
   CLAIM_TYPES,
   createClaimSigner,
   MAX_CLAIM_TTL_SECONDS,
+  SignerUnavailableError,
 } from "../src/claims/signer.js";
 import type { EligibilityRepository } from "../src/eligibility/repository.js";
 import type { SubmissionRepository } from "../src/submissions/repository.js";
@@ -288,6 +289,58 @@ describe("EIP-712 claim authorization", () => {
     expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
       ok: true,
       created: true,
+    });
+  });
+
+  it("enforces the global 24 h payout limit (#23)", async () => {
+    const f = fixture();
+    f.setCampaign({ ...campaign, maxCompletions: 10 });
+    const limited = { ...f.dependencies, dailyPayoutLimitAtomic: 1_500_000n };
+
+    expect((await authorizeClaim(limited, f.input)).ok).toBe(true);
+    // Replays of an existing authorization are not new liability.
+    expect(await authorizeClaim(limited, f.input)).toMatchObject({
+      ok: true,
+      created: false,
+    });
+
+    f.setSubmission({ ...submission!, id: "submission-2" });
+    const second = { ...f.input, submissionId: "submission-2" };
+    expect(await authorizeClaim(limited, second)).toMatchObject({
+      ok: false,
+      status: 503,
+      code: "DAILY_LIMIT_REACHED",
+    });
+
+    // 24 h later the window has moved on.
+    f.setCampaign({
+      ...campaign,
+      maxCompletions: 10,
+      endAt: new Date("2026-10-14T00:00:00.000Z"),
+    });
+    f.chainState.endTime = Math.floor(
+      Date.parse("2026-10-14T00:00:00Z") / 1000,
+    );
+    f.setNow(new Date("2026-10-13T01:10:01.000Z"));
+    expect(await authorizeClaim(limited, second)).toMatchObject({ ok: true });
+  });
+
+  it("returns 503 SIGNER_UNAVAILABLE when the signing service fails", async () => {
+    const f = fixture();
+    const failing = {
+      ...f.dependencies,
+      signer: {
+        address: signer.address,
+        sign: async () => {
+          throw new SignerUnavailableError("KMS timeout");
+        },
+      },
+    };
+
+    expect(await authorizeClaim(failing, f.input)).toMatchObject({
+      ok: false,
+      status: 503,
+      code: "SIGNER_UNAVAILABLE",
     });
   });
 

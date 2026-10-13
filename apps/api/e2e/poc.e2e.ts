@@ -127,11 +127,14 @@ describeE2e("POC economic loop on a local chain", () => {
 
   /** Moves chain time and the API clock together. */
   async function travelTo(date: Date) {
-    await testClient.setNextBlockTimestamp({
-      timestamp: BigInt(Math.floor(date.getTime() / 1000)),
-    });
+    // Mined transactions advance chain time; never move it backwards.
+    const latest = await publicClient.getBlock();
+    const target = BigInt(
+      Math.max(Math.floor(date.getTime() / 1000), Number(latest.timestamp) + 1),
+    );
+    await testClient.setNextBlockTimestamp({ timestamp: target });
     await testClient.mine({ blocks: 1 });
-    clock = date;
+    clock = new Date(Number(target) * 1000);
   }
 
   const seconds = (offset: number) => new Date(clock.getTime() + offset * 1000);
@@ -235,6 +238,7 @@ describeE2e("POC economic loop on a local chain", () => {
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: { rpc, chain, events: eventRepository, now },
+      dailyPayoutLimitAtomic: 10n * USDC,
       // Production moderation: an operator must approve the campaign.
       moderationRepository: new PostgresModerationRepository(database.db),
       moderation: {
@@ -475,6 +479,39 @@ describeE2e("POC economic loop on a local chain", () => {
       },
       claim.signature,
     ];
+
+    // 5b. Emergency drills (#23, docs/operations/RUNBOOK.md).
+    const simulateClaim = () =>
+      publicClient.simulateContract({
+        account: alice,
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "claim",
+        args: claimArgs,
+      });
+    // Pause: every claim stops; unpause restores them.
+    await send(deployer, managerAddress, manager.abi, "pause", []);
+    await expect(simulateClaim()).rejects.toThrow();
+    await send(deployer, managerAddress, manager.abi, "unpause", []);
+    // Signer rotation: outstanding signatures stop verifying and the API
+    // refuses to sign with a key the contract no longer trusts.
+    const rotatedSigner = mnemonicToAccount(MNEMONIC, { addressIndex: 6 });
+    await send(deployer, managerAddress, manager.abi, "setAuthorizedSigner", [
+      rotatedSigner.address,
+    ]);
+    await expect(simulateClaim()).rejects.toThrow();
+    const mismatch = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
+      payload: { eligibilityToken },
+    });
+    expect(mismatch.json()).toMatchObject({
+      error: { code: "SIGNER_MISMATCH" },
+    });
+    await send(deployer, managerAddress, manager.abi, "setAuthorizedSigner", [
+      claimSignerAccount.address,
+    ]);
+    await expect(simulateClaim()).resolves.toBeDefined();
 
     // 6. The participant claims exactly 1 USDC on-chain.
     await send(alice, managerAddress, manager.abi, "claim", claimArgs);

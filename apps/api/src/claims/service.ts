@@ -7,7 +7,11 @@ import type { EligibilityRepository } from "../eligibility/repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import { readClaimChainState } from "./chain-state.js";
 import { ClaimIssueError, type ClaimRepository } from "./repository.js";
-import type { ClaimSigner, SignedClaim } from "./signer.js";
+import {
+  SignerUnavailableError,
+  type ClaimSigner,
+  type SignedClaim,
+} from "./signer.js";
 
 export interface ClaimDependencies {
   campaigns: Pick<CampaignRepository, "getById">;
@@ -21,6 +25,8 @@ export interface ClaimDependencies {
     rpc: Pick<ChainRpc, "call">;
   } | null;
   now: () => Date;
+  /** Global 24 h liability limit in token atomic units; null = none. */
+  dailyPayoutLimitAtomic?: bigint | null;
 }
 
 export type ClaimOutcome =
@@ -119,6 +125,13 @@ export async function authorizeClaim(
         chainState.closedAt === 0 &&
         nowSeconds < chainState.endTime,
       alreadyClaimed: chainState.alreadyClaimed,
+      dailyLimit:
+        dependencies.dailyPayoutLimitAtomic == null
+          ? null
+          : {
+              limitAtomic: dependencies.dailyPayoutLimitAtomic,
+              rewardAtomic: BigInt(campaign.rewardAtomic),
+            },
       onchainPaidCompletions: chainState.paidCompletions,
       sign: () =>
         signer.sign({
@@ -136,9 +149,12 @@ export async function authorizeClaim(
     if (error instanceof ClaimIssueError) {
       return {
         ok: false,
-        status: 409,
+        status: error.code === "DAILY_LIMIT_REACHED" ? 503 : 409,
         code: error.code,
       };
+    }
+    if (error instanceof SignerUnavailableError) {
+      return { ok: false, status: 503, code: "SIGNER_UNAVAILABLE" };
     }
     throw error;
   }

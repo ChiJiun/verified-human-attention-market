@@ -75,6 +75,12 @@
 - per-campaign budget bound；
 - payout limits。
 
+**Implemented (#23, ADR-0008):**
+
+- Production key in a KMS/HSM behind a signing service; the API never holds it, verifies every signature it gets back, and refuses plaintext keys off local/Base Sepolia.
+- Rotation (`setAuthorizedSigner`) revokes all old signatures; API fails closed on mismatch. Tested in Foundry and drilled in E2E with pause.
+- Loss bounded by immutable on-chain caps; liability rate bounded by the 24 h API limit; alerts on bursts, signer mismatch/unavailability and the daily limit.
+
 **Production requirement:**
 
 - stronger key custody；
@@ -216,6 +222,8 @@
 - timelock/multisig where appropriate for production；
 - document emergency powers；
 - separate pause from withdrawal authority。
+
+**Implemented (#23):** the owner can only pause/unpause, rotate the signer and transfer ownership — no withdrawal path and no adjustable limits; production owner is a multisig separate from signer and operators (ADR-0008).
 
 **Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
