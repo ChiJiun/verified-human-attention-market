@@ -45,6 +45,7 @@ function setup(
   options: {
     rateLimits?: RateLimitConfig | null;
     chainId?: number;
+    trustProxyHops?: number;
     clients?: InMemoryApiClientRepository;
     metrics?: MetricsRegistry;
   } = {},
@@ -56,6 +57,7 @@ function setup(
     rateLimits: options.rateLimits ?? null,
     metrics: options.metrics ?? new MetricsRegistry(),
     chainId: options.chainId ?? 84532,
+    trustProxyHops: options.trustProxyHops ?? 0,
     moderation: {
       mode: "open",
       operators: [OPERATOR],
@@ -334,6 +336,25 @@ describe("rate limits (#26)", () => {
     ).toBe(200);
     advance(60_000);
     expect((await get()).statusCode).toBe(404);
+  });
+
+  it("keys per-IP limits on the client address behind trusted proxies", async () => {
+    const { app } = setup({ rateLimits: limits, trustProxyHops: 1 });
+    const get = (forwardedFor: string) =>
+      app.inject({
+        method: "GET",
+        url: `/v1/campaigns/${UNKNOWN_CAMPAIGN}`,
+        remoteAddress: "10.0.0.2",
+        headers: { "x-forwarded-for": forwardedFor },
+      });
+
+    // Spoofed left-most entries do not create fresh buckets.
+    for (let index = 0; index < 3; index += 1) {
+      expect((await get(`9.9.9.${index}, 203.0.113.50`)).statusCode).toBe(404);
+    }
+    expect((await get("9.9.9.99, 203.0.113.50")).statusCode).toBe(429);
+    // A different client behind the same proxy has its own bucket.
+    expect((await get("203.0.113.51")).statusCode).toBe(404);
   });
 
   it("applies a stricter bucket to sign-in, eligibility and reports", async () => {

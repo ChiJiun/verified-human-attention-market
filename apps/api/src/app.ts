@@ -105,7 +105,7 @@ export interface AppDependencies {
   apiClientRepository?: ApiClientRepository;
   /** null or absent = no rate limiting (tests); server.ts enables it. */
   rateLimits?: RateLimitConfig | null;
-  /** Trusted reverse-proxy hops (0 = none) so request.ip is the client's. */
+  /** Trusted reverse-proxy hops (0 = none) for per-IP rate limits. */
   trustProxyHops?: number;
   close?: () => Promise<void>;
   now?: () => Date;
@@ -118,9 +118,6 @@ export function buildApp(dependencies: AppDependencies = {}) {
         ? false
         : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
     genReqId: generateRequestId,
-    ...(dependencies.trustProxyHops
-      ? { trustProxy: dependencies.trustProxyHops }
-      : {}),
     requestIdLogLabel: "requestId",
   });
 
@@ -193,6 +190,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     clients: apiClientRepository,
     environment: apiEnvironment,
     rateLimits: dependencies.rateLimits ?? null,
+    trustProxyHops: dependencies.trustProxyHops ?? 0,
     metrics,
     now,
   });

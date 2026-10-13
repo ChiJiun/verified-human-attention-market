@@ -101,11 +101,33 @@ export function registerApiClientGate(
     clients: ApiClientRepository;
     environment: ApiEnvironment;
     rateLimits: RateLimitConfig | null;
+    /** Reverse proxies in front of the API that append x-forwarded-for. */
+    trustProxyHops: number;
     metrics: MetricsRegistry;
     now: () => Date;
   },
 ) {
   const limiter = new FixedWindowRateLimiter();
+
+  /**
+   * Client address for per-IP limits. Each trusted proxy appends the address
+   * it saw, so the client is the entry `trustProxyHops` from the end; entries
+   * further left are caller-controlled and ignored.
+   */
+  function clientIp(request: FastifyRequest): string {
+    const hops = dependencies.trustProxyHops;
+    const header = request.headers["x-forwarded-for"];
+
+    if (hops <= 0 || typeof header !== "string") {
+      return request.ip;
+    }
+
+    const chain = header
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    return chain[chain.length - hops] ?? request.ip;
+  }
   const limited = dependencies.metrics.counter(
     "vham_rate_limited_total",
     "Requests rejected with 429 by bucket",
@@ -233,7 +255,7 @@ export function registerApiClientGate(
         request,
         reply,
         "ip",
-        `ip:${request.ip}`,
+        `ip:${clientIp(request)}`,
         rateLimits.anonymousPerMinute,
       )
     ) {
@@ -246,7 +268,7 @@ export function registerApiClientGate(
         request,
         reply,
         "sensitive",
-        `sensitive:${request.ip}:${key}`,
+        `sensitive:${clientIp(request)}:${key}`,
         rateLimits.sensitivePerMinute,
       )
     ) {
