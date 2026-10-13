@@ -1,9 +1,15 @@
+import Link from "next/link";
+
 export default function HomePage() {
   return (
-    <main>
+    <main className="container">
       <h1>Verified Human Attention Market</h1>
       <p>
-        Implementation has started. The first milestone is the end-to-end POC.
+        Advertisers fund campaigns in USDC; verified humans earn rewards for
+        completing a short comprehension check.
+      </p>
+      <p>
+        <Link href="/advertiser">Advertiser: create and fund a campaign →</Link>
       </p>
     </main>
   );

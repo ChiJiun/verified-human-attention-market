@@ -156,6 +156,26 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
   };
 }
 
+describe("GET /v1/chain", () => {
+  it("exposes the public contract addresses for wallets", async () => {
+    const { app } = await setup();
+    const response = await app.inject({ method: "GET", url: "/v1/chain" });
+
+    expect(response.json()).toEqual({
+      chainId: 84532,
+      campaignManager: CONTRACT,
+      usdc: USDC_ADDRESS,
+    });
+  });
+
+  it("reports when chain integration is not configured", async () => {
+    const { app } = await setup({ chainConfigured: false });
+    const response = await app.inject({ method: "GET", url: "/v1/chain" });
+
+    expect(response.statusCode).toBe(503);
+  });
+});
+
 describe("POST /v1/campaigns/:id/publish", () => {
   it("returns the exact on-chain transaction intent for a draft", async () => {
     const { app, createDraft } = await setup();
