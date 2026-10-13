@@ -11,6 +11,8 @@ import { PostgresChainEventRepository } from "./chain/events-repository.postgres
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
+import { PostgresModerationRepository } from "./moderation/repository.js";
+import type { ModerationMode } from "./moderation/routes.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
 import {
   HttpWorldIdVerifier,
@@ -79,6 +81,38 @@ if (metricsToken !== null && metricsToken.length < 16) {
   throw new Error("METRICS_TOKEN must be at least 16 characters");
 }
 
+// Moderation (#24). "review" is mandatory anywhere but the local anvil chain.
+const moderationMode = (process.env.MODERATION_MODE ??
+  "review") as ModerationMode;
+
+if (!["review", "open"].includes(moderationMode)) {
+  throw new Error("MODERATION_MODE must be review or open");
+}
+
+if (moderationMode === "open" && chainId !== 31337) {
+  throw new Error("MODERATION_MODE=open is only allowed on the local chain");
+}
+
+const addressList = (name: string) =>
+  (process.env[name] ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0)
+    .map((value) => {
+      if (!/^0x[0-9a-f]{40}$/.test(value)) {
+        throw new Error(`${name} must be comma-separated 0x addresses`);
+      }
+      return value;
+    });
+
+const operators = addressList("OPERATOR_ADDRESSES");
+const advertiserAllowlist = addressList("ADVERTISER_ALLOWLIST");
+const allowedContentDomains = process.env.CONTENT_DOMAIN_ALLOWLIST
+  ? process.env.CONTENT_DOMAIN_ALLOWLIST.split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0)
+  : null;
+
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 const claimSigner = process.env.CLAIM_SIGNER_PRIVATE_KEY
@@ -108,6 +142,9 @@ const app = buildApp({
   participantKeySecret,
   chainId,
   metricsToken,
+  moderationRepository: new PostgresModerationRepository(database.db),
+  moderation: { mode: moderationMode, operators, advertiserAllowlist },
+  contentUrlPolicy: { allowedDomains: allowedContentDomains },
   chain: chainConfig
     ? {
         rpc: new JsonRpcClient(chainConfig.rpcUrl),
@@ -122,6 +159,12 @@ const app = buildApp({
     : null,
   close: database.close,
 });
+
+if (moderationMode === "review" && operators.length === 0) {
+  app.log.warn(
+    "No OPERATOR_ADDRESSES: only allowlisted advertisers' campaigns can go live",
+  );
+}
 
 if (!metricsToken) {
   app.log.warn("GET /metrics is unauthenticated: set METRICS_TOKEN");

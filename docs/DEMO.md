@@ -133,6 +133,7 @@ pnpm --filter @vham/api indexer    # 鏈上事件索引 + campaign 狀態同步
 - **`SIWE_DOMAIN`**：沒設定時無法登入，廣告主相關端點一律回 401。
 - **`WORLD_ID_RP_ID` + `PARTICIPANT_KEY_SECRET`**：沒設定時，資格驗證一律回 503。
 - **`CLAIM_SIGNER_PRIVATE_KEY`**：沒設定時不會簽授權。它必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰。
+- **審核（#24）**：預設 `MODERATION_MODE=review`，新 campaign 要由 `OPERATOR_ADDRESSES` 裡的錢包核准（或廣告主在 `ADVERTISER_ALLOWLIST`）才能發佈、作答。`MODERATION_MODE=open` 只能在本機 anvil 使用。詳見 [docs/operations/MODERATION.md](operations/MODERATION.md)。
 
 ### 廣告主前端（#11）
 
@@ -198,6 +199,8 @@ SIWE_DOMAIN=localhost:3000
 WORLD_ID_MODE=simulated
 PARTICIPANT_KEY_SECRET=local-demo-secret-at-least-32-characters
 INDEXER_CONFIRMATIONS=2
+# 本機 demo：讓 anvil #2 的 campaign 直接通過審核（也可以改用 MODERATION_MODE=open）
+ADVERTISER_ALLOWLIST=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
 API 和 indexer 不會自動讀 `.env`，請先在終端機 4、5 載入：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
@@ -231,12 +234,14 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 | --- | --- | --- |
 | 登入 | `POST /v1/auth/nonce` → 錢包簽 SIWE → `POST /v1/auth/verify` | 廣告主 |
 | 建草稿 | `POST /v1/campaigns`（`Authorization: Bearer …`、`Idempotency-Key`） | 廣告主 |
-| 取得上鏈參數 | `POST /v1/campaigns/:id/publish` | 廣告主 |
+| 審核 | `POST /v1/admin/campaigns/:id/moderation { action: "approve", reason }` | 營運者 |
+| 取得上鏈參數 | `POST /v1/campaigns/:id/publish`（需已核准） | 廣告主 |
 | 回報建立交易 | `POST /v1/campaigns/:id/onchain { txHash }` | 廣告主 |
 | 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, idkitResponse }` | 使用者 |
 | 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 使用者 |
 | 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 使用者 |
 | 鏈上領取 | `CampaignManager.claim(authorization, signature)`，由使用者錢包送出 | 使用者 |
 | 成效 | `GET /v1/campaigns/:id/analytics` | 廣告主 |
+| 檢舉 | `POST /v1/campaigns/:id/reports { reason, details? }` | 任何人 |
 
 完整規格見 [`docs/architecture/API_SPEC.md`](architecture/API_SPEC.md)。

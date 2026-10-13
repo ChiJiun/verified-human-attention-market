@@ -72,8 +72,8 @@ forge test -vv
 
 | 層級 | 指令 | 內容 | 需要 |
 | --- | --- | --- | --- |
-| 單元 + API 測試 | `pnpm test` | 驗證器、World ID、SIWE、EIP-712 授權、indexer、鏈上對帳、metrics/告警、各 API 端點（記憶體版） | 無 |
-| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖、資料保存/刪除 | PostgreSQL 16 |
+| 單元 + API 測試 | `pnpm test` | 驗證器、World ID、SIWE、EIP-712 授權、indexer、鏈上對帳、metrics/告警、審核、各 API 端點（記憶體版） | 無 |
+| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖、資料保存/刪除、審核稽核紀錄 | PostgreSQL 16 |
 | 合約 | `cd packages/contracts && forge test -vv` | 單元、fuzz、stateful invariant（預算守恆、完成上限）、部署腳本、事件 topic | Foundry |
 | ABI 一致性 | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | 共用 ABI 與編譯結果一致 | Foundry |
 | 端到端 demo | `pnpm --filter @vham/api test:e2e` | 本機鏈上跑完整流程：登入 → 建立 → 入金 → 驗證 → 作答 → 簽授權 → 鏈上領取 → 關閉 → 退款，最後核對金額 | anvil + PostgreSQL，見下方 |

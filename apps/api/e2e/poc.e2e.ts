@@ -11,6 +11,7 @@
  */
 import { readFileSync } from "node:fs";
 
+import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { fileURLToPath } from "node:url";
 import {
@@ -42,18 +43,8 @@ import { JsonRpcClient } from "../src/chain/rpc.js";
 import { PostgresClaimRepository } from "../src/claims/repository.js";
 import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
-import {
-  answers,
-  authNonces,
-  authSessions,
-  campaigns,
-  chainEvents,
-  eligibility,
-  missions,
-  reconciliationState,
-  submissions,
-} from "../src/db/schema.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
+import { PostgresModerationRepository } from "../src/moderation/repository.js";
 import {
   campaignAction,
   type WorldIdResult,
@@ -81,6 +72,7 @@ const claimSignerAccount = mnemonicToAccount(MNEMONIC, { addressIndex: 1 });
 const advertiser = mnemonicToAccount(MNEMONIC, { addressIndex: 2 });
 const alice = mnemonicToAccount(MNEMONIC, { addressIndex: 3 });
 const bob = mnemonicToAccount(MNEMONIC, { addressIndex: 4 });
+const operator = mnemonicToAccount(MNEMONIC, { addressIndex: 5 });
 
 function artifact(path: string): { abi: Abi; bytecode: Hex } {
   const json = JSON.parse(
@@ -188,19 +180,10 @@ describeE2e("POC economic loop on a local chain", () => {
     await migrate(database.db, {
       migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)),
     });
-    for (const table of [
-      answers,
-      submissions,
-      eligibility,
-      missions,
-      campaigns,
-      chainEvents,
-      reconciliationState,
-      authSessions,
-      authNonces,
-    ]) {
-      await database.db.delete(table);
-    }
+    // TRUNCATE: row triggers protect submissions and the audit log (#24).
+    await database.db.execute(
+      sql`TRUNCATE answers, submissions, eligibility, moderation_actions, campaign_reports, campaign_moderation, missions, campaigns, chain_events, reconciliation_state, auth_sessions, auth_nonces`,
+    );
 
     // Start from "now" on both clocks.
     await travelTo(new Date(Math.floor(Date.now() / 1000) * 1000 + 10_000));
@@ -252,6 +235,13 @@ describeE2e("POC economic loop on a local chain", () => {
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: { rpc, chain, events: eventRepository, now },
+      // Production moderation: an operator must approve the campaign.
+      moderationRepository: new PostgresModerationRepository(database.db),
+      moderation: {
+        mode: "review",
+        operators: [operator.address.toLowerCase()],
+        advertiserAllowlist: [],
+      },
       now,
     });
 
@@ -322,6 +312,23 @@ describeE2e("POC economic loop on a local chain", () => {
     });
     expect(draft.statusCode).toBe(201);
     const campaignId = draft.json<{ id: string }>().id;
+
+    // 1b. Moderation: unreviewed campaigns cannot be published or served.
+    const unreviewed = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/publish`,
+      headers: auth,
+    });
+    expect(unreviewed.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_APPROVED" },
+    });
+    const approval = await app.inject({
+      method: "POST",
+      url: `/v1/admin/campaigns/${campaignId}/moderation`,
+      headers: { authorization: `Bearer ${await signIn(operator)}` },
+      payload: { action: "approve", reason: "landing page reviewed" },
+    });
+    expect(approval.json()).toMatchObject({ status: "approved" });
 
     // 2. On-chain create from the publish intent, then verified linking.
     const intent = (
