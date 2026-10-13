@@ -130,7 +130,7 @@ export async function signIn(
     return { ok: false, status: 401, code: "MESSAGE_NOT_VALID_NOW" };
   }
 
-  let signatureValid = false;
+  let signatureValid: boolean;
   try {
     signatureValid = await dependencies.verifySignature({
       address: parsed.address,
