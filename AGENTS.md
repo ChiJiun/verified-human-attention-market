@@ -109,9 +109,8 @@ Done on `main`:
 
 Next, in dependency order:
 
-1. **#12 — live World ID check.** The IDKit widget is wired in `apps/web` (IDKit 4.4.0, `proofOfHuman()`, v4 proofs only; ADR-0007). It has only been verified against the API contract and the simulated mode; the first real proof happens in the Base Sepolia run. Close #12 only after that run.
-2. **#19 remainder** — record the real testnet deployment (`packages/contracts/deployments/84532.json`).
-3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
+1. **Close M1** after review: #12, #13 and #19 are verified by the Base Sepolia run on 2026-10-14 (docs/DEMO.md). Missing UX: close/refund buttons in the advertiser page (done with `cast send` in the run).
+2. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 

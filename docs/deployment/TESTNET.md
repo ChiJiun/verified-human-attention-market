@@ -55,6 +55,8 @@ CAMPAIGN_MANAGER_ADDRESS=<campaignManager>
 CAMPAIGN_MANAGER_DEPLOY_BLOCK=<deployBlock>
 ```
 
+With the public RPC (`https://sepolia.base.org`), also set `INDEXER_MAX_BLOCK_RANGE=200`: it rejects `eth_getLogs` over more than 200 blocks with HTTP 413.
+
 On startup the API refuses to run if the configuration is partial, the chain is unsupported (Base mainnet is intentionally unsupported), the USDC address is not the official one, the RPC reports another chain, or either contract has no code.
 
 ## ABI

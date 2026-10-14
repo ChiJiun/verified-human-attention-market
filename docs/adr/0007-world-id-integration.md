@@ -48,6 +48,8 @@ The official IDKit, RP-signature and `POST /api/v4/verify/{rp_id}` documentation
 
 This is read from documentation, not observed against a live app. The Base Sepolia run (#13) is the real test; if the portal rejects unknown actions there, this ADR must change (for example to one registered action plus the campaign id carried in the signal).
 
+**Confirmed on Base Sepolia, 2026-10-14:** a real World ID proof for `vham-campaign-<id>` verified successfully while the Developer Portal had no actions created. Per-campaign actions need no pre-registration.
+
 ## Not yet covered
 
 - **Wallet-bound signal:** IDKit can bind the claimant wallet as the proof `signal`, and the backend can check `signal_hash`. This needs keccak256 and a verifier change. Until then, proof relay is mitigated by TLS and the one-wallet-per-human binding.

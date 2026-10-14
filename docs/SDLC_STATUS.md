@@ -97,8 +97,8 @@ Official references:
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ⬜ #11, #12 |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
-| World ID integration | 🟡 Backend verification (ADR-0007, #9), RP signature endpoint and `IDKitRequestWidget` in the mission page (#12, IDKit 4.4.0). Not yet exercised against a real World App / Developer Portal app: that happens in the Base Sepolia run (#13) |
-| Testnet deployment | 🟡 `CampaignManager` deployed to Base Sepolia on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, tx `0x2903d8ac…0338`, block 48106357; record in `packages/contracts/deployments/84532.json`). Owner, signer, token and code verified on-chain. The full flow on Base Sepolia (#13) is still pending |
+| World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
+| Testnet deployment | ✅ Base Sepolia deployment (#19) and full flow with a real World ID proof on 2026-10-14: create, fund, verify, answer, claim, close, refund (#13; see docs/DEMO.md) |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
 
 ## Remaining Gate Before Implementation

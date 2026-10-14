@@ -244,7 +244,36 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 
 ### 部署到 Base Sepolia
 
-請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。部署需要你自己的 Foundry keystore、RPC 和 Developer Portal 的 World ID app，所以 testnet 部分（#13 剩下的驗收項目）還沒有實際執行。
+請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。
+
+### Base Sepolia 完整流程實測（2026-10-14，#13）
+
+用真的 World ID（production、Orb 驗證過的 World App）、Base Sepolia 上的 `CampaignManager` 和 Circle 測試 USDC 跑完一次完整流程，全部成功。
+
+| 項目 | 值 |
+| --- | --- |
+| `CampaignManager` | `0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`（紀錄：`packages/contracts/deployments/84532.json`） |
+| Campaign | on-chain ID `1`；1 USDC × 最多 3 筆；入金 3 USDC |
+| World ID | `production`，action `vham-campaign-<campaignId>`，`proofOfHuman()` |
+
+| 步驟 | 結果 | 交易 / 區塊 |
+| --- | --- | --- |
+| 部署 | owner、signer、USDC、合約程式碼皆在鏈上讀回確認 | `0x2903d8ac3ae70c06441cc34f915fe9be0681b75050a683b9ec643529cdc90338` / 48106357 |
+| 建立 campaign | API 驗證後連結 on-chain ID 1 | `0x2042fdcc6c7de3b14df89d4f6fb1c25df4814a87e95f3f8db606879d629f0b39` / 48107249 |
+| 入金 | indexer 確認後狀態變 `active` | `0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65` / 48107268 |
+| World ID 驗證 | 真實 proof 通過後端 v4 verify，寫入一筆 eligibility | — |
+| 作答 | 開始時間前送出被 `CAMPAIGN_NOT_STARTED` 擋下（預期行為），開始後通過 | — |
+| 領取 | 參與者收到 1 USDC | `0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7` / 48107877 |
+| 關閉 | 狀態 `closed` | `0x3bdfb614d99bbc5673469648424fc43ff72d2d32c9b22c10867a2fab65914ae5` / 48107965 |
+| 退款 | 關閉 15 分鐘後退回 2 USDC，合約餘額 0，狀態 `settled` | `0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4` / 48108562 |
+
+實測發現：
+
+- **per-campaign action 不需要預先註冊。** Developer Portal 沒有建立任何 action，`vham-campaign-<id>` 仍然驗證成功（ADR-0007 已更新）。
+- **公開 RPC 的 `eth_getLogs` 最多 200 個區塊。** 用 `https://sepolia.base.org` 時要設 `INDEXER_MAX_BLOCK_RANGE=200`，否則 indexer 一直收到 HTTP 413。
+- 第一次掃 QR code 出現 World App 的「Verification unavailable」，換掃描方式後成功；API 沒有收到請求，不是後端設定問題。
+- 網頁沒有關閉和退款按鈕，這次用 `cast send ... --interactive` 由廣告主自己簽。
+- 本機 5432 被其他容器佔用時，PostgreSQL 可以改用其他埠，並同步改 `DATABASE_URL`。
 
 ---
 
