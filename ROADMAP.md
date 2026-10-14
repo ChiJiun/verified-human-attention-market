@@ -1,5 +1,5 @@
 # Roadmap moved
 
-The roadmap is maintained directly in [README.md](README.md#roadmap) so the GitHub project page shows the product plan and roadmap in one place.
+The full roadmap now lives in [docs/product/VISION.md](docs/product/VISION.md#roadmap). A one-screen summary with current status is in the [README](README.md#roadmap).
 
-[繁體中文版](README.zh-TW.md#開發路線圖)
+[繁體中文版](docs/product/VISION.zh-TW.md#開發路線圖)
