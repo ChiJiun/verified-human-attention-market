@@ -42,11 +42,30 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 
 Each credit reserves the campaign's funded budget immediately. Invariant: for every campaign, `reserved + paid ≤ funded`. Credits that exceed the remaining budget are not granted. This generalizes the existing cap on outstanding authorizations (#10).
 
+An off-chain reservation alone cannot stop an advertiser refund, because the contract does not know about it. §5 makes reservations enforceable on-chain before any refund.
+
 ### 3. World ID at login and withdrawal (R4, D4)
 
-- **Sign-up (first login):** a uniqueness proof for one app-wide action (for example `vham-account-v1`). The nullifier becomes an HMAC account key, as in ADR-0007, so one human has exactly one account.
-- **Later logins and every withdrawal:** a World ID **session proof**. Per the official docs, a session proves continuity across checks without repeating a uniqueness proof; the backend stores `session_id` against the account and rejects reused `session_nullifier` values.
-- Because only verified humans can log in, there are no unverified balances, which is why D3 can drop caps and expiry.
+Per the official session-proof docs (checked 2026-10-14): a session must first be **created** and verified by the backend before its `session_id` is saved; later checks **prove** that saved session; `session_nullifier` only prevents replay and is not an account identifier; and a World ID session is **not** a login credential. Linking or replacing an account's session is an account-security operation.
+
+| Flow | World ID step | Backend |
+| --- | --- | --- |
+| **Enrollment** (first visit) | 1. uniqueness proof for the app-wide action (for example `vham-account-v1`); 2. create a session | Verify both. Account key = `HMAC(secret, nullifier)` (ADR-0007), so one human has one account. Save `session_id` only after verification succeeds |
+| **Login** | prove the saved session | Verify; require `session_id` to equal the saved one; reject a reused `session_nullifier`. Then issue our own short-lived, HTTP-only app session. Credits accrue only under that app session |
+| **Withdrawal** | prove the saved session again, bound to the withdrawal (§3a) | As login, plus the binding checks in §3a |
+| **Recovery** (new phone, lost session) | uniqueness proof again, then create a new session | The same human yields the same nullifier, so the same account. Replace `session_id`, revoke all app sessions, and hold withdrawals for a cooling-off period (for example 24 h) |
+
+Because only verified humans can log in, there are no unverified balances, which is why D3 can drop caps and expiry.
+
+### 3a. Withdrawal authorization
+
+A withdrawal must be bound to the account, destination, amount and a one-time identifier, so that a stolen app session or a tampered request cannot redirect funds.
+
+1. The logged-in user requests `{ destination, amount }`. The backend creates a withdrawal record `W = { withdrawalId, accountKey, destination, amount, expiresAt }` with status `pending`.
+2. The destination wallet signs an EIP-712 `WithdrawalRequest(withdrawalId, destination, amount, expiresAt)` off-chain. This costs no gas, proves control of the destination and rules out typos. It is one signature per withdrawal, not per view, so R2 still holds.
+3. The backend signs the World ID RP request with `nonce = hash_to_field(keccak256(W))` instead of a random nonce, and the user proves the saved session. The backend accepts the proof only if it echoes that nonce, so the proof is bound to this exact withdrawal and cannot be reused (World also rejects duplicate RP nonces).
+4. Only then is `W` marked `approved`. The payout carries `withdrawalId`; the contract stores used ids and rejects a second payout for the same id.
+5. A destination the account has never used before is held for a cooling-off period, matching recovery.
 
 ### Privacy and minimal disclosure
 
@@ -81,11 +100,18 @@ A new contract, not an in-place change to `CampaignManager` (no proxy upgradeabi
 - budget conservation: total payouts per campaign ≤ funded budget;
 - per-recipient cumulative paid amount is monotonic, so a payout cannot be replayed;
 - operator payouts limited by on-chain daily caps (ADR-0006, ADR-0008 style);
-- advertiser refund only after campaign end plus a settlement window, the same reasoning as the current refund delay.
+- payouts identified by a one-time `withdrawalId` (§3a);
+- **reservations enforced on-chain before any refund** (see below).
+
+**Liability commitment.** The contract keeps, per campaign, `committed` (credits moved into a platform-wide `userLiability` balance) and `paid`. The operator calls `commitCredits(campaignId, amount)` at least daily and once more after the campaign ends; the contract requires `committed ≤ funded`. Payouts are drawn only from `userLiability`. The advertiser can refund `funded − committed` only after the **final** commitment for an ended campaign, so money already owed to users can never be refunded, even though user balances do not expire (D3).
+
+Liveness fallback: if the operator never posts the final commitment, the advertiser may refund the uncommitted remainder after a long timeout (for example 30 days after the end). Credits not yet committed at that point are lost to users, which is why commitments must be frequent and monitored (alert on a missed daily commitment).
+
+Bound on operator power: it can over-commit an advertiser's budget into `userLiability`, but never more than was funded. Publishing a Merkle root of account balances with each commitment (later) lets anyone audit it.
 
 ## Trust model change
 
-In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by budgets and caps, but within those limits it decides who is paid. Mitigation for later: publish per-epoch payout totals, or a Merkle commitment of balances.
+In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by funded budgets, committed liabilities, one-time withdrawal ids and daily caps, but within those limits it decides who is paid. Mitigation for later: publish a Merkle commitment of balances with each `commitCredits`.
 
 ## Rejected alternatives
 
@@ -101,8 +127,11 @@ Still open:
 
 1. Minimum withdrawal amount.
 2. How gas and operations are paid for (fee percentage, minimum withdrawal, or absorbed during testing).
-3. Whether the Proof of Human credential works with session proofs: the official session examples use Selfie Check. Must be verified before acceptance; if not, later logins need another uniqueness proof or an app session instead.
-4. How dwell time is measured robustly on the client (visibility, focus, idle detection) and which anomalies the server rejects.
+3. Whether the Proof of Human credential works with session proofs: the official session examples use Selfie Check. Must be verified before acceptance; if not, login and withdrawal need a different World ID check.
+4. Whether enrollment can run the uniqueness proof and session creation in one World App interaction or needs two.
+5. Whether a session-proof result echoes the RP `nonce` (needed for §3a step 3). If not, bind the withdrawal through the proof `signal` instead, if session proofs support one.
+6. How dwell time is measured robustly on the client (visibility, focus, idle detection) and which anomalies the server rejects.
+7. Whether dormant balances should eventually expire after all (D3), since committed liabilities otherwise stay in the contract indefinitely.
 
 ## Sequencing
 
