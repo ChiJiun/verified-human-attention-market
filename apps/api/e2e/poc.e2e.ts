@@ -360,33 +360,67 @@ describeE2e("POC economic loop on a local chain", () => {
       steps: { args: Record<string, string | number> }[];
     }>();
     const create = intent.steps[0]!.args;
-    const createHash = await send(
-      advertiser,
-      managerAddress,
-      manager.abi,
-      "createCampaign",
-      [
+
+    // Simulated RPC timeout after broadcast (#13): the transaction is sent but
+    // not mined when the client reports it. The API must answer
+    // "reconciling", and the retry after mining must link exactly once.
+    await testClient.setAutomine(false);
+    const createHash = await wallet(advertiser).writeContract({
+      address: managerAddress,
+      abi: manager.abi,
+      functionName: "createCampaign",
+      args: [
         BigInt(create.rewardPerCompletion!),
         Number(create.maxCompletions),
         BigInt(create.startTime!),
         BigInt(create.endTime!),
       ],
-    );
-
-    const linked = await app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${campaignId}/onchain`,
-      headers: auth,
-      payload: { txHash: createHash },
     });
+    const reportOnchain = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/onchain`,
+        headers: auth,
+        payload: { txHash: createHash },
+      });
+
+    const beforeMined = await reportOnchain();
+    expect(beforeMined.statusCode).toBe(202);
+    expect(beforeMined.json()).toMatchObject({ status: "reconciling" });
+
+    await testClient.mine({ blocks: 1 });
+    await testClient.setAutomine(true);
+    expect(
+      (await publicClient.waitForTransactionReceipt({ hash: createHash }))
+        .status,
+    ).toBe("success");
+
+    const linked = await reportOnchain();
+    expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({ status: "pending_onchain" });
     const onchainId = BigInt(
       linked.json<{ onchainCampaignId: string }>().onchainCampaignId,
     );
 
-    // Simulated RPC timeout after broadcast: the hash is not (yet) known to
-    // the node. The API answers "reconciling", never a failure that would make
-    // the advertiser create and fund a duplicate campaign.
+    // Retrying the same report is idempotent, and the chain holds exactly
+    // one campaign: the timeout caused no duplicate economic action.
+    const retried = await reportOnchain();
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toMatchObject({
+      onchainCampaignId: onchainId.toString(),
+    });
+    expect(
+      await publicClient.getContractEvents({
+        address: managerAddress,
+        abi: manager.abi,
+        eventName: "CampaignCreated",
+        fromBlock: 0n,
+      }),
+    ).toHaveLength(1);
+
+    // A hash the node has never seen (dropped or not yet propagated) is also
+    // "reconciling", never a failure that would make the advertiser create
+    // and fund a duplicate campaign.
     const otherDraft = await app.inject({
       method: "POST",
       url: "/v1/campaigns",

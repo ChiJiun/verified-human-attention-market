@@ -83,7 +83,7 @@ Official references:
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
-| Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config; API and web both use the canonical ABI at runtime (#19); testnet record pending |
+| Deployment tooling / canonical ABI | ✅ Script + CI-checked ABI + fail-fast config; API and web use the canonical ABI at runtime; Base Sepolia record in `packages/contracts/deployments/84532.json` (#19) |
 | Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
 | Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
@@ -96,7 +96,7 @@ Official references:
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ⬜ #11, #12 |
-| End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
+| End-to-end POC | ✅ Local anvil E2E in CI, including an RPC timeout after broadcast that reconciles without a duplicate campaign; full flow on Base Sepolia on 2026-10-14 (#13, `docs/DEMO.md`) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
 | Testnet deployment | ✅ Base Sepolia deployment (#19) and full flow with a real World ID proof on 2026-10-14: create, fund, verify, answer, claim, close, refund (#13; see docs/DEMO.md) |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |

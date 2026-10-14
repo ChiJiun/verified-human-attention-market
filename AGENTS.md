@@ -109,7 +109,7 @@ Done on `main`:
 
 Next, in dependency order:
 
-1. **Close M1** after review: #12, #13 and #19 are verified by the Base Sepolia run on 2026-10-14 (docs/DEMO.md). Missing UX: close/refund buttons in the advertiser page (done with `cast send` in the run).
+1. **Close M1** after the owner's review: the Base Sepolia run on 2026-10-14 (docs/DEMO.md) covers #12 and #19. #13 additionally needs its RPC timeout/retry criterion, which the local `e2e` job covers (broadcast → `reconciling` → mined → linked once). Missing UX: close/refund buttons in the advertiser page (the run used `cast send`).
 2. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
