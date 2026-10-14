@@ -16,8 +16,8 @@ Advertisers pay for attention from **verified unique humans**, and those humans 
 
 | | |
 | --- | --- |
-| **Milestone** | M1 (proof of concept) completed on **Base Sepolia** on 2026-10-14 |
-| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. [Run log with transactions](docs/DEMO.md#base-sepolia-完整流程實測2026-10-1413) |
+| **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14. The run record is under review in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62), and #12, #13 and #19 stay open until it is accepted |
+| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
 | **Contract** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`) |
 | **Next** | Close M1, then decide [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61): earn while browsing, with World ID at login and withdrawal |
 
@@ -67,7 +67,7 @@ sequenceDiagram
 
 - **Budget conservation:** total payouts and refunds can never exceed what was funded.
 - **No replay:** each authorization has a one-time nonce, and each wallet can claim once per campaign.
-- **Delayed refund:** the advertiser can refund only after the last possible authorization has expired, so a participant who already qualified is never left unpaid.
+- **Delayed refund:** the advertiser can refund only after the last authorization that could have been issued has expired. An issued authorization therefore never races a refund, but the participant still has to claim it before it expires (at most 15 minutes).
 - **Exposure limits:** reward, completions and budget per campaign are capped on-chain (POC: 1 USDC × 10).
 
 ---
@@ -116,14 +116,21 @@ Exact versions are in the package manifests and the lockfile.
 
 ## Run it locally
 
-The full local demo runs on a local chain (anvil) with the real contract, API and database; only World ID is simulated. Step-by-step guide: **[docs/DEMO.md](docs/DEMO.md)** (Traditional Chinese).
-
 Requirements: Node.js 24+, pnpm 12.4.2, Foundry v1.8.4 (on Windows, inside WSL), Docker for PostgreSQL 16.
+
+**Minimal start** (web + API only; sign-in, World ID and the chain stay disabled until configured):
 
 ```bash
 pnpm install
+docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+pnpm --filter @vham/api db:migrate
 pnpm dev            # web on :3000, API on :3001
 ```
+
+The API does not read `.env` by itself; export the variables in the shell (PowerShell: `$env:DATABASE_URL = "..."`).
+
+**Full flow** (local chain, contract, indexer, wallet, simulated World ID): follow **[docs/DEMO.md](docs/DEMO.md)** (Traditional Chinese). It runs the real contract on anvil; only World ID is simulated.
 
 Before every commit:
 
@@ -188,7 +195,7 @@ CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Copy `.env.ex
 | Milestone | Goal | Status |
 | --- | --- | --- |
 | M0 | Product decisions: first buyer, chain, gas, claim model, economics | ✅ Done |
-| **M1** | **POC: the full money loop on a testnet** | ✅ Proven on Base Sepolia; #12, #13, #19 in final review |
+| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia; record and #12, #13, #19 under review |
 | M2 | MVP for a real buyer: observability, privacy, moderation, signer custody | 🟡 Engineering baseline done; no real buyer yet |
 | M3 | Closed beta: quality signals, public API, publisher SDK | 🟡 #25 and #26 done; #27 SDK open |
 | M4 | AI agents buy campaigns over x402 | ⬜ Not started (#28) |

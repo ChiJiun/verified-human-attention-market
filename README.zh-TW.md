@@ -16,8 +16,8 @@
 
 | | |
 | --- | --- |
-| **里程碑** | M1（概念驗證）已於 2026-10-14 在 **Base Sepolia** 跑通 |
-| **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。[含交易紀錄的實測報告](docs/DEMO.md#base-sepolia-完整流程實測2026-10-1413) |
+| **里程碑** | M1（概念驗證）：完整流程已於 2026-10-14 在 **Base Sepolia** 執行。實測紀錄正在 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) 審查中，紀錄被接受前 #12、#13、#19 維持開啟 |
+| **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。交易紀錄見 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
 | **合約** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc)，Base Sepolia（chain `84532`） |
 | **下一步** | 完成 M1 收尾，接著決定 [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61)：瀏覽即累積，登入與提領時驗證 World ID |
 
@@ -67,7 +67,7 @@ sequenceDiagram
 
 - **預算守恆：** 發放加退款永遠不會超過入金金額。
 - **防重放：** 每份授權有一次性的 nonce，每個錢包在同一個 campaign 只能領一次。
-- **延後退款：** 要等到最後一份可能的授權都過期，廣告主才能退款，確保已經符合資格的參與者一定領得到。
+- **延後退款：** 要等到最後一份可能被簽發的授權都過期，廣告主才能退款。所以已簽發的授權不會和退款互相搶錢，但參與者仍須在授權到期前（最長 15 分鐘）自己完成領取。
 - **曝險上限：** 每個 campaign 的獎勵、名額與預算在鏈上有上限（POC：1 USDC × 10）。
 
 ---
@@ -116,14 +116,21 @@ flowchart LR
 
 ## 在本機執行
 
-本機 demo 使用本機鏈（anvil），搭配真的合約、API 與資料庫，只有 World ID 是模擬的。逐步說明：**[docs/DEMO.md](docs/DEMO.md)**。
-
 需要：Node.js 24+、pnpm 12.4.2、Foundry v1.8.4（Windows 請裝在 WSL）、用 Docker 跑 PostgreSQL 16。
+
+**最小啟動**（只有前端 + API；登入、World ID 和鏈上功能在設定前都是關閉的）：
 
 ```bash
 pnpm install
+docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+pnpm --filter @vham/api db:migrate
 pnpm dev            # 前端 :3000，API :3001
 ```
+
+API 不會自己讀 `.env`，請在 shell 匯出環境變數（PowerShell：`$env:DATABASE_URL = "..."`）。
+
+**完整流程**（本機鏈、合約、indexer、錢包、模擬 World ID）：請照 **[docs/DEMO.md](docs/DEMO.md)**。它在 anvil 上跑真的合約，只有 World ID 是模擬的。
 
 每次 commit 前：
 
@@ -188,7 +195,7 @@ CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。本�
 | 里程碑 | 目標 | 狀態 |
 | --- | --- | --- |
 | M0 | 產品決策：第一個買家、鏈、gas、領取模型、經濟參數 | ✅ 完成 |
-| **M1** | **POC：在測試網跑通完整的金流** | ✅ 已在 Base Sepolia 跑通；#12、#13、#19 最終審查中 |
+| **M1** | **POC：在測試網跑通完整的金流** | 🟡 已在 Base Sepolia 執行；紀錄與 #12、#13、#19 審查中 |
 | M2 | 給真實買家的 MVP：監控、隱私、審核、簽名金鑰保管 | 🟡 工程基礎已完成；尚無真實買家 |
 | M3 | 封閉測試：品質訊號、公開 API、publisher SDK | 🟡 #25、#26 完成；#27 SDK 未開始 |
 | M4 | AI agent 透過 x402 購買 campaign | ⬜ 未開始（#28） |
