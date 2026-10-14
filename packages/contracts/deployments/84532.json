@@ -1,0 +1,11 @@
+{
+  "chainId": 84532,
+  "campaignManager": "0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc",
+  "deployBlock": 48106312,
+  "owner": "0x8499F0D7Bad317A24F576D01DA2609471bee6e66",
+  "authorizedSigner": "0x46A868E25CB5D1792305cc4E850Ef72278D3f382",
+  "rewardToken": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "maxRewardPerCompletion": "1000000",
+  "maxCompletionsPerCampaign": 10,
+  "maxCampaignBudget": "10000000"
+}
