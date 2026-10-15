@@ -16,11 +16,17 @@ export const addressWord = (address: string) =>
 type LogSpec = { topics: string[]; data: string };
 
 export const logs = {
-  created: (campaignId: number, advertiser: string): LogSpec => ({
+  /** `draftRef` defaults to a non-zero placeholder (ADR-0011). */
+  created: (
+    campaignId: number,
+    advertiser: string,
+    draftRef: string = word(0xd0000 + campaignId),
+  ): LogSpec => ({
     topics: [
       EVENT_TOPICS.CampaignCreated,
       word(campaignId),
       addressWord(advertiser),
+      draftRef,
     ],
     data: "0x",
   }),
@@ -70,12 +76,20 @@ export class FakeChain implements ChainRpc {
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
+  /**
+   * On-chain `campaignIdByDraft(advertiser, draftRef)` storage, keyed
+   * `${advertiser}:${draftRef}`, with the block that wrote it (eth_call at an
+   * earlier block sees nothing; a reorg below it removes it).
+   */
+  readonly campaignIdByDraft = new Map<string, { id: number; block: bigint }>();
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
     string,
     {
       advertiser: string;
       fundedBudget?: bigint;
+      /** Unix seconds; non-zero once closed. */
+      closedAt?: number;
       rewardPerCompletion: bigint;
       maxCompletions: number;
       startTime: number;
@@ -114,6 +128,23 @@ export class FakeChain implements ChainRpc {
 
   /** Mines `count` blocks; `specs` go into the first new block. */
   mine(count = 1, specs: LogSpec[] = [], address = this.contract): bigint {
+    // Mirror the contract's storage for funding and closing, like the real
+    // CampaignManager would (not fork-aware: tests reset it explicitly).
+    if (address === this.contract) {
+      for (const spec of specs) {
+        const struct = spec.topics[1]
+          ? this.campaignStructs.get(BigInt(spec.topics[1]).toString())
+          : undefined;
+        if (!struct) continue;
+        if (spec.topics[0] === EVENT_TOPICS.CampaignFunded) {
+          struct.fundedBudget = (struct.fundedBudget ?? 0n) + BigInt(spec.data);
+        }
+        if (spec.topics[0] === EVENT_TOPICS.CampaignClosed) {
+          struct.closedAt = this.blocks.length;
+        }
+      }
+    }
+
     for (let index = 0; index < count; index += 1) {
       const number = this.blocks.length;
       this.blocks.push({
@@ -137,6 +168,9 @@ export class FakeChain implements ChainRpc {
   reorg(fromBlock: bigint, newLength = this.blocks.length) {
     this.fork += 1;
     this.blocks = this.blocks.slice(0, Number(fromBlock));
+    for (const [key, entry] of this.campaignIdByDraft) {
+      if (entry.block >= fromBlock) this.campaignIdByDraft.delete(key);
+    }
     while (this.blocks.length < newLength) {
       const number = this.blocks.length;
       this.blocks.push({
@@ -231,9 +265,21 @@ export class FakeChain implements ChainRpc {
     return null;
   }
 
-  async call(to: string, data: string): Promise<string> {
+  async call(to: string, data: string, block?: bigint): Promise<string> {
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
+    }
+
+    if (
+      to === this.contract &&
+      data.startsWith(FUNCTION_SELECTORS.campaignIdByDraft)
+    ) {
+      const advertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
+      const draftRef = `0x${data.slice(10 + 64, 10 + 128)}`;
+      const entry = this.campaignIdByDraft.get(`${advertiser}:${draftRef}`);
+      return word(
+        entry && (block === undefined || entry.block <= block) ? entry.id : 0,
+      );
     }
 
     if (
@@ -259,8 +305,9 @@ export class FakeChain implements ChainRpc {
       word(0),
       word(struct.startTime),
       word(struct.endTime),
-      word(0),
-      word(0),
+      word(struct.closedAt ?? 0),
+      // CampaignStatus: Draft 0, Active 1, Closed 2.
+      word(struct.closedAt ? 2 : struct.fundedBudget ? 1 : 0),
     ]
       .map((value, index) => (index === 0 ? value : value.slice(2)))
       .join("");

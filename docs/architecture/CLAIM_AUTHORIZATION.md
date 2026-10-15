@@ -39,6 +39,7 @@ sequenceDiagram
 ```solidity
 struct ClaimAuthorization {
     uint256 campaignId;
+    bytes32 draftRef;
     address claimant;
     uint256 amount;
     bytes32 nonce;
@@ -47,11 +48,17 @@ struct ClaimAuthorization {
 }
 ```
 
-Suggested type string:
+Type string (typehash `0x190486b79e77ff5517da40fe874a526fb3507c8999e73a8a70f90d4e2e90005b`):
 
 ```text
-ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)
+ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)
 ```
+
+`draftRef` binds the authorization to the platform draft (ADR-0011): `claim`
+reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][draftRef] ==
+campaignId`. After a reorg deeper than the confirmation depth the same id may
+belong to another draft; an authorization for the old draft can then never be
+paid from the new campaign's budget.
 
 ## Nonce
 
@@ -80,6 +87,12 @@ The signed payload includes both `issuedAt` and `expiresAt`. The contract verifi
 This closes an important refund race: after the issuance deadline plus the maximum authorization TTL, every honestly issued authorization must have expired, so unused budget can be refunded without an on-chain reservation transaction for every authorization.
 
 ## Idempotency
+
+The authorization is signed in the same request that accepts the completion
+and returned with it (ADR-0011): the contract pays an authorization issued up
+to `closedAt`, so a close after acceptance cannot strand the participant. If
+signing fails there, the response says `pending_authorization` with a reason
+code and `POST .../authorization` can be called again.
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated

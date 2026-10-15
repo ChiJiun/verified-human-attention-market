@@ -76,6 +76,9 @@ import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
+import { checkLiveCampaign } from "./campaigns/onchain.js";
+import { authorizeClaim } from "./claims/service.js";
+import type { CampaignRecord } from "./campaigns/types.js";
 
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
@@ -117,6 +120,15 @@ export interface AppDependencies {
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
+  // Same rule as INDEXER_CONFIRMATIONS: 0 would link unconfirmed creations.
+  const confirmations = dependencies.chain?.confirmations;
+  if (
+    confirmations !== undefined &&
+    (!Number.isSafeInteger(confirmations) || confirmations < 1)
+  ) {
+    throw new Error("chain.confirmations must be a positive integer");
+  }
+
   const app = Fastify({
     logger:
       process.env.NODE_ENV === "test"
@@ -292,8 +304,55 @@ export function buildApp(dependencies: AppDependencies = {}) {
       now,
     });
 
+    // Campaigns linked on another deployment are retired (ADR-0011).
+    const deployment = dependencies.chain
+      ? {
+          chainId: dependencies.chain.chain.chainId,
+          contractAddress: dependencies.chain.chain.contractAddress,
+        }
+      : null;
+
+    // A reorg beyond the confirmation depth stops all participation and
+    // signing for the deployment until recovery (ADR-0011).
+    const chainHalted = async () =>
+      dependencies.chain
+        ? (await dependencies.chain.events.getHalt(
+            dependencies.chain.chain,
+          )) !== null
+        : false;
+    const chainForLinks = dependencies.chain;
+    const liveCampaign = chainForLinks
+      ? (campaign: CampaignRecord) =>
+          checkLiveCampaign(
+            chainForLinks.rpc,
+            chainForLinks.chain.contractAddress,
+            campaign,
+            now(),
+          )
+      : null;
+    const claimDependencies = {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      submissions: submissionRepository,
+      claims: claimRepository,
+      signer: dependencies.claimSigner ?? null,
+      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
+      chainHalted,
+      chain: dependencies.chain
+        ? {
+            chainId: dependencies.chain.chain.chainId,
+            contractAddress: dependencies.chain.chain
+              .contractAddress as `0x${string}`,
+            rpc: dependencies.chain.rpc,
+          }
+        : null,
+      now,
+    };
+
     await registerEligibilityRoutes(instance, {
       campaigns: campaignRepository,
+      deployment,
+      chainHalted,
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
@@ -310,28 +369,20 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
     await registerSubmissionRoutes(instance, {
       campaigns: campaignRepository,
+      deployment,
+      chainHalted,
+      liveCampaign,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
+      // Sign at acceptance so a later close cannot strand it (ADR-0011).
+      issueAuthorization:
+        claimDependencies.signer && claimDependencies.chain
+          ? (input) => authorizeClaim(claimDependencies, input)
+          : null,
     });
 
-    await registerClaimRoutes(instance, {
-      campaigns: campaignRepository,
-      eligibility: eligibilityRepository,
-      submissions: submissionRepository,
-      claims: claimRepository,
-      signer: dependencies.claimSigner ?? null,
-      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
-      chain: dependencies.chain
-        ? {
-            chainId: dependencies.chain.chain.chainId,
-            contractAddress: dependencies.chain.chain
-              .contractAddress as `0x${string}`,
-            rpc: dependencies.chain.rpc,
-          }
-        : null,
-      now,
-    });
+    await registerClaimRoutes(instance, claimDependencies);
   });
 
   if (dependencies.close) {

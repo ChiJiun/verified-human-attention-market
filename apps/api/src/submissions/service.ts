@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+import type { LiveCampaignState } from "../campaigns/onchain.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { Deployment } from "@vham/shared/deployment";
+
+import {
+  isRetiredDeployment,
+  type CampaignRecord,
+} from "../campaigns/types.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import { IdempotencyConflictError } from "../persistence/errors.js";
 import {
@@ -28,6 +35,22 @@ export const MAX_ATTEMPTS_PER_ELIGIBILITY = 2;
 
 export interface SubmissionServiceDependencies {
   campaigns: CampaignRepository;
+  /** Configured deployment; campaigns linked elsewhere are retired. */
+  deployment: Deployment | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
+  /**
+   * Live on-chain state of the campaign (not the indexed copy): its link is
+   * still this draft's canonical creation with the draft's parameters, and
+   * it is funded, open and within its window. A completion is accepted only
+   * when the contract would pay it, even if the indexer lags or is down.
+   * null = no chain configured (nothing can be paid anyway).
+   */
+  liveCampaign:
+    ((campaign: CampaignRecord) => Promise<LiveCampaignState>) | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
   now: () => Date;
@@ -46,7 +69,9 @@ export type SubmissionFailureCode =
   | "CAMPAIGN_NOT_ACTIVE"
   | "CAMPAIGN_NOT_STARTED"
   | "CAMPAIGN_ENDED"
-  | "MALFORMED_ANSWERS";
+  | "MALFORMED_ANSWERS"
+  | "CHAIN_HALTED"
+  | "CHAIN_UNAVAILABLE";
 
 export type SubmissionOutcome =
   | { ok: true; submission: SubmissionRecord; created: boolean }
@@ -121,6 +146,15 @@ export async function submitCompletion(
     return { ok: false, status: 404, code: "CAMPAIGN_NOT_FOUND" };
   }
 
+  // Its rewards could not be signed for on the configured contract.
+  if (isRetiredDeployment(campaign, dependencies.deployment)) {
+    return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+  }
+
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
+  }
+
   const mission = await dependencies.campaigns.getMission(campaign.id);
 
   if (!mission) {
@@ -160,6 +194,19 @@ export async function submitCompletion(
 
   if (priorAttempts >= maxAttempts) {
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
+  }
+
+  // Last check before any completion is recorded, and only for a verified
+  // participant (no RPC call for unauthenticated requests): the contract
+  // must still pay this draft's campaign right now (ADR-0011, #13).
+  if (campaign.onchainCampaignId !== null && dependencies.liveCampaign) {
+    const live = await dependencies.liveCampaign(campaign);
+    if (live === "unavailable") {
+      return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
+    }
+    if (live !== "payable") {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
   }
 
   const evaluation = evaluateSubmission(mission, input.answers, {

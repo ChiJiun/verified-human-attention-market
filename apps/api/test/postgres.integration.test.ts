@@ -1,3 +1,4 @@
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +38,9 @@ import {
 } from "../src/submissions/repository.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
+
+/** CampaignManager the integration tests link campaigns to. */
+const CONTRACT_ADDRESS = `0x${"2".repeat(40)}`;
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -253,10 +257,43 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     }));
   });
 
+  it("keeps on-chain ids of different deployments apart (ADR-0011)", async () => {
+    // Ids restart at 1 on every CampaignManager deployment.
+    const oldContract = `0x${"a".repeat(40)}`;
+    const oldDraft = await createCampaign();
+    const newDraft = await createCampaign();
+    const link = (id: string, contractAddress: string) =>
+      repository.linkOnchain(id, {
+        onchainCampaignId: "1",
+        contractAddress,
+        publishTxHash: null,
+        status: "pending_onchain",
+        updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+      });
+
+    await link(oldDraft, oldContract);
+    await link(newDraft, CONTRACT_ADDRESS);
+
+    expect(
+      (await repository.findByOnchainId(84532, oldContract, "1"))?.id,
+    ).toBe(oldDraft);
+    expect(
+      (await repository.findByOnchainId(84532, CONTRACT_ADDRESS, "1"))?.id,
+    ).toBe(newDraft);
+    expect(
+      (await repository.listLinked(84532, CONTRACT_ADDRESS)).map((c) => c.id),
+    ).toEqual([newDraft]);
+    // The same deployment still allows one draft per on-chain id.
+    await expect(
+      link(await createCampaign(), CONTRACT_ADDRESS),
+    ).rejects.toThrow(/ONCHAIN_CAMPAIGN_ALREADY_LINKED/);
+  });
+
   it("persists one signed claim under concurrent retries", async () => {
     const campaignId = await createCampaign();
     await repository.linkOnchain(campaignId, {
       onchainCampaignId: "7",
+      contractAddress: CONTRACT_ADDRESS,
       publishTxHash: `0x${"a".repeat(64)}`,
       status: "active",
       updatedAt: new Date("2026-10-05T10:20:00.000Z"),
@@ -306,6 +343,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       sign: () =>
         signer.sign({
           campaignId: 7n,
+          draftRef: draftRefFor(campaignId),
           claimant: claimantAddress as `0x${string}`,
           amount: 1000000n,
           chainId: 84532,

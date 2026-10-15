@@ -9,6 +9,7 @@ import {
 } from "viem";
 
 import type { CampaignRecord } from "../src/campaigns/types.js";
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryClaimRepository } from "../src/claims/repository.js";
 import { registerClaimRoutes } from "../src/claims/routes.js";
 import { authorizeClaim } from "../src/claims/service.js";
@@ -27,6 +28,7 @@ const PRIVATE_KEY = `0x${"11".repeat(32)}`;
 const signer = createClaimSigner(PRIVATE_KEY);
 const CONTRACT = `0x${"22".repeat(20)}` as const;
 const CLAIMANT = `0x${"33".repeat(20)}` as const;
+const ADVERTISER = `0x${"aa".repeat(20)}` as const;
 const START = new Date("2026-10-12T01:00:00.000Z");
 const NOW = new Date("2026-10-12T01:10:00.000Z");
 const END = new Date("2026-10-12T02:00:00.000Z");
@@ -35,6 +37,8 @@ const campaign = {
   id: "campaign",
   chainId: 84532,
   onchainCampaignId: "7",
+  onchainContractAddress: CONTRACT,
+  advertiserAddress: ADVERTISER,
   status: "active",
   rewardAtomic: "1000000",
   maxCompletions: 1,
@@ -64,6 +68,9 @@ function fixture() {
     claimed: false,
   };
   let currentCampaign = campaign;
+  /** What the contract's campaignIdByDraft says for this campaign's draft. */
+  let canonicalId: number = 7;
+  let halted = false;
   let currentSubmission = submission;
   let currentEligibility = eligibility;
   const claims = new InMemoryClaimRepository(
@@ -93,6 +100,20 @@ function fixture() {
         ].join("")}`;
       }
       if (
+        data.startsWith(
+          toFunctionSelector("campaignIdByDraft(address,bytes32)"),
+        )
+      ) {
+        const askedAdvertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
+        const askedRef = `0x${data.slice(10 + 64, 10 + 128)}`;
+        return `0x${word(
+          askedAdvertiser === currentCampaign.advertiserAddress &&
+            askedRef === draftRefFor(currentCampaign.id)
+            ? canonicalId
+            : 0,
+        )}`;
+      }
+      if (
         data.startsWith(toFunctionSelector("claimedWallet(uint256,address)"))
       ) {
         return `0x${word(chainState.claimed ? 1 : 0)}`;
@@ -118,6 +139,7 @@ function fixture() {
     signer,
     chain: { chainId: 84532, contractAddress: CONTRACT, rpc },
     now: () => current,
+    chainHalted: async () => halted,
   };
   const input = {
     campaignId: campaign.id,
@@ -137,6 +159,12 @@ function fixture() {
     setCampaign: (value: CampaignRecord) => {
       currentCampaign = value;
     },
+    setCanonicalId: (value: number) => {
+      canonicalId = value;
+    },
+    setHalted: (value: boolean) => {
+      halted = value;
+    },
     setSubmission: (value: typeof submission) => {
       currentSubmission = value;
     },
@@ -150,14 +178,15 @@ describe("EIP-712 claim authorization", () => {
   it("matches the contract type and binds every field and domain component", async () => {
     const typeString = `ClaimAuthorization(${CLAIM_TYPES.ClaimAuthorization.map(({ type, name }) => `${type} ${name}`).join(",")})`;
     expect(typeString).toBe(
-      "ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)",
+      "ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)",
     );
     expect(keccak256(stringToHex(typeString))).toBe(
-      "0x86a1a13468402e9b0394c5b7beb1420b8cc67d43a7a2711d5a0a49d0d2d6408b",
+      "0x190486b79e77ff5517da40fe874a526fb3507c8999e73a8a70f90d4e2e90005b",
     );
 
     const signed = await signer.sign({
       campaignId: 7n,
+      draftRef: draftRefFor("campaign"),
       claimant: CLAIMANT,
       amount: 1000000n,
       chainId: 84532,
@@ -234,6 +263,48 @@ describe("EIP-712 claim authorization", () => {
     });
     // Expired and the campaign is closed: no fresh liability is created.
     f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_NOT_ACTIVE",
+    });
+  });
+
+  it("signs nothing while a reorg beyond the confirmation depth is unrecovered", async () => {
+    const f = fixture();
+    const issued = await authorizeClaim(f.dependencies, f.input);
+    expect(issued.ok).toBe(true);
+
+    // Not even the replay of an authorization issued before the halt.
+    f.setHalted(true);
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      status: 503,
+      code: "CHAIN_HALTED",
+    });
+  });
+
+  it("never signs for a link that is no longer this draft's canonical creation", async () => {
+    const f = fixture();
+    // A reorg removed this draft's creation and another draft's campaign now
+    // holds on-chain id 7 (or this draft has none at all).
+    for (const id of [8, 0]) {
+      f.setCanonicalId(id);
+      expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+        ok: false,
+        code: "CAMPAIGN_NOT_ACTIVE",
+      });
+    }
+  });
+
+  it("never signs for a campaign linked on another deployment (ADR-0011)", async () => {
+    const f = fixture();
+    // Same on-chain id 7, but on the CampaignManager used before a redeploy:
+    // the current contract's campaign 7 is someone else's.
+    f.setCampaign({
+      ...campaign,
+      onchainContractAddress: `0x${"99".repeat(20)}`,
+    });
+
     expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
       ok: false,
       code: "CAMPAIGN_NOT_ACTIVE",

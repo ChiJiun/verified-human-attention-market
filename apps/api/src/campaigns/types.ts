@@ -15,10 +15,40 @@ export type CampaignStatus =
   | "settled"
   | "cancelled";
 
+import { isCurrentDeployment, type Deployment } from "@vham/shared/deployment";
+
+/**
+ * A campaign linked on another deployment (another CampaignManager, or the
+ * same address on another chain; for example before a redeploy, ADR-0011) is
+ * retired here: its rewards can only be signed for and paid there, so it
+ * must not accept new World ID verifications or completions.
+ * `deployment: null` = no chain configured.
+ */
+export function isRetiredDeployment(
+  campaign: Pick<
+    CampaignRecord,
+    "chainId" | "onchainCampaignId" | "onchainContractAddress"
+  >,
+  deployment: Deployment | null,
+): boolean {
+  return (
+    campaign.onchainCampaignId !== null &&
+    !isCurrentDeployment(
+      {
+        chainId: campaign.chainId,
+        contractAddress: campaign.onchainContractAddress,
+      },
+      deployment,
+    )
+  );
+}
+
 export interface CampaignRecord {
   id: string;
   chainId: number;
   onchainCampaignId: string | null;
+  /** Lowercase CampaignManager address of the on-chain id (ADR-0011). */
+  onchainContractAddress: string | null;
   /** Transaction that created the on-chain campaign, once linked. */
   publishTxHash: string | null;
   advertiserAddress: string;

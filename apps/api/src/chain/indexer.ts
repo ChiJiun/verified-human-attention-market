@@ -37,6 +37,17 @@ export class ReorgBeyondConfirmationsError extends Error {
   }
 }
 
+/**
+ * The chain changed between reads of one range (or the RPC answered from
+ * different forks). Transient: nothing was committed; the next pass retries.
+ */
+export class InconsistentChainReadError extends Error {
+  constructor(readonly blockNumber: bigint) {
+    super(`Inconsistent chain read at block ${blockNumber}; retrying`);
+    this.name = "InconsistentChainReadError";
+  }
+}
+
 function decode(
   logs: RawLog[],
   contractAddress: string,
@@ -114,15 +125,40 @@ export async function indexOnce(
         ? from + config.maxBlockRange - 1n
         : safeHead;
 
+    // Header, logs, header again: if the chain reorganizes between these
+    // calls (or a load-balanced RPC answers from different forks), logs of
+    // a stale fork could be committed under the new fork's block hash and
+    // never be detected later. Every log must sit in the canonical block of
+    // its height, and the range end must not move while reading.
+    const toBlock = await rpc.getBlock(to);
+
+    if (!toBlock) {
+      break;
+    }
+
     const logs = await rpc.getLogs({
       address: scope.contractAddress,
       fromBlock: from,
       toBlock: to,
     });
-    const toBlock = await rpc.getBlock(to);
+    const canonicalHashes = new Map<bigint, string>([[to, toBlock.hash]]);
 
-    if (!toBlock) {
-      break;
+    for (const log of logs) {
+      if (!canonicalHashes.has(log.blockNumber)) {
+        const block = await rpc.getBlock(log.blockNumber);
+        canonicalHashes.set(log.blockNumber, block?.hash ?? "");
+      }
+      if (
+        canonicalHashes.get(log.blockNumber) !== log.blockHash.toLowerCase()
+      ) {
+        throw new InconsistentChainReadError(log.blockNumber);
+      }
+    }
+
+    const toBlockAgain = await rpc.getBlock(to);
+
+    if (!toBlockAgain || toBlockAgain.hash !== toBlock.hash) {
+      throw new InconsistentChainReadError(to);
     }
 
     const { events, skipped } = decode(logs, scope.contractAddress);

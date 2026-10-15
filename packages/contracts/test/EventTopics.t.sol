@@ -7,7 +7,7 @@ import {CampaignManager} from "../src/CampaignManager.sol";
 /// (apps/api/src/chain/abi.ts). apps/api/test/chain-abi.test.ts checks that
 /// the TypeScript constants equal the literals below.
 contract EventTopicsTest {
-    bytes32 private constant CAMPAIGN_CREATED = 0x633109eec20320eded000fc1e2634211aa7e92ba3f5b15faf6dcdafca05094e4;
+    bytes32 private constant CAMPAIGN_CREATED = 0xf3348c2e50fe353e9cd201b3e8519e71ced29fb2cbdb01e9e249be48e4e63084;
     bytes32 private constant CAMPAIGN_FUNDED = 0x318daf69d77e946364e804495b2184222324b99fddeb42ab5fd25a919f596e8c;
     bytes32 private constant REWARD_CLAIMED = 0x26b1605560a38613ed768e913564f2d9a454c54f88abaeb323ce9a8a8f79ed65;
     bytes32 private constant CAMPAIGN_CLOSED = 0x5e6eb33a418de5dbbc17f989f7ae362cdfbb1748c5d603137c767027a354edbc;
@@ -33,7 +33,8 @@ contract EventTopicsTest {
         // `campaigns` is a public-variable getter, so it needs an instance.
         CampaignManager manager = CampaignManager(address(0));
         require(manager.campaigns.selector == bytes4(0x141961bc), "campaigns");
-        require(CampaignManager.createCampaign.selector == bytes4(0x6ecff6f8), "createCampaign");
+        require(CampaignManager.createCampaign.selector == bytes4(0x646c64f3), "createCampaign");
         require(CampaignManager.fundCampaign.selector == bytes4(0x918eab15), "fundCampaign");
+        require(manager.campaignIdByDraft.selector == bytes4(0x6003492a), "campaignIdByDraft");
     }
 }

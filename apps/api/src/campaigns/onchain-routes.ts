@@ -1,3 +1,4 @@
+import { isCurrentDeployment } from "@vham/shared/deployment";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -5,6 +6,8 @@ import { reconcileCampaignEvents } from "../chain/campaign-state.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import {
+  draftRefFor,
+  linkCampaignByDraft,
   linkCampaignByTransaction,
   publishIntent,
   type OnchainDependencies,
@@ -16,9 +19,16 @@ import type { CampaignRepository } from "./repository.js";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const linkBodySchema = z.object({
-  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-});
+// txHash is optional: without it the draft is linked by its draft reference
+// (ADR-0011), e.g. after a lost RPC response.
+const linkBodySchema = z
+  .object({
+    txHash: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{64}$/)
+      .optional(),
+  })
+  .optional();
 
 export interface OnchainRouteDependencies {
   authenticate: Authenticate;
@@ -136,14 +146,24 @@ export async function registerOnchainRoutes(
         });
       }
 
-      const outcome = await linkCampaignByTransaction(
-        { ...dependencies.chain, campaigns: dependencies.campaigns },
-        { campaignId: request.params.id, txHash: parsed.data.txHash },
-      );
+      const onchain = {
+        ...dependencies.chain,
+        campaigns: dependencies.campaigns,
+      };
+      const txHash = parsed.data?.txHash;
+      const outcome = txHash
+        ? await linkCampaignByTransaction(onchain, {
+            campaignId: request.params.id,
+            txHash,
+          })
+        : await linkCampaignByDraft(onchain, { campaignId: request.params.id });
 
       if (!outcome.ok) {
         const pending =
-          outcome.code === "TX_PENDING" || outcome.code === "RPC_UNAVAILABLE";
+          outcome.code === "TX_PENDING" ||
+          outcome.code === "TX_UNCONFIRMED" ||
+          outcome.code === "NOT_CREATED_YET" ||
+          outcome.code === "RPC_UNAVAILABLE";
         return reply.status(outcome.status).send(
           pending
             ? {
@@ -207,7 +227,19 @@ export async function registerOnchainRoutes(
 
       let settlement = null;
 
-      if (dependencies.chain && campaign.onchainCampaignId !== null) {
+      // Events are read only from the deployment the campaign is linked to;
+      // ids restart on every deployment (ADR-0011).
+      if (
+        dependencies.chain &&
+        campaign.onchainCampaignId !== null &&
+        isCurrentDeployment(
+          {
+            chainId: campaign.chainId,
+            contractAddress: campaign.onchainContractAddress,
+          },
+          dependencies.chain.chain,
+        )
+      ) {
         const events = await dependencies.chain.events.listCampaignEvents(
           dependencies.chain.chain,
           campaign.onchainCampaignId,
@@ -224,10 +256,16 @@ export async function registerOnchainRoutes(
 
       return reply.send({
         campaignId: campaign.id,
+        chainId: campaign.chainId,
         onchainCampaignId: campaign.onchainCampaignId,
+        onchainContractAddress: campaign.onchainContractAddress,
         status: campaign.status,
         rewardPerCompletion: campaign.rewardAtomic,
         maxCompletions: campaign.maxCompletions,
+        startAt: campaign.startAt.toISOString(),
+        endAt: campaign.endAt.toISOString(),
+        // What the advertiser's wallet checks on-chain before funding.
+        draftRef: draftRefFor(campaign.id),
         plannedBudget: budget,
         submissions: {
           accepted: submissions.accepted,

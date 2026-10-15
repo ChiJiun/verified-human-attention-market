@@ -26,6 +26,11 @@ export const campaigns = pgTable(
       precision: 78,
       scale: 0,
     }),
+    /**
+     * CampaignManager the on-chain id belongs to. Ids restart at 1 on every
+     * deployment, so a link is (chain, contract, id), never (chain, id).
+     */
+    onchainContractAddress: text("onchain_contract_address"),
     publishTxHash: text("publish_tx_hash"),
     advertiserAddress: text("advertiser_address").notNull(),
     creationIdempotencyKey: text("creation_idempotency_key").notNull(),
@@ -62,9 +67,14 @@ export const campaigns = pgTable(
       table.creationIdempotencyKey,
     ),
     // One database campaign per canonical on-chain campaign.
-    uniqueIndex("campaigns_chain_onchain_id_uq").on(
+    uniqueIndex("campaigns_chain_contract_onchain_id_uq").on(
       table.chainId,
+      table.onchainContractAddress,
       table.onchainCampaignId,
+    ),
+    check(
+      "campaigns_onchain_link_check",
+      sql`(${table.onchainCampaignId} IS NULL) = (${table.onchainContractAddress} IS NULL)`,
     ),
     check(
       "campaigns_status_check",
@@ -291,6 +301,30 @@ export const reconciliationState = pgTable(
       withTimezone: true,
       mode: "date",
     }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
+);
+
+/**
+ * A reorg deeper than the confirmation depth (ADR-0011). Kept apart from
+ * reconciliation_state so rebuilding the index never clears it: only the
+ * worker clears it, after the rebuilt index and every link verify.
+ */
+export const indexerHalts = pgTable(
+  "indexer_halts",
+  {
+    chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    contractAddress: text("contract_address").notNull(),
+    haltedBlock: bigint("halted_block", { mode: "number" }).notNull(),
+    haltedAt: timestamp("halted_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    /** Set by `reorg:recover --apply`; the worker may then rebuild. */
+    recoveryAppliedAt: timestamp("recovery_applied_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
   },
   (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
 );

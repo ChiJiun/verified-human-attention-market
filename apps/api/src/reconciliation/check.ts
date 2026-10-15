@@ -55,6 +55,7 @@ export async function checkReconciliation(dependencies: {
   const findings: ReconciliationFinding[] = [];
   const linked = await dependencies.campaigns.listLinked(
     dependencies.chain.chainId,
+    dependencies.chain.contractAddress,
   );
 
   if (!cursor) {

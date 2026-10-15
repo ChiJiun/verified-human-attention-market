@@ -42,11 +42,11 @@ sensitive rate-limit bucket.
 - Preset `proofOfHuman()` with `allow_legacy_proofs: false`: World ID 4.0 proofs only. v3 and v4 nullifiers for one person differ, so accepting both would let one human obtain two eligibilities for the same campaign unless both were tracked. Revisit only with a dual-nullifier design.
 - `NEXT_PUBLIC_WORLD_ID_MODE=simulated` keeps the local anvil stand-in (the API refuses it on any other chain).
 
-## Per-campaign actions and the Developer Portal (checked 2026-10-13)
+## Per-campaign actions and the Developer Portal (docs checked 2026-10-13, confirmed 2026-10-14)
 
 The official IDKit, RP-signature and `POST /api/v4/verify/{rp_id}` documentation treats `action` as a free string: it is part of the RP signature (`hash_to_field(action)`), is passed in the request, and is echoed in the verify result. The verify reference lists no "action not found" error (only "App not found or no longer active"), and no page states that each action must be created in the portal first. "Create v4 actions" appears only in the 3.0 → 4.0 migration guide, in the context of migrating existing apps. Conclusion: **no per-campaign pre-registration is required by the documented flow**, and creating one portal action per campaign would not be feasible anyway.
 
-This is read from documentation, not observed against a live app. The Base Sepolia run (#13) is the real test; if the portal rejects unknown actions there, this ADR must change (for example to one registered action plus the campaign id carried in the signal).
+**Confirmed on Base Sepolia, 2026-10-14:** a real World ID proof for `vham-campaign-<id>` verified successfully while the Developer Portal had no actions created. Per-campaign actions need no pre-registration. If World changes this, the fallback is one registered action with the campaign id carried in the signal.
 
 ## Not yet covered
 

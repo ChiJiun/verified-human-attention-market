@@ -48,10 +48,13 @@ describe("decodeCampaignManagerLog", () => {
   const advertiser = "0x" + "ab".repeat(20);
 
   it("decodes every settlement event", () => {
-    expect(decodeCampaignManagerLog(logs.created(7, advertiser))).toEqual({
+    expect(
+      decodeCampaignManagerLog(logs.created(7, advertiser, word(0xabc))),
+    ).toEqual({
       name: "CampaignCreated",
       campaignId: "7",
       advertiser,
+      draftRef: word(0xabc),
     });
     expect(
       decodeCampaignManagerLog(logs.claimed(7, advertiser, 5n, 9)),
@@ -130,6 +133,7 @@ describe("deriveCampaignState", () => {
         name: "CampaignCreated",
         campaignId: "1",
         advertiser: "0x" + "a".repeat(40),
+        draftRef: word(1),
       },
       { name: "CampaignFunded", campaignId: "1", amount: "1" },
       {

@@ -11,7 +11,8 @@ The database is **not** the source of truth for final settlement. On-chain event
 | --- | --- | --- |
 | id | uuid/text | internal ID |
 | chain_id | bigint | target EVM chain |
-| onchain_campaign_id | numeric nullable | set after creation; `UNIQUE (chain_id, onchain_campaign_id)` |
+| onchain_campaign_id | numeric nullable | set after creation; `UNIQUE (chain_id, onchain_contract_address, onchain_campaign_id)` |
+| onchain_contract_address | text nullable | CampaignManager the id belongs to (ids restart on every deployment, ADR-0011); `CHECK` set together with `onchain_campaign_id`. Rows linked before migration 0011 are marked `pre-adr-0011` and never match a configured contract |
 | advertiser_address | text | normalized EVM address |
 | content_url | text | first mission |
 | reward_atomic | numeric | USDC atomic units |
@@ -126,6 +127,10 @@ Unique key: `(chain_id, tx_hash, log_index)`. Also `contract_address` and decode
 ## reconciliation_state
 
 Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), and `latest_observed_block`. Each confirmed batch commits events and cursor in one transaction.
+
+## indexer_halts
+
+Primary key `(chain_id, contract_address)`; migration 0012. `halted_block`, `halted_at`, `recovery_applied_at`. A row means a reorg deeper than the confirmation depth was detected: the API refuses participation and signing with `CHAIN_HALTED`. It lives apart from `reconciliation_state` so that dropping the index never drops the halt. `reorg:recover -- --apply` deletes the deployment's events and cursor and sets `recovery_applied_at`; the worker refuses to start without it, and deletes the row only after the rebuilt index has caught up and every link verifies (ADR-0011). Recording a new halt resets `recovery_applied_at`.
 
 ## Data Retention
 

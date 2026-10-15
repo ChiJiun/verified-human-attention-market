@@ -119,22 +119,26 @@ Unknown or malformed campaign ids return `404`.
 
 ## POST /v1/campaigns/:id/publish
 
-Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime)` on `CampaignManager`, `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
+Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime, draftRef)` on `CampaignManager` (`draftRef = keccak256("vham-draft:" + draftId)`, ADR-0011), `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
 
 ## POST /v1/campaigns/:id/onchain
 
-Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16).
+Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16), or `{}` to link by draft reference when no hash is known (ADR-0011).
 
-The client's report is never trusted. The API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
+The client's report is never trusted. With a hash, the API fetches the receipt, requires its block to still be canonical (`getBlock(receipt.blockNumber).hash == receipt.blockHash`, `202 TX_UNCONFIRMED` otherwise) and the contract's `campaignIdByDraft` at the confirmed block to name the receipt's id (`422 DRAFT_MISMATCH` otherwise), requires a `CampaignCreated` log from the configured contract with the draft's advertiser **and the draft's `draftRef`**, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_contract_address, onchain_campaign_id)`; ids restart on every deployment, ADR-0011) with status `pending_onchain`.
 
 | Status | Meaning |
 | --- | --- |
-| 200 | linked (idempotent for the same `txHash`) |
-| 202 `TX_PENDING`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
+| 200 | linked (idempotent for the same creation, by hash or by draft) |
+| 202 `TX_PENDING`, 202 `TX_UNCONFIRMED`, 202 `NOT_CREATED_YET`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
 | 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
-| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `PARAMETERS_MISMATCH` |
+| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `DRAFT_MISMATCH`, `PARAMETERS_MISMATCH` |
 
-If the hash is never reported (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the advertiser's **single** unlinked draft with identical economics. Ambiguous matches are logged for manual resolution.
+A creation is linked only once it is buried under `INDEXER_CONFIRMATIONS` blocks (`202 TX_UNCONFIRMED` before), so a shallow reorg can never leave a permanent link to a creation that is no longer canonical. A deeper reorg makes the indexer worker record a halt: until `reorg:recover -- --apply` has run **and** the worker has rebuilt and verified the index, World ID requests, eligibility, submissions and claim authorizations for the deployment return `503 CHAIN_HALTED` (RUNBOOK). Independently, a submission is accepted only if the contract would pay it right now (see Submissions), so no work is completed for a stale link even when the worker is down.
+
+Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the confirmed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it never stores transaction state, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
+
+If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution. If a confirmed creation's id is already linked to a **different** draft (a link left behind by a reorg deeper than the confirmation depth), that link is released (the campaign returns to `draft`) and the named draft is linked; status sync never applies such a creation's events to the wrong draft, and the claim service checks `campaignIdByDraft` live before signing.
 
 Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.
 
@@ -228,12 +232,14 @@ Implemented flow (`apps/api/src/submissions/service.ts`):
 1. Same `Idempotency-Key` + same request returns the stored outcome, even after the campaign ends. A changed request returns `409 IDEMPOTENCY_CONFLICT`.
 2. The eligibility token must belong to this campaign **and** the claimant wallet bound during World ID verification (`403 INVALID_ELIGIBILITY`, `403 ELIGIBILITY_EXPIRED`).
 3. One accepted completion per human (`409 ALREADY_COMPLETED`), and at most **2 attempts** per human per campaign (`429 ATTEMPT_LIMIT_REACHED`), so the multiple-choice check cannot be brute-forced by retrying.
-4. The deterministic verifier runs. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) are not stored and do not count as attempts. `MISSING_ANSWERS` and `COMPREHENSION_FAILED` are stored as rejected attempts.
-5. The response reveals only the status and reason code, never which answers were wrong.
+4. The campaign is read **live** from the contract (ADR-0011): `campaignIdByDraft` must still name the linked id with the draft's parameters, and the campaign must be `Active`, not closed, inside its window, with remaining budget ≥ reward and completions below the cap. Otherwise `409 CAMPAIGN_NOT_ACTIVE`; `503 CHAIN_UNAVAILABLE` if the RPC fails. Indexed status can lag by the confirmation depth; this read does not.
+5. The deterministic verifier runs. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) are not stored and do not count as attempts. `MISSING_ANSWERS` and `COMPREHENSION_FAILED` are stored as rejected attempts.
+6. An accepted completion gets its claim authorization in the same request (see Claims). The contract pays an authorization issued up to `closedAt`, so a close after acceptance cannot strand the participant.
+7. The response reveals only the status and reason code, never which answers were wrong.
 
 Outcomes: `accepted`, `rejected` (POC verifier is synchronous; no `pending`).
 
-Current accepted response (claim authorization is issued by #10):
+Accepted response:
 
 ```json
 {
@@ -242,28 +248,25 @@ Current accepted response (claim authorization is issued by #10):
   "claimant": "0x...",
   "status": "accepted",
   "rejectionCode": null,
-  "claim": { "status": "pending_authorization" }
-}
-```
-
-Target accepted response once #10 lands:
-
-Accepted response:
-
-```json
-{
-  "status": "accepted",
   "claim": {
-    "campaignId": "1",
-    "claimant": "0x...",
-    "amount": "1000000",
-    "nonce": "0x...",
-    "issuedAt": 1791186300,
-    "expiresAt": 1791187200,
-    "signature": "0x..."
+    "status": "authorized",
+    "authorization": {
+      "campaignId": "1",
+      "draftRef": "0x...",
+      "claimant": "0x...",
+      "amount": "1000000",
+      "nonce": "0x...",
+      "issuedAt": 1791186300,
+      "expiresAt": 1791187200,
+      "signature": "0x...",
+      "chainId": 84532,
+      "contractAddress": "0x..."
+    }
   }
 }
 ```
+
+If signing fails (e.g. `SIGNER_MISMATCH`, `CHAIN_UNAVAILABLE`, or no signer configured), the completion is still accepted and `claim` is `{ "status": "pending_authorization", "code": "<reason or null>" }`; the authorization endpoint below can be called again.
 
 # Claims
 
@@ -275,8 +278,9 @@ Only an accepted submission bound to that verified campaign and claimant can
 receive an authorization. Fresh issuance requires an active, linked campaign;
 an existing unexpired authorization may be retrieved after close. The server's
 signer must match the contract's current signer.
-The response contains the exact EIP-712 `ClaimAuthorization` fields,
-`signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
+The response contains the exact EIP-712 `ClaimAuthorization` fields
+(including `draftRef`, which the contract checks against
+`campaignIdByDraft`), `signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
 are decimal strings. A retry before expiry returns the same signed payload;
 concurrent requests cannot issue a second authorization. After expiry, an
 unredeemed authorization is reissued with a new nonce while the campaign is
