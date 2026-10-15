@@ -128,7 +128,7 @@ pnpm --filter @vham/api db:migrate
 pnpm dev            # 前端 :3000，API :3001
 ```
 
-API 不會自己讀 `.env`，請在 shell 匯出環境變數（PowerShell：`$env:DATABASE_URL = "..."`）。
+API 和 indexer 只從環境變數讀設定，不會自己讀 `.env` 檔。所有變數列在 [`.env.example`](.env.example)。如果要放在已被 git 忽略的 `.env`，請先載入到 shell：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則每個變數一行 `$env:NAME = "value"`。
 
 **完整流程**（本機鏈、合約、indexer、錢包、模擬 World ID）：請照 **[docs/DEMO.md](docs/DEMO.md)**。它在 anvil 上跑真的合約，只有 World ID 是模擬的。
 
@@ -147,7 +147,7 @@ cd packages/contracts && forge fmt --check && forge build --sizes && forge test 
 | ABI 一致性 | 在 `packages/contracts` 執行 `forge build && node scripts/export-abi.mjs --check` | Foundry |
 | 本機鏈端到端 | `pnpm --filter @vham/api test:e2e` | anvil + PostgreSQL |
 
-CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。本機設定請把 `.env.example` 複製成 `.env`，不要 commit 任何金鑰。部署到測試網：[docs/deployment/TESTNET.md](docs/deployment/TESTNET.md)。
+CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。不要 commit 任何金鑰或填好的 `.env`。部署到測試網：[docs/deployment/TESTNET.md](docs/deployment/TESTNET.md)。
 
 ---
 

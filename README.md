@@ -128,7 +128,7 @@ pnpm --filter @vham/api db:migrate
 pnpm dev            # web on :3000, API on :3001
 ```
 
-The API does not read `.env` by itself; export the variables in the shell (PowerShell: `$env:DATABASE_URL = "..."`).
+The API and indexer read settings only from environment variables, never from a `.env` file. [`.env.example`](.env.example) lists every variable. To keep them in a git-ignored `.env`, load it into the shell first: `set -a; source .env; set +a` (bash/zsh) or one `$env:NAME = "value"` line per variable (PowerShell).
 
 **Full flow** (local chain, contract, indexer, wallet, simulated World ID): follow **[docs/DEMO.md](docs/DEMO.md)** (Traditional Chinese). It runs the real contract on anvil; only World ID is simulated.
 
@@ -147,7 +147,7 @@ cd packages/contracts && forge fmt --check && forge build --sizes && forge test 
 | ABI drift | `forge build && node scripts/export-abi.mjs --check` in `packages/contracts` | Foundry |
 | End-to-end on a local chain | `pnpm --filter @vham/api test:e2e` | anvil + PostgreSQL |
 
-CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Copy `.env.example` to `.env` for local settings and never commit keys. Testnet deployment: [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md).
+CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit keys or a filled-in `.env`. Testnet deployment: [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md).
 
 ---
 
