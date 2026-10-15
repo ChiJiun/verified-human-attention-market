@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-10-13
+> Last reviewed: 2026-10-15
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -12,7 +12,7 @@ Requirements    ✅ Baseline complete
 System Design   ✅ Baseline complete
 Implementation 🟡 Active
 Testing        🟡 Active
-Deployment     ⬜ Not started
+Deployment     🟡 Base Sepolia testnet only (2026-10-14); no real funds
 Operations     ⬜ Not started
 ```
 
@@ -108,7 +108,7 @@ Official references:
 - [x] POC gas UX selected.
 - [x] Claim authorization trust model selected.
 - [x] POC campaign economics selected.
-- [ ] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment.
+- [x] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment (re-checked 2026-10-13, `docs/deployment/TESTNET.md`; IDKit 4.4.0, ADR-0007).
 
 ## Implementation Evidence
 
@@ -118,14 +118,15 @@ Official references:
 - Foundry baseline currently passes 13 unit/fuzz tests plus 3 stateful invariants.
 - Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
+- Base Sepolia run on 2026-10-14 with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
 
 ## Next SDLC Actions
 
-1. Add wallet authentication for advertiser ownership and analytics (#37).
-2. Build advertiser and verified-user flows (#11–#12).
-3. Complete advertiser analytics access control (#20).
-4. Run end-to-end POC before public testnet demo (#13).
+1. Close M1 (#12, #13, #19) once the Base Sepolia record and the create-recovery fix are reviewed.
+2. Add close and refund buttons to the advertiser page (the Base Sepolia run used `cast send`).
+3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
+4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
 
 ---
 
-**Current gate:** Implementation is active. Deployment remains blocked until the local economic loop and testnet configuration are verified.
+**Current gate:** The local economic loop and the Base Sepolia deployment are verified. Real funds remain blocked by the production-readiness gate (#29).
