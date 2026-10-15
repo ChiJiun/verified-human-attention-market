@@ -297,16 +297,34 @@ export const reconciliationState = pgTable(
     }).notNull(),
     // Detects reorgs deeper than the confirmation depth.
     latestConfirmedBlockHash: text("latest_confirmed_block_hash"),
-    /**
-     * Set by the indexer worker when a confirmed block stopped being
-     * canonical. Participation stops until `reorg:recover` (ADR-0011).
-     */
-    haltedAt: timestamp("halted_at", { withTimezone: true, mode: "date" }),
-    haltedBlock: bigint("halted_block", { mode: "number" }),
     updatedAt: timestamp("updated_at", {
       withTimezone: true,
       mode: "date",
     }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
+);
+
+/**
+ * A reorg deeper than the confirmation depth (ADR-0011). Kept apart from
+ * reconciliation_state so rebuilding the index never clears it: only the
+ * worker clears it, after the rebuilt index and every link verify.
+ */
+export const indexerHalts = pgTable(
+  "indexer_halts",
+  {
+    chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    contractAddress: text("contract_address").notNull(),
+    haltedBlock: bigint("halted_block", { mode: "number" }).notNull(),
+    haltedAt: timestamp("halted_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    /** Set by `reorg:recover --apply`; the worker may then rebuild. */
+    recoveryAppliedAt: timestamp("recovery_applied_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
   },
   (table) => [primaryKey({ columns: [table.chainId, table.contractAddress] })],
 );

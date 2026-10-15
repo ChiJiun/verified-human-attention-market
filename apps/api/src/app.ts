@@ -76,7 +76,8 @@ import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
-import { draftRefFor, readCampaignIdByDraft } from "./campaigns/onchain.js";
+import { checkLiveCampaign } from "./campaigns/onchain.js";
+import { authorizeClaim } from "./claims/service.js";
 import type { CampaignRecord } from "./campaigns/types.js";
 
 export interface AppDependencies {
@@ -320,23 +321,33 @@ export function buildApp(dependencies: AppDependencies = {}) {
           )) !== null
         : false;
     const chainForLinks = dependencies.chain;
-    const canonicalLink = chainForLinks
-      ? async (campaign: CampaignRecord) => {
-          try {
-            const canonical = await readCampaignIdByDraft(
-              chainForLinks.rpc,
-              chainForLinks.chain.contractAddress,
-              campaign.advertiserAddress,
-              draftRefFor(campaign.id),
-            );
-            return canonical === campaign.onchainCampaignId
-              ? ("ok" as const)
-              : ("mismatch" as const);
-          } catch {
-            return "unavailable" as const;
-          }
-        }
+    const liveCampaign = chainForLinks
+      ? (campaign: CampaignRecord) =>
+          checkLiveCampaign(
+            chainForLinks.rpc,
+            chainForLinks.chain.contractAddress,
+            campaign,
+            now(),
+          )
       : null;
+    const claimDependencies = {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      submissions: submissionRepository,
+      claims: claimRepository,
+      signer: dependencies.claimSigner ?? null,
+      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
+      chainHalted,
+      chain: dependencies.chain
+        ? {
+            chainId: dependencies.chain.chain.chainId,
+            contractAddress: dependencies.chain.chain
+              .contractAddress as `0x${string}`,
+            rpc: dependencies.chain.rpc,
+          }
+        : null,
+      now,
+    };
 
     await registerEligibilityRoutes(instance, {
       campaigns: campaignRepository,
@@ -360,30 +371,18 @@ export function buildApp(dependencies: AppDependencies = {}) {
       campaigns: campaignRepository,
       deployment,
       chainHalted,
-      canonicalLink,
+      liveCampaign,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
+      // Sign at acceptance so a later close cannot strand it (ADR-0011).
+      issueAuthorization:
+        claimDependencies.signer && claimDependencies.chain
+          ? (input) => authorizeClaim(claimDependencies, input)
+          : null,
     });
 
-    await registerClaimRoutes(instance, {
-      campaigns: campaignRepository,
-      eligibility: eligibilityRepository,
-      submissions: submissionRepository,
-      claims: claimRepository,
-      signer: dependencies.claimSigner ?? null,
-      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
-      chainHalted,
-      chain: dependencies.chain
-        ? {
-            chainId: dependencies.chain.chain.chainId,
-            contractAddress: dependencies.chain.chain
-              .contractAddress as `0x${string}`,
-            rpc: dependencies.chain.rpc,
-          }
-        : null,
-      now,
-    });
+    await registerClaimRoutes(instance, claimDependencies);
   });
 
   if (dependencies.close) {

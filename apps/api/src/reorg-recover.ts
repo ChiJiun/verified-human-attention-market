@@ -15,8 +15,9 @@ import { createDatabase } from "./db/client.js";
 /**
  * Recovery after a reorg deeper than the confirmation depth (ADR-0011):
  *   pnpm --filter @vham/api reorg:recover            # dry run: print the plan
- *   pnpm --filter @vham/api reorg:recover -- --apply # release links, rebuild
- * Stop the indexer worker first; restart it after --apply to rebuild.
+ *   pnpm --filter @vham/api reorg:recover -- --apply # release links, reset index
+ * Stop the indexer worker first; restart it after --apply. The halt stays
+ * until the worker has rebuilt the index and verified every link.
  */
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -61,6 +62,15 @@ try {
   );
 
   if (apply) {
+    // Recovering without a recorded halt (operator-initiated): record one so
+    // the API refuses participation while the index is rebuilt.
+    if (!halt) {
+      await dependencies.events.haltForReorg(
+        chain,
+        BigInt(plan.confirmedBlock),
+        new Date(),
+      );
+    }
     const result = await applyReorgRecovery(
       { ...dependencies, now: () => new Date() },
       plan,
@@ -69,7 +79,7 @@ try {
       JSON.stringify(
         {
           ...result,
-          next: "Restart the indexer worker; it rebuilds the index from the deploy block.",
+          next: "Restart the indexer worker. It rebuilds the index from the deploy block and clears the halt only after every link verifies; participation stays halted until then.",
         },
         null,
         2,

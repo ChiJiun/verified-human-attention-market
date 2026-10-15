@@ -154,6 +154,69 @@ export function matchesDraft(
   );
 }
 
+/** `CampaignManager.CampaignStatus.Active`. */
+const ONCHAIN_STATUS_ACTIVE = 1;
+
+export type LiveCampaignState =
+  /** Canonical creation for this draft, funded, open and within its window. */
+  | "payable"
+  /** The id now belongs to another draft, or the parameters differ. */
+  | "mismatch"
+  /** Canonical, but closed, not funded, outside its window or full. */
+  | "not_payable"
+  /** The RPC failed; nothing can be decided. */
+  | "unavailable";
+
+/**
+ * Reads the campaign's current on-chain state directly (not the indexed
+ * copy, which lags by the confirmation depth): a completion is accepted
+ * only while the contract would actually pay it (ADR-0011, #13).
+ */
+export async function checkLiveCampaign(
+  rpc: Pick<ChainRpc, "call">,
+  contractAddress: string,
+  campaign: CampaignRecord,
+  now: Date,
+): Promise<LiveCampaignState> {
+  try {
+    const canonicalId = await readCampaignIdByDraft(
+      rpc,
+      contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+    );
+
+    if (canonicalId === null || canonicalId !== campaign.onchainCampaignId) {
+      return "mismatch";
+    }
+
+    const onchain = await readOnchainCampaign(
+      rpc,
+      contractAddress,
+      canonicalId,
+    );
+
+    if (!onchain || !matchesDraft(campaign, onchain)) {
+      return "mismatch";
+    }
+
+    const nowSeconds = Math.floor(now.getTime() / 1000);
+    const remaining =
+      BigInt(onchain.fundedBudget) - BigInt(onchain.paidRewards);
+    const payable =
+      onchain.status === ONCHAIN_STATUS_ACTIVE &&
+      onchain.closedAt === 0 &&
+      remaining >= BigInt(onchain.rewardPerCompletion) &&
+      onchain.paidCompletions < onchain.maxCompletions &&
+      nowSeconds >= onchain.startTime &&
+      nowSeconds < onchain.endTime;
+
+    return payable ? "payable" : "not_payable";
+  } catch {
+    return "unavailable";
+  }
+}
+
 export interface OnchainDependencies {
   campaigns: CampaignRepository;
   rpc: ChainRpc;
@@ -315,6 +378,30 @@ export async function linkCampaignByTransaction(
 
     if (confirmed === null || receipt.blockNumber > confirmed) {
       return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
+    }
+
+    // A load-balanced RPC can return a receipt from a stale fork: the
+    // receipt's block must be the canonical block at that height, and at the
+    // same confirmed height the contract must map this draft to the event's
+    // id. Inconsistent answers are "reconciling", never a link.
+    const canonicalBlock = await dependencies.rpc.getBlock(receipt.blockNumber);
+
+    if (!canonicalBlock || canonicalBlock.hash !== receipt.blockHash) {
+      return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
+    }
+
+    const mapped = await readCampaignIdByDraft(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+      confirmed,
+    );
+
+    if (mapped !== created.campaignId) {
+      return mapped === null
+        ? { ok: false, status: 202, code: "TX_UNCONFIRMED" }
+        : { ok: false, status: 422, code: "DRAFT_MISMATCH" };
     }
 
     const onchain = await readOnchainCampaign(

@@ -2,16 +2,13 @@ import { createServer } from "node:http";
 
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import {
-  autoLinkCreatedCampaigns,
-  syncCampaignStatuses,
-} from "./campaigns/onchain.js";
-import {
   loadChainConfig,
   parseConfirmations,
   verifyChainConnection,
 } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
-import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
+import { ReorgBeyondConfirmationsError } from "./chain/indexer.js";
+import { recordHaltWithRetry, runWorkerPass } from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { MetricsRegistry } from "./observability/metrics.js";
@@ -163,9 +160,15 @@ const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
     }),
   );
 
-// A recorded deep reorg must be recovered first (ADR-0011).
+// A recorded deep reorg must be recovered first (ADR-0011). After
+// `reorg:recover --apply` the worker rebuilds; the halt stays until verified.
 const existingHalt = await repository.getHalt(scope);
-if (existingHalt) {
+if (existingHalt?.recoveryAppliedAt) {
+  log("warn", "rebuilding the index after reorg recovery", {
+    block: existingHalt.block.toString(),
+    note: "Participation stays halted until the rebuilt index and every link verify.",
+  });
+} else if (existingHalt) {
   log("error", "indexer halted by a reorg beyond the confirmation depth", {
     block: existingHalt.block.toString(),
     since: existingHalt.at.toISOString(),
@@ -179,7 +182,15 @@ let backoffMs = pollMs;
 
 while (!stopping) {
   try {
-    const result = await indexOnce(rpc, repository, config);
+    const pass = await runWorkerPass({
+      rpc,
+      events: repository,
+      campaigns,
+      config,
+      usdcAddress: chainConfig.usdcAddress,
+      now,
+    });
+    const { index: result, autoLinked, statuses, recovery } = pass;
     gauges.head.set(Number(result.head));
     gauges.confirmed.set(Number(result.confirmedThrough));
     gauges.lag.set(Number(result.head - result.confirmedThrough));
@@ -190,21 +201,6 @@ while (!stopping) {
       confirmedEvents: result.confirmedEvents,
       observedEvents: result.observedEvents,
       skippedLogs: result.skippedLogs,
-    });
-
-    // Reconcile campaigns from confirmed events (issue #16).
-    const autoLinked = await autoLinkCreatedCampaigns({
-      campaigns,
-      events: repository,
-      rpc,
-      chain: { ...scope, usdcAddress: chainConfig.usdcAddress },
-      now,
-    });
-    const statuses = await syncCampaignStatuses({
-      campaigns,
-      events: repository,
-      chain: scope,
-      now,
     });
 
     if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
@@ -221,6 +217,20 @@ while (!stopping) {
         releasedCampaignIds: autoLinked.relinked,
         orphanedCampaignIds: statuses.orphanedLinks,
       });
+    }
+
+    // ADR-0011: after `reorg:recover --apply` the halt is cleared only once
+    // the rebuilt index has caught up and every link verifies.
+    if (recovery?.cleared) {
+      log("info", "reorg recovery verified; participation resumes");
+    } else if (recovery) {
+      log(
+        "warn",
+        "reorg recovery not verified yet; participation stays halted",
+        {
+          reason: recovery.reason,
+        },
+      );
     }
 
     if (autoLinked.ambiguous.length > 0) {
@@ -296,14 +306,24 @@ while (!stopping) {
       // Do not guess: settlement data may be wrong. Record the halt so the
       // API stops all participation and signing for this deployment, then
       // stop. Requires an operator (ADR-0011).
-      try {
-        await repository.haltForReorg(scope, error.blockNumber, new Date());
-      } catch (haltError) {
-        log("error", "COULD NOT RECORD THE REORG HALT: the API is NOT paused", {
-          error:
-            haltError instanceof Error ? haltError.message : String(haltError),
-        });
-      }
+      // The halt must be persisted: retry until it is. If the worker is
+      // stopped first, the next start detects the same reorg again.
+      await recordHaltWithRetry(repository, scope, error.blockNumber, {
+        now: () => new Date(),
+        stopping: () => stopping,
+        onFailure: (attempt, haltError) =>
+          log(
+            "error",
+            "COULD NOT RECORD THE REORG HALT; retrying. The API is NOT paused until this succeeds",
+            {
+              attempt,
+              error:
+                haltError instanceof Error
+                  ? haltError.message
+                  : String(haltError),
+            },
+          ),
+      });
       log("error", error.message, {
         block: error.blockNumber.toString(),
         action:

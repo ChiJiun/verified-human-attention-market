@@ -128,7 +128,7 @@ Immutable constructor parameters bound every campaign:
 - `maxCompletionsPerCampaign`
 - `maxCampaignBudget` (`reward × completions`)
 
-`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`, with `InvalidDraftRef` for a zero reference, and with `DraftAlreadyCreated(campaignId)` when the sender already created a campaign for that reference (ADR-0011). `fundCampaign` rejects campaigns whose `endTime` has passed. `cancelCampaign` cancels an unfunded draft.
+`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`, with `InvalidDraftRef` for a zero reference, and with `DraftAlreadyCreated(campaignId)` when the sender already created a campaign for that reference (ADR-0011). `fundCampaign` rejects campaigns whose `endTime` has passed. `cancelCampaign` cancels an unfunded draft. `claim` reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][authorization.draftRef] == authorization.campaignId`, so an authorization never pays from a campaign created for another draft (ADR-0011; EIP-712 type in CLAIM_AUTHORIZATION.md).
 
 ## Events
 

@@ -126,7 +126,11 @@ Unique key: `(chain_id, tx_hash, log_index)`. Also `contract_address` and decode
 
 ## reconciliation_state
 
-Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), and `latest_observed_block`. Each confirmed batch commits events and cursor in one transaction. `halted_at` / `halted_block` (migration 0012) record such a reorg: while set, the API refuses participation and signing with `CHAIN_HALTED` and the worker will not start; `reorg:recover -- --apply` deletes the row and the deployment's events so the index is rebuilt (ADR-0011).
+Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), and `latest_observed_block`. Each confirmed batch commits events and cursor in one transaction.
+
+## indexer_halts
+
+Primary key `(chain_id, contract_address)`; migration 0012. `halted_block`, `halted_at`, `recovery_applied_at`. A row means a reorg deeper than the confirmation depth was detected: the API refuses participation and signing with `CHAIN_HALTED`. It lives apart from `reconciliation_state` so that dropping the index never drops the halt. `reorg:recover -- --apply` deletes the deployment's events and cursor and sets `recovery_applied_at`; the worker refuses to start without it, and deletes the row only after the rebuilt index has caught up and every link verifies (ADR-0011). Recording a new halt resets `recovery_applied_at`.
 
 ## Data Retention
 

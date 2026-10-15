@@ -131,14 +131,17 @@ worker also refuses to start while the halt is recorded. Do not just restart.
 1. Inspect the reported block on a block explorer.
 2. Dry run: `pnpm --filter @vham/api reorg:recover`. It checks every linked
    campaign against the contract's own `campaignIdByDraft` at the confirmed
-   head and prints which links it would keep and release (a release means the
-   creation is gone or the id now belongs to another draft).
+   head and prints which links it would keep and release
+   (`creation_missing`, `id_changed`: the id now belongs to another draft, or
+   `parameters_changed`: same id, different reward, cap or window).
 3. Review the plan, then `pnpm --filter @vham/api reorg:recover -- --apply`:
    released campaigns return to `draft`, the index is dropped and the halt is
-   cleared.
+   marked *recovery applied*. **The halt stays**; the API keeps refusing.
 4. Restart the worker; it rebuilds the index from the deploy block, links
-   canonical creations and re-syncs statuses. Run `pnpm --filter @vham/api
-   reconcile` once it has caught up.
+   canonical creations and re-syncs statuses. Once the index has caught up to
+   the confirmed head and every link verifies, it clears the halt itself
+   (`reorg recovery verified; participation resumes`). Until then it logs why it is
+   waiting. Run `pnpm --filter @vham/api reconcile` afterwards.
 
 Consider raising `INDEXER_CONFIRMATIONS` (used by both the API and the worker)
 if this happens more than once.

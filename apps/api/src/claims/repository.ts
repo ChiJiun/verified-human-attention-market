@@ -1,3 +1,4 @@
+import { draftRefFor } from "../campaigns/onchain.js";
 import { and, count, eq, gt, isNotNull, ne, sql } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
@@ -69,6 +70,7 @@ function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
   return {
     payload: {
       campaignId: 0n, // Filled with the campaign's canonical on-chain id below.
+      draftRef: "0x", // Filled with the campaign's draft reference below.
       claimant: row.claimantAddress as Address,
       amount: 0n, // Filled with the campaign reward below.
       nonce: row.claimNonce as Hex,
@@ -96,6 +98,7 @@ function restoreClaim(
     throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
   }
   claim.payload.campaignId = BigInt(campaign.onchainCampaignId);
+  claim.payload.draftRef = draftRefFor(campaign.id);
   claim.payload.amount = BigInt(campaign.rewardAtomic);
   return claim;
 }
@@ -189,6 +192,7 @@ export class PostgresClaimRepository implements ClaimRepository {
       const claim = await input.sign();
       if (
         claim.payload.campaignId !== BigInt(campaign.onchainCampaignId) ||
+        claim.payload.draftRef !== draftRefFor(campaign.id) ||
         claim.payload.claimant.toLowerCase() !== row.claimantAddress ||
         claim.payload.amount !== BigInt(campaign.rewardAtomic) ||
         claim.chainId !== campaign.chainId ||

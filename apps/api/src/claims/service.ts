@@ -176,6 +176,7 @@ export async function authorizeClaim(
       sign: () =>
         signer.sign({
           campaignId: BigInt(campaign.onchainCampaignId!),
+          draftRef: draftRefFor(campaign.id),
           claimant: submission.claimantAddress as Address,
           amount: BigInt(campaign.rewardAtomic),
           chainId: chain.chainId,

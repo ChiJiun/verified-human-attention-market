@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { LiveCampaignState } from "../campaigns/onchain.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { Deployment } from "@vham/shared/deployment";
 
@@ -42,14 +43,14 @@ export interface SubmissionServiceDependencies {
    */
   chainHalted: () => Promise<boolean>;
   /**
-   * Live check that the campaign's link is still this draft's canonical
-   * creation (`campaignIdByDraft` on the contract), so nobody completes work
-   * for a link a reorg invalidated even if the indexer is not running.
+   * Live on-chain state of the campaign (not the indexed copy): its link is
+   * still this draft's canonical creation with the draft's parameters, and
+   * it is funded, open and within its window. A completion is accepted only
+   * when the contract would pay it, even if the indexer lags or is down.
    * null = no chain configured (nothing can be paid anyway).
    */
-  canonicalLink:
-    | ((campaign: CampaignRecord) => Promise<"ok" | "mismatch" | "unavailable">)
-    | null;
+  liveCampaign:
+    ((campaign: CampaignRecord) => Promise<LiveCampaignState>) | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
   now: () => Date;
@@ -196,14 +197,14 @@ export async function submitCompletion(
   }
 
   // Last check before any completion is recorded, and only for a verified
-  // participant (no RPC call for unauthenticated requests): the link must
-  // still be this draft's canonical creation (ADR-0011).
-  if (campaign.onchainCampaignId !== null && dependencies.canonicalLink) {
-    const link = await dependencies.canonicalLink(campaign);
-    if (link === "unavailable") {
+  // participant (no RPC call for unauthenticated requests): the contract
+  // must still pay this draft's campaign right now (ADR-0011, #13).
+  if (campaign.onchainCampaignId !== null && dependencies.liveCampaign) {
+    const live = await dependencies.liveCampaign(campaign);
+    if (live === "unavailable") {
       return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
     }
-    if (link === "mismatch") {
+    if (live !== "payable") {
       return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
     }
   }

@@ -81,6 +81,7 @@ const advertiser = mnemonicToAccount(MNEMONIC, { addressIndex: 2 });
 const alice = mnemonicToAccount(MNEMONIC, { addressIndex: 3 });
 const bob = mnemonicToAccount(MNEMONIC, { addressIndex: 4 });
 const operator = mnemonicToAccount(MNEMONIC, { addressIndex: 5 });
+const carol = mnemonicToAccount(MNEMONIC, { addressIndex: 7 });
 
 function artifact(path: string): { abi: Abi; bytecode: Hex } {
   const json = JSON.parse(
@@ -582,9 +583,17 @@ describeE2e("POC economic loop on a local chain", () => {
         answers: [{ questionId: "q1", choiceId: "a" }],
       },
     });
-    expect(submitted.json()).toMatchObject({ status: "accepted" });
+    // The authorization is signed in the same request as the acceptance
+    // (ADR-0011), so a later close cannot strand an accepted completion.
+    expect(submitted.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
+    });
     const submissionId = submitted.json<{ submissionId: string }>()
       .submissionId;
+    const issuedAtAcceptance = submitted.json<{
+      claim: { authorization: { nonce: Hex } };
+    }>().claim.authorization;
 
     // The same human cannot complete twice.
     const again = await app.inject({
@@ -599,15 +608,17 @@ describeE2e("POC economic loop on a local chain", () => {
     });
     expect(again.statusCode).toBe(409);
 
-    // 5. EIP-712 authorization from the backend signer.
+    // 5. EIP-712 authorization from the backend signer: requesting it again
+    // returns the one issued at acceptance.
     const authorization = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
       payload: { eligibilityToken },
     });
-    expect(authorization.statusCode).toBe(201);
+    expect(authorization.statusCode).toBe(200);
     const claim = authorization.json<{
       campaignId: string;
+      draftRef: Hex;
       claimant: Address;
       amount: string;
       nonce: Hex;
@@ -615,17 +626,21 @@ describeE2e("POC economic loop on a local chain", () => {
       expiresAt: number;
       signature: Hex;
     }>();
-    const claimArgs = [
+    expect(claim.nonce).toBe(issuedAtAcceptance.nonce);
+    expect(claim.draftRef).toBe(draftRef);
+    const toClaimArgs = (signed: typeof claim) => [
       {
-        campaignId: BigInt(claim.campaignId),
-        claimant: claim.claimant,
-        amount: BigInt(claim.amount),
-        nonce: claim.nonce,
-        issuedAt: BigInt(claim.issuedAt),
-        expiresAt: BigInt(claim.expiresAt),
+        campaignId: BigInt(signed.campaignId),
+        draftRef: signed.draftRef,
+        claimant: signed.claimant,
+        amount: BigInt(signed.amount),
+        nonce: signed.nonce,
+        issuedAt: BigInt(signed.issuedAt),
+        expiresAt: BigInt(signed.expiresAt),
       },
-      claim.signature,
+      signed.signature,
     ];
+    const claimArgs = toClaimArgs(claim);
 
     // 5b. Emergency drills (#23, docs/operations/RUNBOOK.md).
     const simulateClaim = () =>
@@ -707,13 +722,9 @@ describeE2e("POC economic loop on a local chain", () => {
       onchain!.paidCompletions,
     );
 
-    // 8. Close: no new liability after close, refund only after the grace period.
+    // 8. Close: a completion accepted before the close stays payable; none
+    // is accepted after it; refund only after the grace period.
     await travelTo(seconds(10));
-    await send(advertiser, managerAddress, manager.abi, "closeCampaign", [
-      onchainId,
-    ]);
-    const closedAt = clock;
-
     const bobVerified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
@@ -722,9 +733,6 @@ describeE2e("POC economic loop on a local chain", () => {
         idkitResponse: { action: campaignAction(campaignId), human: "bob" },
       },
     });
-    // The close is not confirmed by the indexer yet, so the database still
-    // says "active" and Bob's completion is accepted. No liability results:
-    // the claim service reads closedAt live from the contract and refuses.
     expect(bobVerified.statusCode).toBe(201);
     const bobToken = bobVerified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
@@ -738,13 +746,62 @@ describeE2e("POC economic loop on a local chain", () => {
         answers: [{ questionId: "q1", choiceId: "a" }],
       },
     });
-    expect(bobSubmission.json()).toMatchObject({ status: "accepted" });
-    const bobAuth = await app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${campaignId}/submissions/${bobSubmission.json<{ submissionId: string }>().submissionId}/authorization`,
-      payload: { eligibilityToken: bobToken },
+    expect(bobSubmission.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
     });
-    expect(bobAuth.json()).toMatchObject({
+    const bobClaim = bobSubmission.json<{
+      claim: { authorization: typeof claim };
+    }>().claim.authorization;
+
+    await travelTo(seconds(10));
+    await send(advertiser, managerAddress, manager.abi, "closeCampaign", [
+      onchainId,
+    ]);
+    const closedAt = clock;
+
+    // Bob was accepted before the close, so his authorization still pays.
+    await send(
+      bob,
+      managerAddress,
+      manager.abi,
+      "claim",
+      toClaimArgs(bobClaim),
+    );
+    expect(
+      await publicClient.readContract({
+        address: usdcAddress,
+        abi: mockUsdc.abi,
+        functionName: "balanceOf",
+        args: [bob.address],
+      }),
+    ).toBe(USDC);
+
+    // The close is not confirmed by the indexer yet, so the database still
+    // says "active". The submission service reads the contract live and
+    // accepts no completion the contract would not pay.
+    const carolVerified = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: {
+        claimant: carol.address,
+        idkitResponse: { action: campaignAction(campaignId), human: "carol" },
+      },
+    });
+    expect(carolVerified.statusCode).toBe(201);
+    const carolSubmission = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions`,
+      headers: { "idempotency-key": "carol-1" },
+      payload: {
+        eligibilityToken: carolVerified.json<{ eligibilityToken: string }>()
+          .eligibilityToken,
+        claimant: carol.address,
+        answers: [{ questionId: "q1", choiceId: "a" }],
+      },
+    });
+    expect(carolSubmission.statusCode).toBe(409);
+    expect(carolSubmission.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
 
@@ -774,7 +831,7 @@ describeE2e("POC economic loop on a local chain", () => {
       functionName: "balanceOf",
       args: [advertiser.address],
     })) as bigint;
-    expect(balanceAfter - balanceBefore).toBe(9n * USDC);
+    expect(balanceAfter - balanceBefore).toBe(8n * USDC);
 
     // 9. Final reconciliation: settled, and accounting balances exactly.
     await reconcile();
@@ -791,10 +848,10 @@ describeE2e("POC economic loop on a local chain", () => {
         confirmed: {
           status: "settled",
           funded: "10000000",
-          paidRewards: "1000000",
-          refunded: "9000000",
+          paidRewards: "2000000",
+          refunded: "8000000",
           remaining: "0",
-          paidCompletions: 1,
+          paidCompletions: 2,
           accountingViolation: false,
         },
         hasUnconfirmedEvents: false,

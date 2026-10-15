@@ -11,6 +11,8 @@ interface Vm {
     function expectRevert(bytes4 revertData) external;
     function expectRevert(bytes calldata revertData) external;
     function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData, address emitter) external;
+    function snapshotState() external returns (uint256 snapshotId);
+    function revertToState(uint256 snapshotId) external returns (bool success);
 }
 
 contract MockUSDC {
@@ -68,7 +70,7 @@ contract CampaignManagerTest {
     // value from the viem EIP-712 type definition.
     function test_ClaimAuthorizationTypehashMatchesBackend() public view {
         assert(
-            manager.CLAIM_AUTHORIZATION_TYPEHASH() == 0x86a1a13468402e9b0394c5b7beb1420b8cc67d43a7a2711d5a0a49d0d2d6408b
+            manager.CLAIM_AUTHORIZATION_TYPEHASH() == 0x190486b79e77ff5517da40fe874a526fb3507c8999e73a8a70f90d4e2e90005b
         );
     }
 
@@ -482,6 +484,8 @@ contract CampaignManagerTest {
     }
 
     uint256 private draftRefCounter;
+    /// @dev Draft reference each test campaign was created with.
+    mapping(uint256 => bytes32) private draftRefOf;
 
     /// @dev A fresh, non-zero draft reference for each created campaign.
     function _nextRef() private returns (bytes32) {
@@ -531,9 +535,68 @@ contract CampaignManagerTest {
         manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
     }
 
-    function _createAndFund(uint32 maxCompletions) private returns (uint256) {
+    function test_ClaimRejectsAnotherDraftsAuthorization() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("other-draft"));
+        authorization.draftRef = keccak256("not-this-campaigns-draft");
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.WrongDraft.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
+    /// Deep reorg on the same contract: draft A's campaign 1 disappears and
+    /// draft B's creation takes id 1. A's unexpired authorization must not
+    /// pay out of B's budget (ADR-0011).
+    function test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign() public {
+        uint256 snapshot = vm.snapshotState();
+
+        bytes32 refA = keccak256("draft-A");
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), maxCompletions, startTime, endTime, _nextRef());
+        uint256 idA = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, refA);
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+        vm.prank(advertiser);
+        manager.fundCampaign(idA, ONE_USDC * MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authA = _authorization(idA, claimant, keccak256("nonce-A"));
+        authA.draftRef = refA;
+        bytes memory signatureA = _sign(authA, SIGNER_KEY);
+
+        // The reorg: chain state rolls back, then B's creation takes the id.
+        vm.revertToState(snapshot);
+        bytes32 refB = keccak256("draft-B");
+        vm.prank(advertiser);
+        uint256 idB = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, refB);
+        require(idB == idA, "same id reused");
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+        vm.prank(advertiser);
+        manager.fundCampaign(idB, ONE_USDC * MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        vm.expectRevert(CampaignManager.WrongDraft.selector);
+        vm.prank(claimant);
+        manager.claim(authA, signatureA);
+
+        // B's own authorization still works.
+        CampaignManager.ClaimAuthorization memory authB = _authorization(idB, claimant, keccak256("nonce-B"));
+        authB.draftRef = refB;
+        bytes memory signatureB = _sign(authB, SIGNER_KEY);
+        vm.prank(claimant);
+        manager.claim(authB, signatureB);
+    }
+
+    function _createAndFund(uint32 maxCompletions) private returns (uint256) {
+        bytes32 ref = _nextRef();
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), maxCompletions, startTime, endTime, ref);
+        draftRefOf[campaignId] = ref;
 
         uint256 budget = ONE_USDC * maxCompletions;
 
@@ -555,6 +618,7 @@ contract CampaignManagerTest {
 
         return CampaignManager.ClaimAuthorization({
             campaignId: campaignId,
+            draftRef: draftRefOf[campaignId],
             claimant: recipient,
             amount: ONE_USDC,
             nonce: nonce,

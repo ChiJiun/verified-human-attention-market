@@ -1,5 +1,5 @@
 {
-  "id": "3691d274-7db2-4952-b102-bb4350e4d222",
+  "id": "4225185a-392c-4028-a62d-235893320f45",
   "prevId": "44524782-0b99-4be1-a07e-c5c92d4384a9",
   "version": "7",
   "dialect": "postgresql",
@@ -1002,6 +1002,57 @@
       },
       "isRLSEnabled": false
     },
+    "public.indexer_halts": {
+      "name": "indexer_halts",
+      "schema": "",
+      "columns": {
+        "chain_id": {
+          "name": "chain_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "contract_address": {
+          "name": "contract_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "halted_block": {
+          "name": "halted_block",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "halted_at": {
+          "name": "halted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovery_applied_at": {
+          "name": "recovery_applied_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "indexer_halts_chain_id_contract_address_pk": {
+          "name": "indexer_halts_chain_id_contract_address_pk",
+          "columns": [
+            "chain_id",
+            "contract_address"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.missions": {
       "name": "missions",
       "schema": "",
@@ -1298,18 +1349,6 @@
         "latest_confirmed_block_hash": {
           "name": "latest_confirmed_block_hash",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "halted_at": {
-          "name": "halted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "halted_block": {
-          "name": "halted_block",
-          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },

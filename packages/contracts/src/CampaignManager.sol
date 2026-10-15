@@ -31,6 +31,9 @@ contract CampaignManager {
 
     struct ClaimAuthorization {
         uint256 campaignId;
+        /// @dev The draft the campaign was created for (ADR-0011). An id can be
+        /// reused by another draft after a deep reorg; the draft cannot.
+        bytes32 draftRef;
         address claimant;
         uint256 amount;
         bytes32 nonce;
@@ -71,6 +74,7 @@ contract CampaignManager {
     error CompletionsAboveLimit();
     error BudgetAboveLimit();
     error InvalidDraftRef();
+    error WrongDraft();
     error DraftAlreadyCreated(uint256 campaignId);
 
     event CampaignCreated(uint256 indexed campaignId, address indexed advertiser, bytes32 indexed draftRef);
@@ -88,7 +92,7 @@ contract CampaignManager {
     uint64 public constant MAX_AUTHORIZATION_TTL = 15 minutes;
 
     bytes32 public constant CLAIM_AUTHORIZATION_TYPEHASH = keccak256(
-        "ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)"
+        "ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)"
     );
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
@@ -228,6 +232,11 @@ contract CampaignManager {
             revert CampaignNotClaimable();
         }
         if (authorization.claimant != msg.sender) revert WrongClaimant();
+        // The signed draft must be the one this id was created for; after a
+        // deep reorg the same id may belong to another draft (ADR-0011).
+        if (campaignIdByDraft[campaign.advertiser][authorization.draftRef] != authorization.campaignId) {
+            revert WrongDraft();
+        }
         if (authorization.amount != campaign.rewardPerCompletion) {
             revert InvalidClaimAmount();
         }
@@ -373,6 +382,7 @@ contract CampaignManager {
             abi.encode(
                 CLAIM_AUTHORIZATION_TYPEHASH,
                 authorization.campaignId,
+                authorization.draftRef,
                 authorization.claimant,
                 authorization.amount,
                 authorization.nonce,

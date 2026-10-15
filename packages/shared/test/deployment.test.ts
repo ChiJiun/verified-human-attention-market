@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isCurrentDeployment } from "../src/deployment.js";
+import { isCurrentDeployment, isFundingTarget } from "../src/deployment.js";
 
 const CURRENT = {
   chainId: 84532,
@@ -55,6 +55,55 @@ describe("isCurrentDeployment (ADR-0011)", () => {
       isCurrentDeployment(
         { chainId: 84532, contractAddress: CURRENT.contractAddress },
         null,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isFundingTarget (ADR-0011)", () => {
+  const expected = {
+    onchainCampaignId: "1",
+    rewardPerCompletion: "1000000",
+    maxCompletions: 10,
+    startAt: "2026-10-15T10:00:00.000Z",
+    endAt: "2026-10-15T11:00:00.000Z",
+  };
+  const reading = {
+    mappedCampaignId: 1n,
+    onchain: {
+      rewardPerCompletion: 1_000_000n,
+      maxCompletions: 10,
+      startTime: BigInt(Date.parse(expected.startAt) / 1000),
+      endTime: BigInt(Date.parse(expected.endAt) / 1000),
+    },
+  };
+
+  it("accepts the draft's own campaign", () => {
+    expect(isFundingTarget(reading, expected)).toBe(true);
+  });
+
+  it("rejects a reused id that now belongs to another draft with the same budget", () => {
+    // After a deep reorg this draft maps to nothing (or another id) while
+    // id 1, with identical economics, is another draft's campaign.
+    expect(
+      isFundingTarget({ ...reading, mappedCampaignId: 0n }, expected),
+    ).toBe(false);
+    expect(
+      isFundingTarget({ ...reading, mappedCampaignId: 2n }, expected),
+    ).toBe(false);
+  });
+
+  it("rejects changed parameters on the same id", () => {
+    expect(
+      isFundingTarget(
+        { ...reading, onchain: { ...reading.onchain, maxCompletions: 9 } },
+        expected,
+      ),
+    ).toBe(false);
+    expect(
+      isFundingTarget(
+        { ...reading, onchain: { ...reading.onchain, endTime: 0n } },
+        expected,
       ),
     ).toBe(false);
   });

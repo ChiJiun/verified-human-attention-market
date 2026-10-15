@@ -1,3 +1,4 @@
+import type { SignedClaim } from "./signer.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -39,18 +40,26 @@ export async function registerClaimRoutes(
       });
       if (!outcome.ok) return fail(outcome.status, outcome.code);
 
-      const { payload, signature, chainId, contractAddress } = outcome.claim;
-      return reply.status(outcome.created ? 201 : 200).send({
-        campaignId: payload.campaignId.toString(),
-        claimant: payload.claimant,
-        amount: payload.amount.toString(),
-        nonce: payload.nonce,
-        issuedAt: Number(payload.issuedAt),
-        expiresAt: Number(payload.expiresAt),
-        signature,
-        chainId,
-        contractAddress,
-      });
+      return reply
+        .status(outcome.created ? 201 : 200)
+        .send(serializeClaim(outcome.claim));
     },
   );
+}
+
+/** JSON shape of a signed authorization, as the web app submits it. */
+export function serializeClaim(claim: SignedClaim) {
+  const { payload, signature, chainId, contractAddress } = claim;
+  return {
+    campaignId: payload.campaignId.toString(),
+    draftRef: payload.draftRef,
+    claimant: payload.claimant,
+    amount: payload.amount.toString(),
+    nonce: payload.nonce,
+    issuedAt: Number(payload.issuedAt),
+    expiresAt: Number(payload.expiresAt),
+    signature,
+    chainId,
+    contractAddress,
+  };
 }

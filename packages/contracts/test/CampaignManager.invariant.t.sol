@@ -90,6 +90,7 @@ contract CampaignInvariantHandler {
 
         CampaignManager.ClaimAuthorization memory authorization = CampaignManager.ClaimAuthorization({
             campaignId: campaignId,
+            draftRef: keccak256("invariant"),
             claimant: claimant,
             amount: rewardPerCompletion,
             nonce: keccak256(abi.encode(seed, claimant, totalClaimed)),

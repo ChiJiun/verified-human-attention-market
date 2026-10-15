@@ -58,14 +58,23 @@ export interface ChainEventRepository {
   >;
   /**
    * Records that confirmed block `block` is no longer canonical (a reorg
-   * deeper than the confirmation depth). Until cleared, the API accepts no
-   * participation and signs nothing for this deployment (ADR-0011).
+   * deeper than the confirmation depth). While a halt exists the API accepts
+   * no participation and signs nothing for this deployment (ADR-0011). A new
+   * halt also cancels a recovery in progress.
    */
   haltForReorg(scope: ChainScope, block: bigint, at: Date): Promise<void>;
   getHalt(scope: ChainScope): Promise<ChainHalt | null>;
   /**
-   * Drops every indexed event, the cursor and any halt for `scope`, so the
-   * worker rebuilds the index from the deploy block. Recovery only.
+   * `reorg:recover --apply` finished releasing links and dropping the index;
+   * the worker may now rebuild. The halt itself stays. Returns false when
+   * there is no halt.
+   */
+  markRecoveryApplied(scope: ChainScope, at: Date): Promise<boolean>;
+  /** Only the worker, after the rebuilt index and every link verify. */
+  clearHalt(scope: ChainScope): Promise<void>;
+  /**
+   * Drops every indexed event and the cursor for `scope`, so the worker
+   * rebuilds the index from the deploy block. Never touches the halt.
    */
   resetIndex(scope: ChainScope): Promise<void>;
 }
@@ -73,6 +82,8 @@ export interface ChainEventRepository {
 export interface ChainHalt {
   block: bigint;
   at: Date;
+  /** null until `reorg:recover --apply`; then the worker may rebuild. */
+  recoveryAppliedAt: Date | null;
 }
 
 export const identity = (event: { txHash: string; logIndex: number }) =>
@@ -97,11 +108,22 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
   private readonly halts = new Map<string, ChainHalt>();
 
   async haltForReorg(scope: ChainScope, block: bigint, at: Date) {
-    this.halts.set(this.key(scope), { block, at });
+    this.halts.set(this.key(scope), { block, at, recoveryAppliedAt: null });
   }
 
   async getHalt(scope: ChainScope): Promise<ChainHalt | null> {
     return this.halts.get(this.key(scope)) ?? null;
+  }
+
+  async markRecoveryApplied(scope: ChainScope, at: Date): Promise<boolean> {
+    const halt = this.halts.get(this.key(scope));
+    if (!halt) return false;
+    this.halts.set(this.key(scope), { ...halt, recoveryAppliedAt: at });
+    return true;
+  }
+
+  async clearHalt(scope: ChainScope): Promise<void> {
+    this.halts.delete(this.key(scope));
   }
 
   async resetIndex(scope: ChainScope): Promise<void> {
@@ -114,7 +136,6 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
       }
     }
     this.cursors.delete(this.key(scope));
-    this.halts.delete(this.key(scope));
   }
 
   private key(scope: ChainScope) {

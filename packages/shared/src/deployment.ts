@@ -28,3 +28,49 @@ export function isCurrentDeployment(
     link.contractAddress.toLowerCase() === current.contractAddress.toLowerCase()
   );
 }
+
+/**
+ * What the advertiser's wallet reads on-chain right before funding: the
+ * contract's `campaignIdByDraft(advertiser, draftRef)` and `campaigns(id)`.
+ */
+export interface FundingTargetReading {
+  mappedCampaignId: bigint;
+  onchain: {
+    rewardPerCompletion: bigint;
+    maxCompletions: number;
+    startTime: bigint;
+    endTime: bigint;
+  };
+}
+
+/** The draft as the API describes it. */
+export interface FundingTargetExpectation {
+  onchainCampaignId: string;
+  rewardPerCompletion: string;
+  maxCompletions: number;
+  /** ISO timestamps. */
+  startAt: string;
+  endAt: string;
+}
+
+/**
+ * True only if the on-chain id still belongs to this draft and carries its
+ * parameters. After a deep reorg another draft of the same advertiser can
+ * hold the same id with the same budget; funding it would send the USDC to
+ * the wrong campaign (ADR-0011).
+ */
+export function isFundingTarget(
+  reading: FundingTargetReading,
+  expected: FundingTargetExpectation,
+): boolean {
+  const seconds = (iso: string) => BigInt(Math.floor(Date.parse(iso) / 1000));
+  return (
+    reading.mappedCampaignId !== 0n &&
+    reading.mappedCampaignId === BigInt(expected.onchainCampaignId) &&
+    reading.onchain.rewardPerCompletion ===
+      BigInt(expected.rewardPerCompletion) &&
+    reading.onchain.maxCompletions === expected.maxCompletions &&
+    reading.onchain.startTime === seconds(expected.startAt) &&
+    reading.onchain.endTime === seconds(expected.endAt)
+  );
+}

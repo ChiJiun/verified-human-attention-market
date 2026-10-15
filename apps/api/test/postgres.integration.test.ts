@@ -1,3 +1,4 @@
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -342,6 +343,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       sign: () =>
         signer.sign({
           campaignId: 7n,
+          draftRef: draftRefFor(campaignId),
           claimant: claimantAddress as `0x${string}`,
           amount: 1000000n,
           chainId: 84532,

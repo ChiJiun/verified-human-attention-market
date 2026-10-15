@@ -88,6 +88,8 @@ export class FakeChain implements ChainRpc {
     {
       advertiser: string;
       fundedBudget?: bigint;
+      /** Unix seconds; non-zero once closed. */
+      closedAt?: number;
       rewardPerCompletion: bigint;
       maxCompletions: number;
       startTime: number;
@@ -126,6 +128,23 @@ export class FakeChain implements ChainRpc {
 
   /** Mines `count` blocks; `specs` go into the first new block. */
   mine(count = 1, specs: LogSpec[] = [], address = this.contract): bigint {
+    // Mirror the contract's storage for funding and closing, like the real
+    // CampaignManager would (not fork-aware: tests reset it explicitly).
+    if (address === this.contract) {
+      for (const spec of specs) {
+        const struct = spec.topics[1]
+          ? this.campaignStructs.get(BigInt(spec.topics[1]).toString())
+          : undefined;
+        if (!struct) continue;
+        if (spec.topics[0] === EVENT_TOPICS.CampaignFunded) {
+          struct.fundedBudget = (struct.fundedBudget ?? 0n) + BigInt(spec.data);
+        }
+        if (spec.topics[0] === EVENT_TOPICS.CampaignClosed) {
+          struct.closedAt = this.blocks.length;
+        }
+      }
+    }
+
     for (let index = 0; index < count; index += 1) {
       const number = this.blocks.length;
       this.blocks.push({
@@ -286,8 +305,9 @@ export class FakeChain implements ChainRpc {
       word(0),
       word(struct.startTime),
       word(struct.endTime),
-      word(0),
-      word(0),
+      word(struct.closedAt ?? 0),
+      // CampaignStatus: Draft 0, Active 1, Closed 2.
+      word(struct.closedAt ? 2 : struct.fundedBudget ? 1 : 0),
     ]
       .map((value, index) => (index === 0 ? value : value.slice(2)))
       .join("");

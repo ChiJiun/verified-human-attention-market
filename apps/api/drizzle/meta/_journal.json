@@ -89,8 +89,8 @@
     {
       "idx": 12,
       "version": "7",
-      "when": 1792043546306,
-      "tag": "0012_indexer_reorg_halt",
+      "when": 1792047681316,
+      "tag": "0012_indexer_halts",
       "breakpoints": true
     }
   ]

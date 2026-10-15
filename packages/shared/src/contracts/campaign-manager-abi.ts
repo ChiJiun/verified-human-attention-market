@@ -198,6 +198,10 @@ export const campaignManagerAbi = [
             "type": "uint256"
           },
           {
+            "name": "draftRef",
+            "type": "bytes32"
+          },
+          {
             "name": "claimant",
             "type": "address"
           },
@@ -349,6 +353,10 @@ export const campaignManagerAbi = [
           {
             "name": "campaignId",
             "type": "uint256"
+          },
+          {
+            "name": "draftRef",
+            "type": "bytes32"
           },
           {
             "name": "claimant",
@@ -841,6 +849,11 @@ export const campaignManagerAbi = [
   {
     "type": "error",
     "name": "WrongClaimant",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongDraft",
     "inputs": []
   },
   {

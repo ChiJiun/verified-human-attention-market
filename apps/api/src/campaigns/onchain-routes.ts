@@ -1,3 +1,4 @@
+import { isCurrentDeployment } from "@vham/shared/deployment";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -5,6 +6,7 @@ import { reconcileCampaignEvents } from "../chain/campaign-state.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import {
+  draftRefFor,
   linkCampaignByDraft,
   linkCampaignByTransaction,
   publishIntent,
@@ -230,8 +232,13 @@ export async function registerOnchainRoutes(
       if (
         dependencies.chain &&
         campaign.onchainCampaignId !== null &&
-        campaign.onchainContractAddress ===
-          dependencies.chain.chain.contractAddress
+        isCurrentDeployment(
+          {
+            chainId: campaign.chainId,
+            contractAddress: campaign.onchainContractAddress,
+          },
+          dependencies.chain.chain,
+        )
       ) {
         const events = await dependencies.chain.events.listCampaignEvents(
           dependencies.chain.chain,
@@ -255,6 +262,10 @@ export async function registerOnchainRoutes(
         status: campaign.status,
         rewardPerCompletion: campaign.rewardAtomic,
         maxCompletions: campaign.maxCompletions,
+        startAt: campaign.startAt.toISOString(),
+        endAt: campaign.endAt.toISOString(),
+        // What the advertiser's wallet checks on-chain before funding.
+        draftRef: draftRefFor(campaign.id),
         plannedBudget: budget,
         submissions: {
           accepted: submissions.accepted,

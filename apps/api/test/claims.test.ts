@@ -178,14 +178,15 @@ describe("EIP-712 claim authorization", () => {
   it("matches the contract type and binds every field and domain component", async () => {
     const typeString = `ClaimAuthorization(${CLAIM_TYPES.ClaimAuthorization.map(({ type, name }) => `${type} ${name}`).join(",")})`;
     expect(typeString).toBe(
-      "ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)",
+      "ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)",
     );
     expect(keccak256(stringToHex(typeString))).toBe(
-      "0x86a1a13468402e9b0394c5b7beb1420b8cc67d43a7a2711d5a0a49d0d2d6408b",
+      "0x190486b79e77ff5517da40fe874a526fb3507c8999e73a8a70f90d4e2e90005b",
     );
 
     const signed = await signer.sign({
       campaignId: 7n,
+      draftRef: draftRefFor("campaign"),
       claimant: CLAIMANT,
       amount: 1000000n,
       chainId: 84532,

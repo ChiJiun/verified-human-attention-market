@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import { reconcileCampaignEvents } from "../../src/chain/campaign-state.js";
 import type { ChainEventRepository } from "../../src/chain/events-repository.js";
 import {
+  InconsistentChainReadError,
   indexOnce,
   ReorgBeyondConfirmationsError,
   type IndexerConfig,
@@ -195,7 +196,7 @@ export function defineIndexerContract(harness: IndexerHarness) {
     });
   });
 
-  it("records a reorg halt, and resetIndex drops events, cursor and halt (ADR-0011)", async () => {
+  it("keeps a reorg halt through resetIndex until it is cleared (ADR-0011)", async () => {
     const { chain, config, repository, scope } = setup(harness);
     chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
     chain.mine(10);
@@ -204,21 +205,69 @@ export function defineIndexerContract(harness: IndexerHarness) {
 
     const at = new Date("2026-10-15T00:00:00.000Z");
     await repository.haltForReorg(scope, 12n, at);
-    expect(await repository.getHalt(scope)).toEqual({ block: 12n, at });
-    // The cursor is kept until recovery.
-    expect(await repository.getCursor(scope)).not.toBeNull();
+    expect(await repository.getHalt(scope)).toEqual({
+      block: 12n,
+      at,
+      recoveryAppliedAt: null,
+    });
 
+    // Recovery drops events and cursor, never the halt.
     await repository.resetIndex(scope);
-    expect(await repository.getHalt(scope)).toBeNull();
     expect(await repository.getCursor(scope)).toBeNull();
     expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+    const applied = new Date("2026-10-15T00:05:00.000Z");
+    expect(await repository.markRecoveryApplied(scope, applied)).toBe(true);
+    expect(await repository.getHalt(scope)).toEqual({
+      block: 12n,
+      at,
+      recoveryAppliedAt: applied,
+    });
 
-    // The next pass rebuilds the index from the deploy block.
+    // A new deep reorg during recovery starts over.
+    await repository.haltForReorg(scope, 13n, applied);
+    expect((await repository.getHalt(scope))?.recoveryAppliedAt).toBeNull();
+
+    // Rebuild from the deploy block, then clear.
     await indexOnce(chain, repository, config);
     expect(
       (await repository.listCampaignEvents(scope, "1")).map(
         (stored) => stored.event.name,
       ),
     ).toEqual(["CampaignCreated", "CampaignFunded"]);
+    await repository.clearHalt(scope);
+    expect(await repository.getHalt(scope)).toBeNull();
+    expect(await repository.markRecoveryApplied(scope, applied)).toBe(false);
+  });
+
+  it("never commits logs read across a reorg (ADR-0011)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    const creationBlock = chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+
+    // The chain reorganizes right after the logs of the range holding the
+    // creation are read, before the range end's hash is read.
+    const readLogs = chain.getLogs.bind(chain);
+    let reorged = false;
+    chain.getLogs = async (query) => {
+      const result = await readLogs(query);
+      if (
+        !reorged &&
+        query.fromBlock <= creationBlock &&
+        query.toBlock >= creationBlock
+      ) {
+        reorged = true;
+        chain.reorg(creationBlock);
+      }
+      return result;
+    };
+
+    await expect(indexOnce(chain, repository, config)).rejects.toBeInstanceOf(
+      InconsistentChainReadError,
+    );
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    // The next pass reads the new fork consistently: no creation there.
+    await indexOnce(chain, repository, config);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
   });
 }

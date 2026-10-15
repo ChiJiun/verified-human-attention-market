@@ -17,6 +17,10 @@ import {
   applyReorgRecovery,
   planReorgRecovery,
 } from "../src/chain/reorg-recovery.js";
+import {
+  recordHaltWithRetry,
+  runWorkerPass,
+} from "../src/chain/worker-pass.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
 import type {
@@ -361,6 +365,25 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     expect(byHash.statusCode).toBe(200);
   });
 
+  it("does not link a receipt from a stale fork", async () => {
+    const { chain, createDraft, createOnchain, link } = await setup();
+    const id = await createDraft();
+    const txHash = createOnchain(1, id);
+    // A load-balanced RPC answers with a receipt from another fork.
+    const receiptOf = chain.getTransactionReceipt.bind(chain);
+    chain.getTransactionReceipt = async (hash: string) => {
+      const receipt = await receiptOf(hash);
+      return receipt && { ...receipt, blockHash: "0x" + "ee".repeat(32) };
+    };
+
+    const response = await link(id, txHash);
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({
+      status: "reconciling",
+      code: "TX_UNCONFIRMED",
+    });
+  });
+
   it("rejects a creation that carries another draft's reference", async () => {
     const { createDraft, createOnchain, link } = await setup();
     const id = await createDraft("a");
@@ -449,123 +472,158 @@ describe("POST /v1/campaigns/:id/onchain", () => {
 });
 
 describe("reorg beyond the confirmation depth after activation (ADR-0011)", () => {
-  /**
-   * Draft A is created, linked, funded, indexed and active. Then a reorg
-   * deeper than the confirmation depth removes A's creation; optionally
-   * draft B's creation takes the same on-chain id on the new fork.
-   */
-  async function activeThenDeepReorg(replacement: boolean) {
+  /** What the indexer worker runs every pass (src/chain/worker-pass.ts). */
+  function workerPass(fixture: Awaited<ReturnType<typeof setup>>) {
+    return runWorkerPass({
+      rpc: fixture.chain,
+      events: fixture.events,
+      campaigns: fixture.campaigns,
+      config: {
+        chainId: 84532,
+        contractAddress: CONTRACT,
+        deployBlock: 1n,
+        confirmations: CONFIRMATIONS,
+        maxBlockRange: 100n,
+      },
+      usdcAddress: USDC_ADDRESS,
+      now: () => new Date(),
+    });
+  }
+
+  /** The worker detects the deep reorg and records the halt. */
+  async function workerDetectsReorg(
+    fixture: Awaited<ReturnType<typeof setup>>,
+  ) {
+    const detected = await workerPass(fixture).catch((error: unknown) => error);
+    expect(detected).toBeInstanceOf(ReorgBeyondConfirmationsError);
+    expect(
+      await recordHaltWithRetry(
+        fixture.events,
+        fixture.scope,
+        (detected as ReorgBeyondConfirmationsError).blockNumber,
+        { now: () => new Date(), stopping: () => false, onFailure: () => {} },
+      ),
+    ).toBe(true);
+  }
+
+  function recovery(fixture: Awaited<ReturnType<typeof setup>>) {
+    return {
+      campaigns: fixture.campaigns,
+      events: fixture.events,
+      rpc: fixture.chain,
+      chain: fixture.scope,
+      confirmations: CONFIRMATIONS,
+    };
+  }
+
+  async function participantCodes(
+    fixture: Awaited<ReturnType<typeof setup>>,
+    campaignId: string,
+  ) {
+    const post = (url: string, payload: object, headers = {}) =>
+      fixture.app.inject({ method: "POST", url, payload, headers });
+    const responses = [
+      await post(`/v1/campaigns/${campaignId}/world-id/request`, {}),
+      await post(`/v1/campaigns/${campaignId}/eligibility/verify`, {
+        claimant: CLAIMANT,
+        idkitResponse: { action: `vham-campaign-${campaignId}`, human: "h" },
+      }),
+      await post(
+        `/v1/campaigns/${campaignId}/submissions`,
+        {
+          eligibilityToken: "00000000-0000-4000-8000-000000000000",
+          claimant: CLAIMANT,
+          answers: [{ questionId: "q1", choiceId: "a" }],
+        },
+        { "idempotency-key": `codes-${Math.random()}` },
+      ),
+    ];
+    return responses.map(
+      (response) => response.json<{ error?: { code: string } }>().error?.code,
+    );
+  }
+
+  /** Draft A is created, linked, funded, indexed and active. */
+  async function activeCampaign() {
     const fixture = await setup();
-    const { app, chain, campaigns, createDraft, createOnchain, reconcile } =
-      fixture;
-    const draftA = await createDraft("a");
-    const draftB = await createDraft("b", {
+    const draftA = await fixture.createDraft("a");
+    const draftB = await fixture.createDraft("b", {
       contentUrl: "https://example.com/b",
     });
-
-    const beforeA = chain.head + 1n;
+    const beforeCreation = fixture.chain.head + 1n;
     expect(
-      (await fixture.link(draftA, createOnchain(1, draftA))).statusCode,
+      (await fixture.link(draftA, fixture.createOnchain(1, draftA))).statusCode,
     ).toBe(200);
-    chain.mine(1, [logs.funded(1, 10n * USDC)]);
-    chain.mine(CONFIRMATIONS + 1);
-    await reconcile();
-    expect((await campaigns.getById(draftA))?.status).toBe("active");
-
-    chain.reorg(beforeA);
-    if (replacement) {
-      createOnchain(1, draftB);
-      chain.mine(1, [logs.funded(1, 10n * USDC)]);
-    }
-    chain.mine(CONFIRMATIONS + 1);
+    const fundingBlock = fixture.chain.head + 1n;
+    fixture.chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    fixture.chain.mine(CONFIRMATIONS + 1);
+    await fixture.reconcile();
+    expect((await fixture.campaigns.getById(draftA))?.status).toBe("active");
     fixture.setNow(new Date(Date.parse(draft.startAt) + 60_000));
-
-    // The worker detects it and records the halt (indexer-worker.ts).
-    const detected = await fixture.index().catch((error: unknown) => error);
-    expect(detected).toBeInstanceOf(ReorgBeyondConfirmationsError);
-    await fixture.events.haltForReorg(
-      fixture.scope,
-      (detected as ReorgBeyondConfirmationsError).blockNumber,
-      new Date(),
-    );
-
-    return { ...fixture, app, draftA, draftB };
+    return { fixture, draftA, draftB, beforeCreation, fundingBlock };
   }
 
   it.each([
     ["another draft took the id", true],
     ["no creation replaced it", false],
   ])(
-    "halts participation at once, then recovers verifiably (%s)",
+    "halts at once, keeps halting through recovery, resumes only when verified (%s)",
     async (_label, replacement) => {
-      const {
-        app,
-        campaigns,
-        chain,
-        draftA,
-        draftB,
-        events,
-        scope,
-        reconcile,
-      } = await activeThenDeepReorg(replacement);
-      const post = (url: string, payload: object, headers = {}) =>
-        app.inject({ method: "POST", url, payload, headers });
+      const { fixture, draftA, draftB, beforeCreation } =
+        await activeCampaign();
+      const { chain, campaigns, events, scope } = fixture;
 
-      // A is still "active" in the database, but nobody may start or
-      // finish its mission while the halt is recorded.
-      expect((await campaigns.getById(draftA))?.status).toBe("active");
-      for (const response of [
-        await post(`/v1/campaigns/${draftA}/world-id/request`, {}),
-        await post(`/v1/campaigns/${draftA}/eligibility/verify`, {
-          claimant: CLAIMANT,
-          idkitResponse: { action: `vham-campaign-${draftA}` },
-        }),
-        await post(
-          `/v1/campaigns/${draftA}/submissions`,
-          {
-            eligibilityToken: "00000000-0000-4000-8000-000000000000",
-            claimant: CLAIMANT,
-            answers: [{ questionId: "q1", choiceId: "a" }],
-          },
-          { "idempotency-key": "halted" },
-        ),
-      ]) {
-        expect(response.statusCode).toBe(503);
-        expect(response.json()).toMatchObject({
-          error: { code: "CHAIN_HALTED" },
-        });
+      chain.reorg(beforeCreation);
+      if (replacement) {
+        fixture.createOnchain(1, draftB);
+        chain.mine(1, [logs.funded(1, 10n * USDC)]);
       }
+      chain.mine(CONFIRMATIONS + 1);
+      await workerDetectsReorg(fixture);
 
-      // Dry run: the contract no longer has A's creation.
-      const recovery = {
-        campaigns,
-        events,
-        rpc: chain,
-        chain: scope,
-        confirmations: CONFIRMATIONS,
-      };
-      const plan = await planReorgRecovery(recovery);
+      // A is still "active" in the database, but nobody may start or finish.
+      expect((await campaigns.getById(draftA))?.status).toBe("active");
+      expect(await participantCodes(fixture, draftA)).toEqual([
+        "CHAIN_HALTED",
+        "CHAIN_HALTED",
+        "CHAIN_HALTED",
+      ]);
+
+      const plan = await planReorgRecovery(recovery(fixture));
       expect(plan.keep).toEqual([]);
       expect(plan.release).toEqual([
         {
           campaignId: draftA,
           onchainCampaignId: "1",
           canonicalOnchainCampaignId: null,
+          reason: "creation_missing",
         },
       ]);
 
-      // Apply: A is released, the halt is gone, the index is rebuilt.
+      // Apply releases A and drops the index, but the halt stays.
       expect(
-        await applyReorgRecovery({ ...recovery, now: () => new Date() }, plan),
+        await applyReorgRecovery(
+          { ...recovery(fixture), now: () => new Date() },
+          plan,
+        ),
       ).toEqual({ released: [draftA] });
+      expect((await events.getHalt(scope))?.recoveryAppliedAt).toBeInstanceOf(
+        Date,
+      );
+      expect(await participantCodes(fixture, draftB)).toEqual([
+        "CHAIN_HALTED",
+        "CHAIN_HALTED",
+        "CHAIN_HALTED",
+      ]);
+
+      // The worker rebuilds, verifies every link, and only then clears it.
+      const pass = await workerPass(fixture);
+      expect(pass.recovery).toEqual({ cleared: true });
       expect(await events.getHalt(scope)).toBeNull();
       expect(await campaigns.getById(draftA)).toMatchObject({
         onchainCampaignId: null,
         status: "draft",
       });
-
-      await reconcile();
-      expect((await campaigns.getById(draftA))?.onchainCampaignId).toBeNull();
       expect(await campaigns.getById(draftB)).toMatchObject(
         replacement
           ? { onchainCampaignId: "1", status: "active" }
@@ -573,6 +631,120 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       );
     },
   );
+
+  it("keeps halting until the rebuilt index shows a reorged-away funding", async () => {
+    // Only A's funding is removed; its creation stays canonical.
+    const { fixture, draftA, fundingBlock } = await activeCampaign();
+    const { chain, campaigns, events, scope } = fixture;
+    chain.reorg(fundingBlock);
+    chain.campaignStructs.get("1")!.fundedBudget = 0n;
+    chain.mine(CONFIRMATIONS + 1);
+    await workerDetectsReorg(fixture);
+
+    const plan = await planReorgRecovery(recovery(fixture));
+    expect(plan).toMatchObject({
+      keep: [{ campaignId: draftA, onchainCampaignId: "1" }],
+      release: [],
+    });
+    await applyReorgRecovery(
+      { ...recovery(fixture), now: () => new Date() },
+      plan,
+    );
+
+    // Still "active" in the database, and still halted: no completions.
+    expect((await campaigns.getById(draftA))?.status).toBe("active");
+    expect(await participantCodes(fixture, draftA)).toEqual([
+      "CHAIN_HALTED",
+      "CHAIN_HALTED",
+      "CHAIN_HALTED",
+    ]);
+
+    // The rebuild re-derives the status from canonical events first.
+    const pass = await workerPass(fixture);
+    expect(pass.recovery).toEqual({ cleared: true });
+    expect(await events.getHalt(scope)).toBeNull();
+    expect((await campaigns.getById(draftA))?.status).toBe("pending_onchain");
+    expect((await participantCodes(fixture, draftA))[0]).toBe(
+      "CAMPAIGN_NOT_OPEN",
+    );
+  });
+
+  it("releases a link whose id survived but whose parameters changed", async () => {
+    const { fixture, draftA, beforeCreation } = await activeCampaign();
+    fixture.chain.reorg(beforeCreation);
+    // Same draft reference and id, but other parameters on the new fork.
+    fixture.createOnchain(1, draftA, { maxCompletions: 9 });
+    fixture.chain.mine(CONFIRMATIONS + 1);
+    await workerDetectsReorg(fixture);
+
+    expect((await planReorgRecovery(recovery(fixture))).release).toEqual([
+      {
+        campaignId: draftA,
+        onchainCampaignId: "1",
+        canonicalOnchainCampaignId: "1",
+        reason: "parameters_changed",
+      },
+    ]);
+  });
+
+  it("retries persisting the halt until it succeeds", async () => {
+    const fixture = await setup();
+    let calls = 0;
+    const failures: number[] = [];
+    const flaky = {
+      haltForReorg: async (
+        ...args: Parameters<typeof fixture.events.haltForReorg>
+      ) => {
+        calls += 1;
+        if (calls < 3) throw new Error("database unavailable");
+        await fixture.events.haltForReorg(...args);
+      },
+    };
+
+    expect(
+      await recordHaltWithRetry(flaky, fixture.scope, 42n, {
+        now: () => new Date(),
+        stopping: () => false,
+        onFailure: (attempt) => failures.push(attempt),
+        sleep: async () => {},
+      }),
+    ).toBe(true);
+    expect(failures).toEqual([1, 2]);
+    expect((await fixture.events.getHalt(fixture.scope))?.block).toBe(42n);
+  });
+
+  it("refuses a completion once the campaign is closed on-chain, before the indexer sees it", async () => {
+    const { fixture, draftA } = await activeCampaign();
+    const verified = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${draftA}/eligibility/verify`,
+      payload: {
+        claimant: CLAIMANT,
+        idkitResponse: { action: `vham-campaign-${draftA}`, human: "closer" },
+      },
+    });
+    expect(verified.statusCode).toBe(201);
+
+    // The advertiser closes on-chain; no indexer pass runs afterwards.
+    fixture.chain.mine(1, [logs.closed(1)]);
+    expect((await fixture.campaigns.getById(draftA))?.status).toBe("active");
+
+    const response = await fixture.app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${draftA}/submissions`,
+      headers: { "idempotency-key": "after-close" },
+      payload: {
+        eligibilityToken: verified.json<{ eligibilityToken: string }>()
+          .eligibilityToken,
+        claimant: CLAIMANT,
+        answers: [{ questionId: "q1", choiceId: "a" }],
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_ACTIVE" },
+    });
+  });
 
   it("refuses a completion when the link is no longer canonical, even without the indexer", async () => {
     const fixture = await setup();
@@ -622,6 +794,33 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const accepted = await submit("canonical-link");
     expect(accepted.statusCode).toBe(201);
     expect(accepted.json()).toMatchObject({ status: "accepted" });
+  });
+});
+
+describe("analytics across deployments (ADR-0011)", () => {
+  it("never shows another chain's events for the same address and id", async () => {
+    const {
+      campaigns,
+      createDraft,
+      createOnchain,
+      link,
+      chain,
+      reconcile,
+      analytics,
+    } = await setup();
+    const id = await createDraft();
+    await link(id, createOnchain(1, id));
+    chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    chain.mine(CONFIRMATIONS + 1);
+    await reconcile();
+    expect(await analytics(id)).toMatchObject({
+      settlement: { confirmed: { funded: "10000000" } },
+    });
+
+    // The same campaign record, but linked on another chain with the same
+    // contract address and id: its settlement must not be this chain's.
+    (await campaigns.getById(id))!.chainId = 31337;
+    expect(await analytics(id)).toMatchObject({ settlement: null });
   });
 });
 

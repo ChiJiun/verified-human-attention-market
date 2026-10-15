@@ -1,7 +1,11 @@
 "use client";
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
-import { isCurrentDeployment, type Deployment } from "@vham/shared/deployment";
+import {
+  isCurrentDeployment,
+  isFundingTarget,
+  type Deployment,
+} from "@vham/shared/deployment";
 import { useCallback, useEffect, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
@@ -31,6 +35,11 @@ interface Analytics {
   onchainCampaignId: string | null;
   /** CampaignManager the on-chain id belongs to (ADR-0011). */
   onchainContractAddress: string | null;
+  draftRef: Hash;
+  rewardPerCompletion: string;
+  maxCompletions: number;
+  startAt: string;
+  endAt: string;
   status: string;
   plannedBudget: string;
   submissions: {
@@ -63,6 +72,24 @@ type TxStatus =
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
 
+/** EIP-1193 4001: the user rejected the request, so nothing was sent. */
+function isUserRejection(error: unknown): boolean {
+  for (
+    let current: unknown = error, depth = 0;
+    current && depth < 10;
+    current = (current as { cause?: unknown }).cause, depth += 1
+  ) {
+    const candidate = current as { code?: unknown; name?: unknown };
+    if (
+      candidate.code === 4001 ||
+      candidate.name === "UserRejectedRequestError"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -73,6 +100,12 @@ export default function AdvertiserPage() {
   const [busy, setBusy] = useState(false);
   /** The CampaignManager this API is configured for. */
   const [deployment, setDeployment] = useState<Deployment | null>(null);
+  /**
+   * A create may have been broadcast but is not linked yet. Only checking is
+   * offered: sending again would just revert (DraftAlreadyCreated) and cost
+   * gas.
+   */
+  const [awaitingLink, setAwaitingLink] = useState(false);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
@@ -236,12 +269,21 @@ export default function AdvertiserPage() {
       } catch (caught) {
         // The transaction may have been broadcast before the error. Look for
         // it by draft reference; pressing Create again is safe either way.
+        // Rejected in the wallet: nothing was sent.
+        if (isUserRejection(caught)) throw caught;
         if (await link(campaignId, null)) {
           setTx({ state: "done", label: "Campaign created", hash: null });
           await refresh();
           return;
         }
-        throw caught;
+        setTx({
+          state: "failed",
+          label: "Linking campaign",
+          message:
+            "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
+        });
+        setAwaitingLink(true);
+        return;
       }
 
       setTx({ state: "pending", label, hash });
@@ -261,7 +303,33 @@ export default function AdvertiserPage() {
       if (await link(campaignId, hash)) {
         setTx({ state: "done", label: "Campaign created", hash });
         await refresh();
+      } else {
+        setTx({
+          state: "failed",
+          label: "Linking campaign",
+          message:
+            "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
+        });
+        setAwaitingLink(true);
       }
+    });
+
+  /** Looks for the creation by draft reference; never sends anything. */
+  const checkLink = () =>
+    run(async () => {
+      if (!session || !campaignId) return;
+      if (await link(campaignId, null, 1)) {
+        setAwaitingLink(false);
+        setTx({ state: "done", label: "Campaign created", hash: null });
+        await refresh();
+        return;
+      }
+      setTx({
+        state: "failed",
+        label: "Linking campaign",
+        message:
+          "Still not confirmed. Check your wallet's activity and try again in a minute.",
+      });
     });
 
   const fund = () =>
@@ -293,6 +361,52 @@ export default function AdvertiserPage() {
       }
       const usdcAddress = chainInfo.usdc;
       const manager = chainInfo.campaignManager;
+
+      // Read the target in the wallet's own chain view right before money
+      // moves: the id must still be this draft's, with its parameters. After
+      // a deep reorg another draft can hold the same id and budget.
+      if ((await wallet.walletClient.getChainId()) !== chainInfo.chainId) {
+        throw new Error("Switch your wallet to the campaign's network first.");
+      }
+      const [mappedCampaignId, onchain] = await Promise.all([
+        wallet.publicClient.readContract({
+          address: manager,
+          abi: campaignManagerAbi,
+          functionName: "campaignIdByDraft",
+          args: [wallet.address, current.draftRef],
+        }),
+        wallet.publicClient.readContract({
+          address: manager,
+          abi: campaignManagerAbi,
+          functionName: "campaigns",
+          args: [BigInt(current.onchainCampaignId)],
+        }),
+      ]);
+      if (
+        !isFundingTarget(
+          {
+            mappedCampaignId,
+            onchain: {
+              rewardPerCompletion: onchain[3],
+              maxCompletions: onchain[4],
+              startTime: onchain[6],
+              endTime: onchain[7],
+            },
+          },
+          {
+            onchainCampaignId: current.onchainCampaignId,
+            rewardPerCompletion: current.rewardPerCompletion,
+            maxCompletions: current.maxCompletions,
+            startAt: current.startAt,
+            endAt: current.endAt,
+          },
+        )
+      ) {
+        throw new Error(
+          "The on-chain campaign does not match this draft, so nothing was funded. Refresh the page; if it persists, the chain may be recovering.",
+        );
+      }
+
       const amount = BigInt(current.plannedBudget);
       const allowance = await wallet.publicClient.readContract({
         address: usdcAddress,
@@ -476,9 +590,14 @@ export default function AdvertiserPage() {
             </p>
           )}
           <div className="actions">
-            {analytics?.status === "draft" && (
+            {analytics?.status === "draft" && !awaitingLink && (
               <button onClick={createOnchain} disabled={busy || wrongNetwork}>
                 Create on-chain
+              </button>
+            )}
+            {awaitingLink && (
+              <button onClick={checkLink} disabled={busy}>
+                Check again
               </button>
             )}
             {analytics?.status === "pending_onchain" &&
