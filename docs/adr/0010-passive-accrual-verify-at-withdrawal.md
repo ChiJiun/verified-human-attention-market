@@ -35,6 +35,9 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 - **D6. Emergency path accepted for testing only.** If the platform stops, users can force their credits on-chain (paying gas) but cannot withdraw on their own. An operator-independent withdrawal is a **required gate before real funds** (#29).
 - **D7. Cross-campaign account record accepted, minimized.** The platform may keep which campaigns one pseudonymous account was credited for, under the rules in "Privacy and minimal disclosure". This changes the privacy policy (`docs/privacy/DATA_RETENTION.md`, principle 1) and needs the #22 review before acceptance.
 - **D8. Privacy first on-chain.** The contract verifies aggregates only; per-campaign allocation of a payout lives in the platform ledger and is audited off-chain (§5).
+- **D9. No minimum withdrawal during testing.** A 1 USDC minimum can be switched on later if platform gas makes tiny withdrawals uneconomic.
+- **D10. The platform pays all gas** (commitments, payouts). A fee is decided before real funds.
+- **D11. Balances do not expire** (confirms D3). Revisit only with an explicit product change.
 
 ## Proposed decision
 
@@ -45,6 +48,15 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 - Stored per account: which campaigns were credited and the amount. No URL-level browsing history, no raw event stream after crediting (AGENTS.md §13, #22).
 - The comprehension check becomes an optional, higher-reward campaign type instead of the default (R1).
 
+### 1a. Measuring dwell time
+
+The client only reports; the server decides. All client signals can be faked by a determined human with automation, so the goal is to make farming slow and visible, not impossible. World ID (one account per human), one credit per content (D2) and the funded budget bound the damage.
+
+- **Client.** While the content page is open, send a heartbeat every 5 s only if all hold: the tab is visible (Page Visibility API), the window has focus, the content element is at least 50% in the viewport (IntersectionObserver), and there was user input within the last 30 s (idle detection).
+- **View token.** Opening content returns a server-issued view token bound to the app session and campaign. Heartbeats must carry it; a token expires when the page closes or after a maximum duration.
+- **Server.** Counts at most 5 s per heartbeat, ignores heartbeats closer than 4 s apart, and allows **one active view per account at a time** across tabs and devices. Once the counted time reaches the campaign's threshold, the credit is issued once (`UNIQUE(account, campaign)`).
+- **Anomalies** (flag, do not auto-ban; feed ADR-0009 quality signals): concurrent views, machine-regular heartbeat timing, credit velocity above a per-hour ceiling, repeated completion exactly at the threshold. Advertisers see the flagged share per campaign.
+
 ### 2. Budget reserved at accrual time
 
 Each credit reserves the campaign's funded budget immediately. Invariant: for every campaign, `reserved + paid ≤ funded`. Credits that exceed the remaining budget are not granted. This generalizes the existing cap on outstanding authorizations (#10).
@@ -54,6 +66,12 @@ An off-chain reservation alone cannot stop an advertiser refund, because the con
 ### 3. World ID at login and withdrawal (R4, D4)
 
 Per the official session-proof docs (checked 2026-10-14): a session must first be **created** and verified by the backend before its `session_id` is saved; later checks **prove** that saved session; `session_nullifier` only prevents replay and is not an account identifier; and a World ID session is **not** a login credential. Linking or replacing an account's session is an account-security operation.
+
+Checked against the IDKit 4.4.0 type definitions (`@worldcoin/idkit-core`, 2026-10-15):
+
+- **Proof of Human works with sessions.** Session responses carry a credential `identifier` such as `proof_of_human` (issuer schema 1), separate from the Selfie Check item type, and presets including `proofOfHuman()` apply to session requests. Sessions are World ID 4.0 only. The official examples use Selfie Check, so this is still confirmed live before acceptance.
+- **Enrollment needs two World App interactions.** A uniqueness request carries an `action`; session requests have none and are a separate request type (`request`, `createSession`, `proveSession`). Enrollment therefore runs the uniqueness proof, then creates the session.
+- **Session results echo the RP `nonce`**, and session credential requests accept a `signal` whose hash (`signal_hash`) is returned with the proof. §3a uses both.
 
 | Flow | World ID step | Backend |
 | --- | --- | --- |
@@ -70,7 +88,7 @@ A withdrawal must be bound to the account, destination, amount and a one-time id
 
 1. The logged-in user requests `{ destination, amount }`. The backend creates a withdrawal record `W = { withdrawalId, accountKey, destination, amount, expiresAt }` with status `pending`.
 2. The destination wallet signs an EIP-712 `WithdrawalRequest(withdrawalId, destination, amount, expiresAt)` off-chain. This costs no gas, proves control of the destination and rules out typos. It is one signature per withdrawal, not per view, so R2 still holds.
-3. The backend signs the World ID RP request with `nonce = hash_to_field(keccak256(W))` instead of a random nonce, and the user proves the saved session. The backend accepts the proof only if it echoes that nonce, so the proof is bound to this exact withdrawal and cannot be reused (World also rejects duplicate RP nonces).
+3. The user proves the saved session with `signal = keccak256(W)`. The signal is part of the zero-knowledge proof, so the backend checks that the returned `signal_hash` matches `W` and that the proof verified; a proof for another withdrawal or destination fails. The RP request also uses a fresh nonce, which the result echoes and World rejects if reused.
 4. Only then is `W` marked `approved`. The payout carries `withdrawalId`; the contract stores used ids and rejects a second payout for the same id.
 5. A destination the account has never used before is held for a cooling-off period, matching recovery.
 
@@ -134,6 +152,16 @@ Submitting a receipt costs gas, paid by the submitter or a watchtower: the one e
 
 Bound on operator power: it can only commit what it signed receipts for, never more than was funded, and it cannot finalize below a receipt without that being challengeable and provable. It still decides who is paid out of `userLiability` (see Trust model change).
 
+### 5a. Operator-independent exit (required before real funds, D6)
+
+Design to implement before #29, not in the first testnet version:
+
+- Each daily commitment also posts on-chain the Merkle root of account balances (the root D8 already publishes), with leaves `(exitAddress, cumulativeEarned)`.
+- Each account registers an **exit address** (any wallet the user controls) at enrollment; changing it has the same cooling-off as a new withdrawal destination. It exists only inside a hashed leaf until used.
+- If no commitment arrives for a long period (for example 30 days), the contract enters **exit mode**: anyone can call `exit(exitAddress, cumulativeEarned, proof)`, which pays `cumulativeEarned − paidTo[exitAddress]` from `userLiability`.
+- The user's client checks its own leaf against every posted root and alerts on omission. A root that omits an account cannot be proven wrong on-chain with per-campaign receipts; that residual risk is listed for the #29 review.
+- D5 is unchanged: exit mode gives the advertiser no refund path.
+
 **Per-campaign allocation (D8).** The contract does not know which campaigns a payout comes from. The platform ledger allocates each payout to the account's credits; with each daily commitment the operator publishes a Merkle root of account balances, so an account can verify its own balance and an auditor can check that allocations sum to the committed totals, without the chain linking wallets to campaigns.
 
 ## Trust model change
@@ -148,19 +176,13 @@ In M1 the user holds a signed authorization and settles it alone. Under option A
 
 ## Open questions for the product owner
 
-Decided: browsing location (D1), credited unit (D2), caps and expiry (D3), when World ID is required (D4), reward guarantee (D5), platform-stop behaviour (D6), cross-campaign record (D7), on-chain verification scope (D8).
+Decided: D1–D11. Answered by research or design in this ADR: Proof of Human with sessions, enrollment interactions and withdrawal binding (§3, §3a), dwell measurement (§1a), operator-independent exit (§5a).
 
 Still open:
 
-1. Minimum withdrawal amount.
-2. How gas and operations are paid for (fee percentage, minimum withdrawal, or absorbed during testing).
-3. Whether the Proof of Human credential works with session proofs: the official session examples use Selfie Check. Must be verified before acceptance; if not, login and withdrawal need a different World ID check.
-4. Whether enrollment can run the uniqueness proof and session creation in one World App interaction or needs two.
-5. Whether a session-proof result echoes the RP `nonce` (needed for §3a step 3). If not, bind the withdrawal through the proof `signal` instead, if session proofs support one.
-6. How dwell time is measured robustly on the client (visibility, focus, idle detection) and which anomalies the server rejects.
-7. Whether dormant balances should eventually expire after all (D3), since committed liabilities otherwise stay in the contract indefinitely.
-8. Length of the challenge window after the final commitment, and whether the platform runs an independent watchtower.
-9. Design of the operator-independent exit required before real funds (D6).
+1. **Challenge window** after the final commitment. Proposed default: 7 days, with no separate watchtower service; each user's client checks the final commitment against its own receipts. Needs owner confirmation.
+2. **Live confirmation** of a Proof of Human session (create and prove) with the real World App, before acceptance.
+3. **Privacy review (#22)** and the change to `docs/privacy/DATA_RETENTION.md` principle 1 (D7).
 
 ## Sequencing
 
