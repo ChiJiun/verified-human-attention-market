@@ -134,6 +134,8 @@ The client's report is never trusted. The API fetches the receipt, requires a `C
 | 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
 | 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `PARAMETERS_MISMATCH` |
 
+If the broadcast succeeded but the RPC response was lost, the client has no hash. The web app records the sender's next nonce and block before sending (`@vham/shared/recovery`); on retry it looks for a `CampaignCreated` from that sender at or after that nonce and reports its hash, waits while any transaction from the sender is still pending, and only resends when nothing was broadcast. The e2e job covers this with a transport that drops the `eth_sendRawTransaction` response.
+
 If the hash is never reported (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the advertiser's **single** unlinked draft with identical economics. Ambiguous matches are logged for manual resolution.
 
 Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.

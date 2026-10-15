@@ -1,6 +1,11 @@
 "use client";
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
+import {
+  prepareBroadcast,
+  resolveCreateBroadcast,
+  type BroadcastIntent,
+} from "@vham/shared/recovery";
 import { useCallback, useEffect, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
@@ -72,6 +77,30 @@ function rememberTx(campaignId: string, hash: Hash | null) {
 function recallTx(campaignId: string): Hash | null {
   try {
     return localStorage.getItem(pendingKey(campaignId)) as Hash | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recorded before the create transaction is sent. If the wallet or RPC fails
+ * after broadcasting, there is no hash; the intent lets the next attempt find
+ * the transaction instead of creating a second campaign (#13).
+ */
+const intentKey = (campaignId: string) => `vham:create-intent:${campaignId}`;
+function rememberIntent(campaignId: string, intent: BroadcastIntent | null) {
+  try {
+    if (intent)
+      localStorage.setItem(intentKey(campaignId), JSON.stringify(intent));
+    else localStorage.removeItem(intentKey(campaignId));
+  } catch {
+    // Storage unavailable: recovery then relies on the indexer auto-link.
+  }
+}
+function recallIntent(campaignId: string): BroadcastIntent | null {
+  try {
+    const raw = localStorage.getItem(intentKey(campaignId));
+    return raw ? (JSON.parse(raw) as BroadcastIntent) : null;
   } catch {
     return null;
   }
@@ -194,12 +223,57 @@ export default function AdvertiserPage() {
         return;
       }
 
+      // An attempt that failed without a hash may still have been broadcast.
+      const earlier = recallIntent(campaignId);
+      if (earlier) {
+        const { data: chainInfo } = await api<{ campaignManager: Address }>(
+          "/v1/chain",
+        );
+        const resolution = await resolveCreateBroadcast(wallet.publicClient, {
+          intent: earlier,
+          campaignManager: chainInfo.campaignManager,
+        });
+        if (resolution.kind === "created") {
+          rememberIntent(campaignId, null);
+          rememberTx(campaignId, resolution.txHash);
+          setTx({
+            state: "reconciling",
+            label: "Linking campaign",
+            hash: resolution.txHash,
+          });
+          if (await link(campaignId, resolution.txHash)) {
+            setTx({
+              state: "done",
+              label: "Campaign created",
+              hash: resolution.txHash,
+            });
+            await refresh();
+          }
+          return;
+        }
+        if (resolution.kind === "pending") {
+          setTx({
+            state: "failed",
+            label: "Create campaign on-chain",
+            message:
+              "An earlier transaction from this wallet is still pending. Wait until it confirms, then press Create again; it will not be sent twice.",
+          });
+          return;
+        }
+        // Nothing was broadcast, or the nonce went to something else.
+        rememberIntent(campaignId, null);
+      }
+
       const { data: intent } = await api<PublishIntent>(
         `/v1/campaigns/${campaignId}/publish`,
         { method: "POST", token: session.token },
       );
       const args = intent.steps[0]!.args;
 
+      rememberIntent(
+        campaignId,
+        await prepareBroadcast(wallet.publicClient, wallet.address),
+      );
       setTx({ state: "signing", label: "Create campaign on-chain" });
       const hash = await wallet.walletClient.writeContract({
         account: wallet.address,
@@ -215,6 +289,7 @@ export default function AdvertiserPage() {
         ],
       });
       rememberTx(campaignId, hash);
+      rememberIntent(campaignId, null);
       setTx({ state: "pending", label: "Create campaign on-chain", hash });
 
       const outcome = await waitForTx(wallet.publicClient, hash);

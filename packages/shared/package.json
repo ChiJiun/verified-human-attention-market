@@ -15,6 +15,10 @@
     "./chains": {
       "types": "./dist/chains.d.ts",
       "default": "./dist/chains.js"
+    },
+    "./recovery": {
+      "types": "./dist/broadcast-recovery.d.ts",
+      "default": "./dist/broadcast-recovery.js"
     }
   },
   "scripts": {
@@ -27,6 +31,7 @@
   },
   "devDependencies": {
     "typescript": "5.9.3",
+    "viem": "2.38.6",
     "vitest": "5.0.3"
   }
 }

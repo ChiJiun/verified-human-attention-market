@@ -18,8 +18,10 @@ import {
   createPublicClient,
   createTestClient,
   createWalletClient,
+  custom,
   defineChain,
   http,
+  type Hash,
   toHex,
   type Abi,
   type Address,
@@ -28,6 +30,11 @@ import {
 import { mnemonicToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import {
+  prepareBroadcast,
+  resolveCreateBroadcast,
+} from "@vham/shared/recovery";
 
 import { buildApp } from "../src/app.js";
 import { PostgresAuthRepository } from "../src/auth/repository.js";
@@ -361,21 +368,76 @@ describeE2e("POC economic loop on a local chain", () => {
     }>();
     const create = intent.steps[0]!.args;
 
-    // Simulated RPC timeout after broadcast (#13): the transaction is sent but
-    // not mined when the client reports it. The API must answer
-    // "reconciling", and the retry after mining must link exactly once.
-    await testClient.setAutomine(false);
-    const createHash = await wallet(advertiser).writeContract({
-      address: managerAddress,
-      abi: manager.abi,
-      functionName: "createCampaign",
-      args: [
-        BigInt(create.rewardPerCompletion!),
-        Number(create.maxCompletions),
-        BigInt(create.startTime!),
-        BigInt(create.endTime!),
-      ],
+    // RPC timeout after broadcast (#13): the node accepts createCampaign but
+    // the response is lost, so the client never receives the hash. The web
+    // app records a broadcast intent first and resolves it on retry
+    // (@vham/shared/recovery); it must never send createCampaign twice.
+    const broadcastIntent = await prepareBroadcast(
+      publicClient,
+      advertiser.address,
+    );
+    const node = http(RPC_URL)({ chain: anvil });
+    let hashSeenOnlyByNode: Hash | null = null;
+    const lossyWallet = createWalletClient({
+      account: advertiser,
+      chain: anvil,
+      transport: custom({
+        async request({ method, params }) {
+          const result = await node.request({ method, params });
+          if (method === "eth_sendRawTransaction") {
+            hashSeenOnlyByNode = result as Hash;
+            throw new Error("simulated timeout: response lost after broadcast");
+          }
+          return result;
+        },
+      }),
     });
+
+    await testClient.setAutomine(false);
+    await expect(
+      lossyWallet.writeContract({
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "createCampaign",
+        args: [
+          BigInt(create.rewardPerCompletion!),
+          Number(create.maxCompletions),
+          BigInt(create.startTime!),
+          BigInt(create.endTime!),
+        ],
+      }),
+    ).rejects.toThrow(/response lost after broadcast/);
+    expect(hashSeenOnlyByNode).not.toBeNull();
+
+    const recover = () =>
+      resolveCreateBroadcast(publicClient, {
+        intent: broadcastIntent,
+        campaignManager: managerAddress,
+      });
+
+    // Still in the mempool: the client must wait, not resend.
+    expect(await recover()).toEqual({ kind: "pending" });
+    // If the hash did reach the client by another path, reporting it before
+    // it is mined is "reconciling", never a failure.
+    const beforeMined = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/onchain`,
+      headers: auth,
+      payload: { txHash: hashSeenOnlyByNode },
+    });
+    expect(beforeMined.statusCode).toBe(202);
+    expect(beforeMined.json()).toMatchObject({ status: "reconciling" });
+
+    await testClient.mine({ blocks: 1 });
+    await testClient.setAutomine(true);
+
+    // Once mined, recovery finds the transaction by sender and nonce.
+    const recovered = await recover();
+    if (recovered.kind !== "created") {
+      throw new Error(`expected the lost broadcast, got ${recovered.kind}`);
+    }
+    expect(recovered.txHash).toBe(hashSeenOnlyByNode);
+    const createHash = recovered.txHash;
     const reportOnchain = () =>
       app.inject({
         method: "POST",
@@ -384,26 +446,16 @@ describeE2e("POC economic loop on a local chain", () => {
         payload: { txHash: createHash },
       });
 
-    const beforeMined = await reportOnchain();
-    expect(beforeMined.statusCode).toBe(202);
-    expect(beforeMined.json()).toMatchObject({ status: "reconciling" });
-
-    await testClient.mine({ blocks: 1 });
-    await testClient.setAutomine(true);
-    expect(
-      (await publicClient.waitForTransactionReceipt({ hash: createHash }))
-        .status,
-    ).toBe("success");
-
     const linked = await reportOnchain();
     expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({ status: "pending_onchain" });
     const onchainId = BigInt(
       linked.json<{ onchainCampaignId: string }>().onchainCampaignId,
     );
+    expect(onchainId).toBe(recovered.onchainCampaignId);
 
     // Retrying the same report is idempotent, and the chain holds exactly
-    // one campaign: the timeout caused no duplicate economic action.
+    // one campaign: the lost response caused no duplicate economic action.
     const retried = await reportOnchain();
     expect(retried.statusCode).toBe(200);
     expect(retried.json()).toMatchObject({
