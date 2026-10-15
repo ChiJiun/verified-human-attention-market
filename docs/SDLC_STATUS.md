@@ -66,6 +66,7 @@ Official references:
 | ADR-0005 POC Economics | ✅ Accepted |
 | ADR-0006 On-chain Exposure Limits | ✅ Accepted |
 | ADR-0007 World ID Integration | ✅ Accepted |
+| ADR-0010 Passive Accrual / Verify at Withdrawal | 📝 Proposed (post-M1) |
 | ADR-0008 Signer Custody and Payout Limits | ✅ Accepted |
 | ADR-0009 Quality Signals and Reputation Scope | ✅ Accepted |
 | API Spec v0 | ✅ Drafted |
