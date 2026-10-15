@@ -38,6 +38,7 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 - **D9. No minimum withdrawal during testing.** A 1 USDC minimum can be switched on later if platform gas makes tiny withdrawals uneconomic.
 - **D10. The platform pays all gas** (commitments, payouts). A fee is decided before real funds.
 - **D11. Balances do not expire** (confirms D3). Revisit only with an explicit product change.
+- **D12. No challenge window during testing.** The advertiser's budget is fixed up front, so overspending is impossible; the remaining risk is the operator committing **less** than it owes. On testnet the operator's final commitment is trusted, consistent with D6. A challenge window is reconsidered before real funds (#29).
 
 ## Proposed decision
 
@@ -138,19 +139,19 @@ A new contract, not an in-place change to `CampaignManager` (no proxy upgradeabi
 
 **Anyone can call it.** The operator calls it at least daily and once after the campaign ends. A user, or a watchtower acting for users, can call it with their own receipt at any time: one receipt commits every earlier credit of that campaign too, without other users' receipts, and a receipt can never be counted twice.
 
-**Final commitment and refund (D5).** After the campaign ends, the operator calls `finalize(campaignId, index, cumulativeAmount, signature)` with the receipt of the **last** credit it issued; this commits it like `commitThrough` and starts a challenge window (for example 7 days). During the window anyone may still call `commitThrough` with a receipt of a higher index, which raises `committed`. The advertiser can refund `funded − committed` only after the window ends, and refunding closes the campaign. There is **no timeout**: without a final commitment the advertiser can never refund, so no credit can be lost to a refund because the platform failed to commit it.
+**Final commitment and refund (D5).** After the campaign ends, the operator calls `finalize(campaignId, index, cumulativeAmount, signature)` with the receipt of the **last** credit it issued; this commits it like `commitThrough`. Until then anyone may call `commitThrough` with a receipt of a higher index, which raises `committed`. The advertiser can refund `funded − committed` only after the final commitment, and refunding closes the campaign (no challenge window during testing, D12). There is **no timeout**: without a final commitment the advertiser can never refund, so no credit can be lost to a refund because the platform failed to commit it.
 
 **Balance rule.** A credit is owed from the moment its receipt is issued, and it never expires (D3):
 
 - normal operation: the operator commits daily and finalizes after the end;
 - platform omission: the refund cannot happen, so the credit stays enforceable; the holder (or a watchtower) can commit it at any time;
-- operator error or fraud (a final commitment below an issued receipt): the user's client checks the finalized index against its receipts and submits any higher one during the challenge window automatically. A receipt above a finalized-and-refunded campaign's index is cryptographic evidence of operator misconduct.
+- operator error or fraud (a final commitment below an issued receipt): with no challenge window (D12) the advertiser can refund right after the final commitment, so such a credit can be lost on testnet. The user's client commits any uncommitted receipt older than a day, which narrows this to credits issued in the last day before the end. A receipt above a refunded campaign's final index is cryptographic evidence of operator misconduct, settled off-chain. A challenge window closes this gap before real funds.
 
 Submitting a receipt costs gas, paid by the submitter or a watchtower: the one exception to R3, for emergencies only.
 
 **Accepted costs.** If the platform stops for good, (a) the advertiser's unused budget stays locked, because no final commitment will come, and (b) committed user funds stay in `userLiability` because only the operator pays out (D6). Both are acceptable on testnet. Before real funds (#29), an operator-independent exit must exist, for example receipts bound to a user key that can withdraw after a long operator inactivity period, plus a matching advertiser exit.
 
-Bound on operator power: it can only commit what it signed receipts for, never more than was funded, and it cannot finalize below a receipt without that being challengeable and provable. It still decides who is paid out of `userLiability` (see Trust model change).
+Bound on operator power: it can only commit what it signed receipts for and never more than was funded; finalizing below an issued receipt is provable from that receipt but, during testing, not reversible on-chain (D12). It still decides who is paid out of `userLiability` (see Trust model change).
 
 ### 5a. Operator-independent exit (required before real funds, D6)
 
@@ -176,13 +177,12 @@ In M1 the user holds a signed authorization and settles it alone. Under option A
 
 ## Open questions for the product owner
 
-Decided: D1–D11. Answered by research or design in this ADR: Proof of Human with sessions, enrollment interactions and withdrawal binding (§3, §3a), dwell measurement (§1a), operator-independent exit (§5a).
+Decided: D1–D12. Answered by research or design in this ADR: Proof of Human with sessions, enrollment interactions and withdrawal binding (§3, §3a), dwell measurement (§1a), operator-independent exit (§5a).
 
 Still open:
 
-1. **Challenge window** after the final commitment. Proposed default: 7 days, with no separate watchtower service; each user's client checks the final commitment against its own receipts. Needs owner confirmation.
-2. **Live confirmation** of a Proof of Human session (create and prove) with the real World App, before acceptance.
-3. **Privacy review (#22)** and the change to `docs/privacy/DATA_RETENTION.md` principle 1 (D7).
+1. **Live confirmation** of a Proof of Human session (create and prove) with the real World App, before acceptance.
+2. **Privacy review (#22)** and the change to `docs/privacy/DATA_RETENTION.md` principle 1 (D7).
 
 ## Sequencing
 
