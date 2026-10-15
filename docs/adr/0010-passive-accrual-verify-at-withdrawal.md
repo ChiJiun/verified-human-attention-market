@@ -3,7 +3,7 @@
 - **Status:** Proposed (not accepted; does not change M1)
 - **Date:** 2026-10-14
 - **Affects if accepted:** ADR-0002 (first mission), ADR-0003 (gas UX), ADR-0004 (claim authorization), ADR-0005 (economics), ADR-0007 (World ID scope), ADR-0009 (quality signals)
-- **Owner decisions:** 2026-10-14 (see below)
+- **Owner decisions:** 2026-10-14 and 2026-10-15 (see below)
 - **Related issues:** #22 privacy, #23 signer custody, #27 publisher SDK, #29 production readiness
 - **External sources (checked 2026-10-14):** https://docs.world.org/world-id/idkit/session-proofs, https://docs.world.org/world-id/idkit/integrate
 
@@ -28,6 +28,13 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 - **D2. Unit = advertiser-set dwell time.** Each campaign sets the required active, visible dwell time. A human is credited **at most once per campaign content**; repeat visits never accrue again.
 - **D3. No per-account cap and no expiry for now.** Acceptable because every accruing account is already World ID verified (D4) and accrual is bounded by funded budgets (§2). Revisit before real funds (#29).
 - **D4. World ID at login and at withdrawal.**
+
+## Owner decisions (2026-10-15)
+
+- **D5. Absolute guarantee for credited rewards.** Once credited, a reward can never be lost because the platform failed to commit it. The advertiser refund waits for the operator's final commitment with no timeout. Accepted cost: if the platform stops for good, the advertiser's unused budget stays locked (§5).
+- **D6. Emergency path accepted for testing only.** If the platform stops, users can force their credits on-chain (paying gas) but cannot withdraw on their own. An operator-independent withdrawal is a **required gate before real funds** (#29).
+- **D7. Cross-campaign account record accepted, minimized.** The platform may keep which campaigns one pseudonymous account was credited for, under the rules in "Privacy and minimal disclosure". This changes the privacy policy (`docs/privacy/DATA_RETENTION.md`, principle 1) and needs the #22 review before acceptance.
+- **D8. Privacy first on-chain.** The contract verifies aggregates only; per-campaign allocation of a payout lives in the platform ledger and is audited off-chain (§5).
 
 ## Proposed decision
 
@@ -79,7 +86,7 @@ What this design does create is a **pseudonymous account inside our platform** t
 - users may withdraw to a fresh wallet each time;
 - retention: drop per-campaign credit rows once paid and the campaign is settled, keep only totals (#22).
 
-Residual risk: whoever operates the database can see one pseudonymous account's campaign history. This must be accepted in the #22 review.
+Residual risk: whoever operates the database can see one pseudonymous account's campaign history. The owner accepted this data use (D7); retention periods and safeguards are set by the #22 review, which must also change principle 1 of `docs/privacy/DATA_RETENTION.md` ("nothing that lets two campaigns be joined by person") for this model.
 
 ### 4. Gasless settlement: platform-pushed payouts (R3)
 
@@ -87,7 +94,7 @@ Recommended for the MVP: **option A**.
 
 | Option | User signs | Who pays gas | Notes |
 | --- | --- | --- | --- |
-| **A. Operator batch payout** | one gas-free EIP-712 signature per withdrawal, from the destination wallet (§3a); nothing per view | platform | New settlement contract; operator submits batched payouts within on-chain per-campaign budgets and daily caps |
+| **A. Operator batch payout** | one gas-free EIP-712 signature per withdrawal, from the destination wallet (§3a); nothing per view | platform | New settlement contract; operator submits batched payouts from the committed liability pool within daily caps |
 | B. User claim via paymaster (ERC-4337) | one signature per withdrawal | paymaster | Keeps user-initiated claims; adds smart accounts and a paymaster provider |
 | C. Merkle root per epoch | one signature, relayed | relayer | Good for many recipients; more operational complexity |
 
@@ -97,7 +104,7 @@ Gas becomes a platform cost, funded by a protocol fee (ADR-0005 currently sets 0
 
 A new contract, not an in-place change to `CampaignManager` (no proxy upgradeability). It must keep:
 
-- budget conservation: total payouts per campaign ≤ funded budget;
+- budget conservation, verified on aggregates (D8): per campaign `committed ≤ funded`, and in total `paid ≤ Σ committed` (the `userLiability` pool). A payout names no campaign, so the chain never links a wallet to the campaigns it was credited for;
 - per-recipient cumulative paid amount is monotonic, so a payout cannot be replayed;
 - operator payouts limited by on-chain daily caps (ADR-0006, ADR-0008 style);
 - payouts identified by a one-time `withdrawalId` (§3a);
@@ -113,15 +120,25 @@ A new contract, not an in-place change to `CampaignManager` (no proxy upgradeabi
 
 **Anyone can call it.** The operator calls it at least daily and once after the campaign ends. A user, or a watchtower acting for users, can call it with their own receipt at any time: one receipt commits every earlier credit of that campaign too, without other users' receipts, and a receipt can never be counted twice.
 
-**Refund rule.** Payouts are drawn only from `userLiability`. The advertiser can refund `funded − committed` only after the campaign ends **and** a refund window has passed (for example 30 days), and refunding closes the campaign to further commitments. Credits whose receipts are committed before the refund can never be refunded, so committed balances do not expire (D3).
+**Final commitment and refund (D5).** After the campaign ends, the operator calls `finalize(campaignId, index, cumulativeAmount, signature)` with the receipt of the **last** credit it issued; this commits it like `commitThrough` and starts a challenge window (for example 7 days). During the window anyone may still call `commitThrough` with a receipt of a higher index, which raises `committed`. The advertiser can refund `funded − committed` only after the window ends, and refunding closes the campaign. There is **no timeout**: without a final commitment the advertiser can never refund, so no credit can be lost to a refund because the platform failed to commit it.
 
-**Explicit balance rule.** A credit is owed from the moment its receipt is issued. During normal operation the operator commits it. If the operator stops, the receipt holder has until the refund window ends to commit it; the user's client does this automatically when it sees an uncommitted receipt older than one day. A receipt not committed by anyone before the advertiser refunds cannot be enforced against that campaign. This is the only way an issued credit can be lost, and it requires both the operator and every holder of a later receipt to stay silent for the whole window. Submitting a receipt costs gas; in that emergency path it is paid by the submitter (or a platform-independent watchtower), the one exception to R3.
+**Balance rule.** A credit is owed from the moment its receipt is issued, and it never expires (D3):
 
-Bound on operator power: it can only commit what it signed receipts for, and never more than was funded. It still decides who is paid out of `userLiability` (see Trust model change). If the operator disappears completely, committed funds stay locked rather than returning to the advertiser; an operator-independent user exit would need receipts bound to a user key and is out of scope for this ADR.
+- normal operation: the operator commits daily and finalizes after the end;
+- platform omission: the refund cannot happen, so the credit stays enforceable; the holder (or a watchtower) can commit it at any time;
+- operator error or fraud (a final commitment below an issued receipt): the user's client checks the finalized index against its receipts and submits any higher one during the challenge window automatically. A receipt above a finalized-and-refunded campaign's index is cryptographic evidence of operator misconduct.
+
+Submitting a receipt costs gas, paid by the submitter or a watchtower: the one exception to R3, for emergencies only.
+
+**Accepted costs.** If the platform stops for good, (a) the advertiser's unused budget stays locked, because no final commitment will come, and (b) committed user funds stay in `userLiability` because only the operator pays out (D6). Both are acceptable on testnet. Before real funds (#29), an operator-independent exit must exist, for example receipts bound to a user key that can withdraw after a long operator inactivity period, plus a matching advertiser exit.
+
+Bound on operator power: it can only commit what it signed receipts for, never more than was funded, and it cannot finalize below a receipt without that being challengeable and provable. It still decides who is paid out of `userLiability` (see Trust model change).
+
+**Per-campaign allocation (D8).** The contract does not know which campaigns a payout comes from. The platform ledger allocates each payout to the account's credits; with each daily commitment the operator publishes a Merkle root of account balances, so an account can verify its own balance and an auditor can check that allocations sum to the committed totals, without the chain linking wallets to campaigns.
 
 ## Trust model change
 
-In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by funded budgets, signed receipts, one-time withdrawal ids and daily caps, but within those limits it decides who is paid. Users can force their credits into `userLiability` without the operator, but cannot withdraw without it. Mitigation for later: publish a Merkle commitment of account balances with each daily commitment.
+In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by funded budgets, signed receipts, one-time withdrawal ids and daily caps, but within those limits it decides who is paid. Users can force their credits into `userLiability` without the operator, but cannot withdraw without it (D6). The published Merkle root of balances (§5) makes the platform's ledger auditable.
 
 ## Rejected alternatives
 
@@ -131,7 +148,7 @@ In M1 the user holds a signed authorization and settles it alone. Under option A
 
 ## Open questions for the product owner
 
-Decided on 2026-10-14: browsing location (D1), credited unit (D2), caps and expiry (D3), when World ID is required (D4).
+Decided: browsing location (D1), credited unit (D2), caps and expiry (D3), when World ID is required (D4), reward guarantee (D5), platform-stop behaviour (D6), cross-campaign record (D7), on-chain verification scope (D8).
 
 Still open:
 
@@ -142,7 +159,8 @@ Still open:
 5. Whether a session-proof result echoes the RP `nonce` (needed for §3a step 3). If not, bind the withdrawal through the proof `signal` instead, if session proofs support one.
 6. How dwell time is measured robustly on the client (visibility, focus, idle detection) and which anomalies the server rejects.
 7. Whether dormant balances should eventually expire after all (D3), since committed liabilities otherwise stay in the contract indefinitely.
-8. Length of the refund window, and whether the platform runs an independent watchtower that commits receipts if the operator stops.
+8. Length of the challenge window after the final commitment, and whether the platform runs an independent watchtower.
+9. Design of the operator-independent exit required before real funds (D6).
 
 ## Sequencing
 
