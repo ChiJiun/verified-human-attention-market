@@ -5,7 +5,7 @@ import {
   autoLinkCreatedCampaigns,
   syncCampaignStatuses,
 } from "./campaigns/onchain.js";
-import { loadChainConfig } from "./chain/config.js";
+import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
 import { JsonRpcClient } from "./chain/rpc.js";
@@ -28,6 +28,9 @@ if (!databaseUrl || !chainConfig) {
     "DATABASE_URL and the full chain configuration (EVM_RPC_URL, USDC_ADDRESS, CAMPAIGN_MANAGER_ADDRESS, CAMPAIGN_MANAGER_DEPLOY_BLOCK) are required",
   );
 }
+
+// Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
+await verifyChainConnection(chainConfig);
 
 const confirmations = Number(process.env.INDEXER_CONFIRMATIONS ?? 10);
 const pollMs = Number(process.env.INDEXER_POLL_MS ?? 5_000);
@@ -196,6 +199,15 @@ while (!stopping) {
       log("info", "campaigns reconciled", {
         autoLinked: autoLinked.linked,
         statusChanges: statuses.updated,
+      });
+    }
+
+    // ADR-0011: a link whose canonical creation names another draft was
+    // left behind by a reorg deeper than its confirmation; it is released.
+    if (autoLinked.relinked.length > 0 || statuses.orphanedLinks.length > 0) {
+      log("warn", "orphaned on-chain links released or skipped", {
+        releasedCampaignIds: autoLinked.relinked,
+        orphanedCampaignIds: statuses.orphanedLinks,
       });
     }
 

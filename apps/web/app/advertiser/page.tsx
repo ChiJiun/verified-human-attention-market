@@ -1,6 +1,7 @@
 "use client";
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
+import { isCurrentDeployment, type Deployment } from "@vham/shared/deployment";
 import { useCallback, useEffect, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
@@ -26,7 +27,10 @@ interface PublishIntent {
 
 interface Analytics {
   campaignId: string;
+  chainId: number;
   onchainCampaignId: string | null;
+  /** CampaignManager the on-chain id belongs to (ADR-0011). */
+  onchainContractAddress: string | null;
   status: string;
   plannedBudget: string;
   submissions: {
@@ -67,6 +71,8 @@ export default function AdvertiserPage() {
   const [tx, setTx] = useState<TxStatus>({ state: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The CampaignManager this API is configured for. */
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
@@ -87,6 +93,32 @@ export default function AdvertiserPage() {
       setError(describeError(caught));
     }
   }, [campaignId, session]);
+
+  useEffect(() => {
+    void api<{ chainId: number; campaignManager: string }>("/v1/chain")
+      .then(({ data }) =>
+        setDeployment({
+          chainId: data.chainId,
+          contractAddress: data.campaignManager,
+        }),
+      )
+      .catch(() => setDeployment(null));
+  }, []);
+
+  /**
+   * On-chain ids restart on every deployment: only a campaign linked on the
+   * configured chain and contract may be funded here, otherwise its id
+   * would address another campaign on the new contract (ADR-0011).
+   */
+  const onCurrentDeployment =
+    analytics !== null &&
+    isCurrentDeployment(
+      {
+        chainId: analytics.chainId,
+        contractAddress: analytics.onchainContractAddress,
+      },
+      deployment,
+    );
 
   useEffect(() => {
     void refresh();
@@ -239,9 +271,26 @@ export default function AdvertiserPage() {
       if (!current?.onchainCampaignId) return;
 
       const { data: chainInfo } = await api<{
+        chainId: number;
         campaignManager: Address;
         usdc: Address;
       }>("/v1/chain");
+      if (
+        !isCurrentDeployment(
+          {
+            chainId: current.chainId,
+            contractAddress: current.onchainContractAddress,
+          },
+          {
+            chainId: chainInfo.chainId,
+            contractAddress: chainInfo.campaignManager,
+          },
+        )
+      ) {
+        throw new Error(
+          "This campaign was created on an earlier CampaignManager deployment and cannot be funded here.",
+        );
+      }
       const usdcAddress = chainInfo.usdc;
       const manager = chainInfo.campaignManager;
       const amount = BigInt(current.plannedBudget);
@@ -412,6 +461,15 @@ export default function AdvertiserPage() {
               </a>
             </p>
           )}
+          {analytics?.onchainCampaignId !== null &&
+            analytics !== null &&
+            deployment !== null &&
+            !onCurrentDeployment && (
+              <p className="note">
+                This campaign belongs to an earlier CampaignManager deployment.
+                It cannot be funded or joined here; create a new campaign.
+              </p>
+            )}
           {analytics?.settlement?.hasUnconfirmedEvents && (
             <p className="note">
               Some on-chain activity is still being confirmed.
@@ -424,6 +482,7 @@ export default function AdvertiserPage() {
               </button>
             )}
             {analytics?.status === "pending_onchain" &&
+              onCurrentDeployment &&
               (analytics.settlement?.pending.funded ?? "0") === "0" && (
                 <button onClick={fund} disabled={busy || wrongNetwork}>
                   Approve &amp; fund

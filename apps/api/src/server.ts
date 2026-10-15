@@ -12,6 +12,7 @@ import {
   type ClaimSigner,
 } from "./claims/signer.js";
 import { buildApp } from "./app.js";
+import { DEFAULT_CONFIRMATIONS } from "./campaigns/onchain.js";
 import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { JsonRpcClient } from "./chain/rpc.js";
@@ -233,6 +234,10 @@ const app = buildApp({
   chain: chainConfig
     ? {
         rpc: new JsonRpcClient(chainConfig.rpcUrl),
+        // Links wait for the same depth the indexer treats as final.
+        confirmations: Number(
+          process.env.INDEXER_CONFIRMATIONS ?? DEFAULT_CONFIRMATIONS,
+        ),
         chain: {
           chainId: chainConfig.chainId,
           contractAddress: chainConfig.campaignManagerAddress,

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { Deployment } from "@vham/shared/deployment";
+
 import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
@@ -16,8 +18,8 @@ import {
 
 export interface EligibilityServiceDependencies {
   campaigns: CampaignRepository;
-  /** Configured CampaignManager; campaigns linked elsewhere are retired. */
-  campaignManagerAddress: string | null;
+  /** Configured deployment; campaigns linked elsewhere are retired. */
+  deployment: Deployment | null;
   eligibility: EligibilityRepository;
   worldId: WorldIdVerifier;
   /** null when not configured: eligibility is refused (fail closed). */
@@ -69,7 +71,7 @@ export async function verifyEligibility(
   if (
     now >= campaign.endAt ||
     !["draft", "active"].includes(campaign.status) ||
-    isRetiredDeployment(campaign, dependencies.campaignManagerAddress)
+    isRetiredDeployment(campaign, dependencies.deployment)
   ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_OPEN" };
   }

@@ -30,7 +30,7 @@ Then:
 2. Run `pnpm --filter @vham/api db:migrate`. Campaigns linked before this migration are marked `pre-adr-0011`: they keep their history but are retired here: never synced or signed for, closed to new World ID verifications and completions, and never shown with events from another contract.
 3. Deploy (below). The script writes a new `deployments/84532.json`; commit it.
 4. Set `CAMPAIGN_MANAGER_ADDRESS` and `CAMPAIGN_MANAGER_DEPLOY_BLOCK` from the new record. Indexed events and the indexer cursor are scoped by contract address, so indexing starts fresh from the new deploy block.
-5. Start the API and indexer; startup verifies the new contract.
+5. Start the API and the indexer worker. Both verify the chain, the contract code and that `campaignIdByDraft` answers (an older contract reverts); an RPC or provider error is reported as such, not as an old contract. Both use `INDEXER_CONFIRMATIONS`: the API only links creations buried that deep.
 
 Campaigns on the old contract cannot move: create new drafts.
 

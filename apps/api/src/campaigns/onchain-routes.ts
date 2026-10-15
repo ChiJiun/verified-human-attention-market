@@ -159,6 +159,7 @@ export async function registerOnchainRoutes(
       if (!outcome.ok) {
         const pending =
           outcome.code === "TX_PENDING" ||
+          outcome.code === "TX_UNCONFIRMED" ||
           outcome.code === "NOT_CREATED_YET" ||
           outcome.code === "RPC_UNAVAILABLE";
         return reply.status(outcome.status).send(
@@ -248,6 +249,7 @@ export async function registerOnchainRoutes(
 
       return reply.send({
         campaignId: campaign.id,
+        chainId: campaign.chainId,
         onchainCampaignId: campaign.onchainCampaignId,
         onchainContractAddress: campaign.onchainContractAddress,
         status: campaign.status,

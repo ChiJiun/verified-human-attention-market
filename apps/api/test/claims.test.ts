@@ -9,6 +9,7 @@ import {
 } from "viem";
 
 import type { CampaignRecord } from "../src/campaigns/types.js";
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryClaimRepository } from "../src/claims/repository.js";
 import { registerClaimRoutes } from "../src/claims/routes.js";
 import { authorizeClaim } from "../src/claims/service.js";
@@ -27,6 +28,7 @@ const PRIVATE_KEY = `0x${"11".repeat(32)}`;
 const signer = createClaimSigner(PRIVATE_KEY);
 const CONTRACT = `0x${"22".repeat(20)}` as const;
 const CLAIMANT = `0x${"33".repeat(20)}` as const;
+const ADVERTISER = `0x${"aa".repeat(20)}` as const;
 const START = new Date("2026-10-12T01:00:00.000Z");
 const NOW = new Date("2026-10-12T01:10:00.000Z");
 const END = new Date("2026-10-12T02:00:00.000Z");
@@ -36,6 +38,7 @@ const campaign = {
   chainId: 84532,
   onchainCampaignId: "7",
   onchainContractAddress: CONTRACT,
+  advertiserAddress: ADVERTISER,
   status: "active",
   rewardAtomic: "1000000",
   maxCompletions: 1,
@@ -65,6 +68,8 @@ function fixture() {
     claimed: false,
   };
   let currentCampaign = campaign;
+  /** What the contract's campaignIdByDraft says for this campaign's draft. */
+  let canonicalId: number = 7;
   let currentSubmission = submission;
   let currentEligibility = eligibility;
   const claims = new InMemoryClaimRepository(
@@ -92,6 +97,20 @@ function fixture() {
           word(chainState.closedAt),
           word(chainState.closedAt === 0 ? 1 : 2),
         ].join("")}`;
+      }
+      if (
+        data.startsWith(
+          toFunctionSelector("campaignIdByDraft(address,bytes32)"),
+        )
+      ) {
+        const askedAdvertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
+        const askedRef = `0x${data.slice(10 + 64, 10 + 128)}`;
+        return `0x${word(
+          askedAdvertiser === currentCampaign.advertiserAddress &&
+            askedRef === draftRefFor(currentCampaign.id)
+            ? canonicalId
+            : 0,
+        )}`;
       }
       if (
         data.startsWith(toFunctionSelector("claimedWallet(uint256,address)"))
@@ -137,6 +156,9 @@ function fixture() {
     },
     setCampaign: (value: CampaignRecord) => {
       currentCampaign = value;
+    },
+    setCanonicalId: (value: number) => {
+      canonicalId = value;
     },
     setSubmission: (value: typeof submission) => {
       currentSubmission = value;
@@ -239,6 +261,19 @@ describe("EIP-712 claim authorization", () => {
       ok: false,
       code: "CAMPAIGN_NOT_ACTIVE",
     });
+  });
+
+  it("never signs for a link that is no longer this draft's canonical creation", async () => {
+    const f = fixture();
+    // A reorg removed this draft's creation and another draft's campaign now
+    // holds on-chain id 7 (or this draft has none at all).
+    for (const id of [8, 0]) {
+      f.setCanonicalId(id);
+      expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+        ok: false,
+        code: "CAMPAIGN_NOT_ACTIVE",
+      });
+    }
   });
 
   it("never signs for a campaign linked on another deployment (ADR-0011)", async () => {

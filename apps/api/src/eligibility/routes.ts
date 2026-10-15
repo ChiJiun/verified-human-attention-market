@@ -60,7 +60,7 @@ export async function registerEligibilityRoutes(
       if (
         now >= campaign.endAt ||
         !["draft", "active"].includes(campaign.status) ||
-        isRetiredDeployment(campaign, dependencies.campaignManagerAddress)
+        isRetiredDeployment(campaign, dependencies.deployment)
       ) {
         return fail(409, "CAMPAIGN_NOT_OPEN", "Campaign is not open");
       }

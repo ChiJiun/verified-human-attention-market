@@ -42,18 +42,29 @@ export function draftRefFor(campaignId: string): Hex {
   return keccak256(stringToBytes(`vham-draft:${campaignId}`));
 }
 
-/** Reads `campaignIdByDraft(advertiser, draftRef)`; null when none exists. */
+/**
+ * Reads `campaignIdByDraft(advertiser, draftRef)` at `block` (default
+ * latest); null when none exists.
+ */
 export async function readCampaignIdByDraft(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: string,
   advertiser: string,
   draftRef: string,
+  block?: bigint,
 ): Promise<string | null> {
   const result = await rpc.call(
     contractAddress,
     `${FUNCTION_SELECTORS.campaignIdByDraft}${advertiser.slice(2).toLowerCase().padStart(64, "0")}${draftRef.slice(2).toLowerCase()}`,
+    block,
   );
   const body = result.startsWith("0x") ? result.slice(2) : result;
+
+  // No code at `block` (the contract was deployed later): nothing exists yet.
+  // Startup already verified that the configured contract has this function.
+  if (body === "") {
+    return null;
+  }
 
   if (body.length !== 64 || !/^[0-9a-f]+$/.test(body)) {
     throw new RpcError("campaignIdByDraft returned malformed data");
@@ -142,11 +153,30 @@ export function matchesDraft(
   );
 }
 
+/** Same default as the indexer worker's INDEXER_CONFIRMATIONS. */
+export const DEFAULT_CONFIRMATIONS = 10;
+
 export interface OnchainDependencies {
   campaigns: CampaignRepository;
   rpc: ChainRpc;
   chain: ChainScope & { usdcAddress: string };
   now: () => Date;
+  /**
+   * Blocks a creation must be buried under before it is linked, so a
+   * shallow reorg can never leave a permanent link to a creation that is no
+   * longer canonical (ADR-0011). Defaults to DEFAULT_CONFIRMATIONS.
+   */
+  confirmations?: number;
+}
+
+/** Highest block considered final, or null before enough blocks exist. */
+async function confirmedHead(
+  dependencies: OnchainDependencies,
+): Promise<bigint | null> {
+  const head = await dependencies.rpc.blockNumber();
+  const confirmed =
+    head - BigInt(dependencies.confirmations ?? DEFAULT_CONFIRMATIONS);
+  return confirmed < 0n ? null : confirmed;
 }
 
 /** Transaction intent for the advertiser's wallet (issue #16 / #11). */
@@ -200,6 +230,7 @@ export type LinkFailureCode =
   | "ADVERTISER_MISMATCH"
   | "DRAFT_MISMATCH"
   | "NOT_CREATED_YET"
+  | "TX_UNCONFIRMED"
   | "PARAMETERS_MISMATCH"
   | "ALREADY_LINKED"
   | "ONCHAIN_CAMPAIGN_ALREADY_LINKED";
@@ -281,10 +312,18 @@ export async function linkCampaignByTransaction(
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
 
+    // Only a creation buried under the confirmation depth is linked.
+    const confirmed = await confirmedHead(dependencies);
+
+    if (confirmed === null || receipt.blockNumber > confirmed) {
+      return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
+    }
+
     const onchain = await readOnchainCampaign(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       created.campaignId,
+      confirmed,
     );
 
     if (!onchain || !matchesDraft(campaign, onchain)) {
@@ -342,12 +381,18 @@ export async function linkCampaignByDraft(
   }
 
   try {
-    const onchainCampaignId = await readCampaignIdByDraft(
-      dependencies.rpc,
-      dependencies.chain.contractAddress,
-      campaign.advertiserAddress,
-      draftRefFor(campaign.id),
-    );
+    // Read at the confirmed block: an unconfirmed creation is not linked yet.
+    const confirmed = await confirmedHead(dependencies);
+    const onchainCampaignId =
+      confirmed === null
+        ? null
+        : await readCampaignIdByDraft(
+            dependencies.rpc,
+            dependencies.chain.contractAddress,
+            campaign.advertiserAddress,
+            draftRefFor(campaign.id),
+            confirmed,
+          );
 
     if (!onchainCampaignId) {
       return { ok: false, status: 202, code: "NOT_CREATED_YET" };
@@ -357,6 +402,7 @@ export async function linkCampaignByDraft(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       onchainCampaignId,
+      confirmed!,
     );
 
     if (!onchain || !matchesDraft(campaign, onchain)) {
@@ -398,6 +444,12 @@ export interface StatusSyncResult {
   updated: { campaignId: string; from: CampaignStatus; to: CampaignStatus }[];
   /** paid + refunded > funded on-chain: must alert an operator. */
   accountingViolations: string[];
+  /**
+   * Links whose confirmed CampaignCreated names another draft or advertiser
+   * (only possible after a reorg deeper than the link's confirmation). Their
+   * status is never synced; autoLinkCreatedCampaigns relinks them.
+   */
+  orphanedLinks: string[];
 }
 
 /**
@@ -410,7 +462,11 @@ export async function syncCampaignStatuses(dependencies: {
   chain: ChainScope;
   now: () => Date;
 }): Promise<StatusSyncResult> {
-  const result: StatusSyncResult = { updated: [], accountingViolations: [] };
+  const result: StatusSyncResult = {
+    updated: [],
+    accountingViolations: [],
+    orphanedLinks: [],
+  };
 
   for (const campaign of await dependencies.campaigns.listLinked(
     dependencies.chain.chainId,
@@ -420,6 +476,24 @@ export async function syncCampaignStatuses(dependencies: {
       dependencies.chain,
       campaign.onchainCampaignId!,
     );
+
+    // The canonical creation for this id must be this draft's (ADR-0011);
+    // otherwise the events belong to another campaign.
+    const creation = events.find(
+      (stored) =>
+        stored.status === "confirmed" &&
+        stored.event.name === "CampaignCreated",
+    )?.event;
+
+    if (
+      creation?.name === "CampaignCreated" &&
+      (creation.draftRef !== draftRefFor(campaign.id) ||
+        creation.advertiser !== campaign.advertiserAddress)
+    ) {
+      result.orphanedLinks.push(campaign.id);
+      continue;
+    }
+
     const { confirmed } = reconcileCampaignEvents(events);
 
     if (confirmed.accountingViolation) {
@@ -451,25 +525,50 @@ export async function syncCampaignStatuses(dependencies: {
  * unlinked draft whose draft reference it carries (ADR-0011), after checking
  * the economics. Events without a matching draft are ignored; `ambiguous`
  * stays for events whose economics contradict their draft.
+ *
+ * A confirmed creation is canonical. If its id is linked to a different
+ * draft (a link to a creation that a reorg removed), that link is released
+ * (`relinked`) so the draft the event names can be linked instead.
  */
 export async function autoLinkCreatedCampaigns(
   dependencies: OnchainDependencies & { events: ChainEventRepository },
-): Promise<{ linked: string[]; ambiguous: string[] }> {
+): Promise<{ linked: string[]; ambiguous: string[]; relinked: string[] }> {
   const linked: string[] = [];
   const ambiguous: string[] = [];
+  const relinked: string[] = [];
   const createdEvents = await dependencies.events.listConfirmedCreations(
     dependencies.chain,
   );
 
   for (const created of createdEvents) {
-    if (
-      await dependencies.campaigns.findByOnchainId(
-        dependencies.chain.chainId,
-        dependencies.chain.contractAddress,
-        created.onchainCampaignId,
-      )
-    ) {
-      continue;
+    const existing = await dependencies.campaigns.findByOnchainId(
+      dependencies.chain.chainId,
+      dependencies.chain.contractAddress,
+      created.onchainCampaignId,
+    );
+
+    if (existing) {
+      if (
+        draftRefFor(existing.id) === created.draftRef &&
+        existing.advertiserAddress === created.advertiser
+      ) {
+        continue;
+      }
+
+      // Orphaned: the canonical creation for this id belongs to another
+      // draft. Release the stale link; that draft may create again.
+      if (
+        await dependencies.campaigns.unlinkOnchain(
+          existing.id,
+          {
+            onchainCampaignId: created.onchainCampaignId,
+            contractAddress: dependencies.chain.contractAddress,
+          },
+          dependencies.now(),
+        )
+      ) {
+        relinked.push(existing.id);
+      }
     }
 
     const drafts = await dependencies.campaigns.listUnlinkedDrafts(
@@ -517,5 +616,5 @@ export async function autoLinkCreatedCampaigns(
     }
   }
 
-  return { linked, ambiguous };
+  return { linked, ambiguous, relinked };
 }

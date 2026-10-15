@@ -136,6 +136,45 @@ describe("verifyChainConnection", () => {
     ).rejects.toThrow(/before ADR-0011/);
   });
 
+  /** Answers chain id and code; eth_call gets `callResponse`. */
+  function providerFailing(callResponse: () => Response) {
+    const stub = rpcStub({
+      eth_chainId: "0x14a34",
+      [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
+      [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+    });
+    return (async (url: string, init: RequestInit) => {
+      const { method } = JSON.parse(init.body as string) as { method: string };
+      return method === "eth_call" ? callResponse() : stub(url, init);
+    }) as unknown as typeof fetch;
+  }
+
+  it.each([
+    ["HTTP 503", () => new Response("unavailable", { status: 503 })],
+    [
+      "a rate-limit error",
+      () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32005, message: "limit exceeded" },
+          }),
+          { status: 200 },
+        ),
+    ],
+  ])(
+    "reports %s on the version probe as a provider problem, not an old contract",
+    async (_label, callResponse) => {
+      const result = verifyChainConnection(
+        config,
+        providerFailing(callResponse),
+      );
+      await expect(result).rejects.toThrow(/provider problem/);
+      await expect(result).rejects.not.toThrow(/before ADR-0011/);
+    },
+  );
+
   it("fails when the RPC is a different chain", async () => {
     await expect(
       verifyChainConnection(config, rpcStub({ eth_chainId: "0x2105" })),

@@ -246,7 +246,13 @@ describeE2e("POC economic loop on a local chain", () => {
       worldIdVerifier: new SimulatedWorldId(),
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
-      chain: { rpc, chain, events: eventRepository, now },
+      chain: {
+        rpc,
+        chain,
+        events: eventRepository,
+        now,
+        confirmations: CONFIRMATIONS,
+      },
       dailyPayoutLimitAtomic: 10n * USDC,
       // Production moderation: an operator must approve the campaign.
       moderationRepository: new PostgresModerationRepository(database.db),
@@ -466,6 +472,13 @@ describeE2e("POC economic loop on a local chain", () => {
     // The contract refuses a second campaign for the same draft.
     expect((await receipt(retryHash)).status).toBe("reverted");
     expect((await receipt(decoyHash)).status).toBe("success");
+
+    // Mined but not yet final: still reconciling, never linked early.
+    expect((await linkByDraft()).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+    await testClient.mine({ blocks: CONFIRMATIONS });
 
     // Linking needs no hash: the contract knows this draft's campaign.
     const linked = await linkByDraft();

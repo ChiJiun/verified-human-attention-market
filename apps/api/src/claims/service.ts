@@ -2,6 +2,8 @@ import { campaignManagerAbi } from "@vham/shared/contracts";
 import { encodeFunctionData, type Address } from "viem";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import { draftRefFor, readCampaignIdByDraft } from "../campaigns/onchain.js";
+import { isRetiredDeployment } from "../campaigns/types.js";
 import type { ChainRpc } from "../chain/rpc.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
@@ -76,10 +78,30 @@ export async function authorizeClaim(
   // the current contract too: never sign for it there (ADR-0011).
   if (
     campaign.onchainCampaignId === null ||
-    campaign.chainId !== chain.chainId ||
-    campaign.onchainContractAddress !== chain.contractAddress.toLowerCase()
+    isRetiredDeployment(campaign, {
+      chainId: chain.chainId,
+      contractAddress: chain.contractAddress,
+    })
   ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+  }
+
+  // The link must still be this draft's canonical creation: the contract's
+  // campaignIdByDraft(advertiser, draftRef) has to name exactly this id. A
+  // link left behind by a reorg would otherwise sign against another
+  // campaign's budget (ADR-0011).
+  try {
+    const canonicalId = await readCampaignIdByDraft(
+      chain.rpc,
+      chain.contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+    );
+    if (canonicalId !== campaign.onchainCampaignId) {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
+  } catch {
+    return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
   }
 
   // A configured key must match the contract's current signer. RPC failures

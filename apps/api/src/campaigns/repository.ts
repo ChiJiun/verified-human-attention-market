@@ -54,6 +54,16 @@ export interface CampaignRepository {
    * same on-chain id; throws CampaignLinkConflictError otherwise.
    */
   linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord>;
+  /**
+   * Releases a link whose creation is no longer canonical (ADR-0011): only
+   * when it still points at exactly `link`. The campaign returns to `draft`.
+   * Returns whether a row changed.
+   */
+  unlinkOnchain(
+    id: string,
+    link: { onchainCampaignId: string; contractAddress: string },
+    updatedAt: Date,
+  ): Promise<boolean>;
   updateStatus(
     id: string,
     status: CampaignStatus,
@@ -272,6 +282,35 @@ export class PostgresCampaignRepository implements CampaignRepository {
     return existing;
   }
 
+  async unlinkOnchain(
+    id: string,
+    link: { onchainCampaignId: string; contractAddress: string },
+    updatedAt: Date,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .update(campaigns)
+      .set({
+        onchainCampaignId: null,
+        onchainContractAddress: null,
+        publishTxHash: null,
+        status: "draft",
+        updatedAt,
+      })
+      .where(
+        and(
+          eq(campaigns.id, id),
+          eq(campaigns.onchainCampaignId, link.onchainCampaignId),
+          eq(
+            campaigns.onchainContractAddress,
+            link.contractAddress.toLowerCase(),
+          ),
+        ),
+      )
+      .returning({ id: campaigns.id });
+
+    return rows.length > 0;
+  }
+
   async updateStatus(
     id: string,
     status: CampaignStatus,
@@ -439,6 +478,32 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     this.records.set(id, updated);
 
     return updated;
+  }
+
+  async unlinkOnchain(
+    id: string,
+    link: { onchainCampaignId: string; contractAddress: string },
+    updatedAt: Date,
+  ): Promise<boolean> {
+    const existing = this.records.get(id);
+
+    if (
+      !existing ||
+      existing.onchainCampaignId !== link.onchainCampaignId ||
+      existing.onchainContractAddress !== link.contractAddress.toLowerCase()
+    ) {
+      return false;
+    }
+
+    this.records.set(id, {
+      ...existing,
+      onchainCampaignId: null,
+      onchainContractAddress: null,
+      publishTxHash: null,
+      status: "draft",
+      updatedAt,
+    });
+    return true;
   }
 
   async updateStatus(

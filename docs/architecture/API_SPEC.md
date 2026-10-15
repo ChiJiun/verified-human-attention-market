@@ -130,13 +130,15 @@ The client's report is never trusted. With a hash, the API fetches the receipt, 
 | Status | Meaning |
 | --- | --- |
 | 200 | linked (idempotent for the same creation, by hash or by draft) |
-| 202 `TX_PENDING`, 202 `NOT_CREATED_YET`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
+| 202 `TX_PENDING`, 202 `TX_UNCONFIRMED`, 202 `NOT_CREATED_YET`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
 | 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
 | 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `DRAFT_MISMATCH`, `PARAMETERS_MISMATCH` |
 
-Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)`: `0` means not created yet (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it never stores transaction state, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
+A creation is linked only once it is buried under `INDEXER_CONFIRMATIONS` blocks (`202 TX_UNCONFIRMED` before), so a shallow reorg can never leave a permanent link to a creation that is no longer canonical.
 
-If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution.
+Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the confirmed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it never stores transaction state, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
+
+If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution. If a confirmed creation's id is already linked to a **different** draft (a link left behind by a reorg deeper than the confirmation depth), that link is released (the campaign returns to `draft`) and the named draft is linked; status sync never applies such a creation's events to the wrong draft, and the claim service checks `campaignIdByDraft` live before signing.
 
 Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.
 

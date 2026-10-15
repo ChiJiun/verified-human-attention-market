@@ -97,6 +97,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   NO_CAMPAIGN_CREATED_EVENT: { retryable: true },
   TX_PENDING: { retryable: true },
   NOT_CREATED_YET: { retryable: true },
+  TX_UNCONFIRMED: { retryable: true },
   DAILY_LIMIT_REACHED: { retryable: true },
   RATE_LIMITED: { retryable: true },
 

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { Deployment } from "@vham/shared/deployment";
+
 import { isRetiredDeployment } from "../campaigns/types.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import { IdempotencyConflictError } from "../persistence/errors.js";
@@ -29,8 +31,8 @@ export const MAX_ATTEMPTS_PER_ELIGIBILITY = 2;
 
 export interface SubmissionServiceDependencies {
   campaigns: CampaignRepository;
-  /** Configured CampaignManager; campaigns linked elsewhere are retired. */
-  campaignManagerAddress: string | null;
+  /** Configured deployment; campaigns linked elsewhere are retired. */
+  deployment: Deployment | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
   now: () => Date;
@@ -125,7 +127,7 @@ export async function submitCompletion(
   }
 
   // Its rewards could not be signed for on the configured contract.
-  if (isRetiredDeployment(campaign, dependencies.campaignManagerAddress)) {
+  if (isRetiredDeployment(campaign, dependencies.deployment)) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
   }
 

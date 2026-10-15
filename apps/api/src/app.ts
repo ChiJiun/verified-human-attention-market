@@ -292,13 +292,17 @@ export function buildApp(dependencies: AppDependencies = {}) {
       now,
     });
 
-    // Campaigns linked on another CampaignManager are retired (ADR-0011).
-    const campaignManagerAddress =
-      dependencies.chain?.chain.contractAddress ?? null;
+    // Campaigns linked on another deployment are retired (ADR-0011).
+    const deployment = dependencies.chain
+      ? {
+          chainId: dependencies.chain.chain.chainId,
+          contractAddress: dependencies.chain.chain.contractAddress,
+        }
+      : null;
 
     await registerEligibilityRoutes(instance, {
       campaigns: campaignRepository,
-      campaignManagerAddress,
+      deployment,
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
@@ -315,7 +319,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
     await registerSubmissionRoutes(instance, {
       campaigns: campaignRepository,
-      campaignManagerAddress,
+      deployment,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,

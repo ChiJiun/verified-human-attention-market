@@ -24,7 +24,9 @@ A single RPC observation cannot prove a transaction was not broadcast, so no cli
 6. The web app keeps no transaction state: it first asks the API to link by draft; only then sends. A retry is always safe because the contract refuses a duplicate.
 
 7. **Deployments are kept apart in the database.** On-chain ids restart at 1 on every deployment, so a campaign link is `(chain_id, onchain_contract_address, onchain_campaign_id)` (migration 0011). Status sync, auto-link, reconciliation and analytics only read campaigns linked to the configured contract, and the claim service refuses to sign for a campaign linked to another contract. Such a campaign is **retired**: the World ID request, eligibility and submission endpoints refuse it too, so nobody completes work that could not be paid here. Rows linked before the migration are marked `pre-adr-0011`. Switching contracts therefore requires settling the old one first (TESTNET.md checklist).
-8. **The API refuses an older contract at startup:** `campaignIdByDraft` must answer, which a pre-ADR-0011 contract cannot (it reverts although it has code).
+8. **The API and the indexer worker refuse an older contract at startup:** `campaignIdByDraft` must answer, which a pre-ADR-0011 contract cannot (it reverts although it has code). Transport and provider errors are reported as RPC problems, not as an old contract.
+9. **A deployment is (chain, contract).** The same address on another chain is another deployment; participant endpoints, the claim service and the web app's funding all use the shared `isCurrentDeployment` rule (`@vham/shared/deployment`).
+10. **Links are made only from final data and re-checked.** A creation is linked once it is `INDEXER_CONFIRMATIONS` deep. Status sync skips a link whose confirmed creation names another draft or advertiser; auto-link releases such a link and links the draft the canonical creation names; the claim service signs only if `campaignIdByDraft(advertiser, draftRef)` still equals the linked id.
 
 ## Consequences
 

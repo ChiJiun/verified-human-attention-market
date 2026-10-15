@@ -76,8 +76,12 @@ export class FakeChain implements ChainRpc {
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
-  /** On-chain `campaignIdByDraft(advertiser, draftRef)` storage. */
-  readonly campaignIdByDraft = new Map<string, number>();
+  /**
+   * On-chain `campaignIdByDraft(advertiser, draftRef)` storage, keyed
+   * `${advertiser}:${draftRef}`, with the block that wrote it (eth_call at an
+   * earlier block sees nothing; a reorg below it removes it).
+   */
+  readonly campaignIdByDraft = new Map<string, { id: number; block: bigint }>();
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
     string,
@@ -145,6 +149,9 @@ export class FakeChain implements ChainRpc {
   reorg(fromBlock: bigint, newLength = this.blocks.length) {
     this.fork += 1;
     this.blocks = this.blocks.slice(0, Number(fromBlock));
+    for (const [key, entry] of this.campaignIdByDraft) {
+      if (entry.block >= fromBlock) this.campaignIdByDraft.delete(key);
+    }
     while (this.blocks.length < newLength) {
       const number = this.blocks.length;
       this.blocks.push({
@@ -239,7 +246,7 @@ export class FakeChain implements ChainRpc {
     return null;
   }
 
-  async call(to: string, data: string): Promise<string> {
+  async call(to: string, data: string, block?: bigint): Promise<string> {
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
     }
@@ -250,7 +257,10 @@ export class FakeChain implements ChainRpc {
     ) {
       const advertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
       const draftRef = `0x${data.slice(10 + 64, 10 + 128)}`;
-      return word(this.campaignIdByDraft.get(`${advertiser}:${draftRef}`) ?? 0);
+      const entry = this.campaignIdByDraft.get(`${advertiser}:${draftRef}`);
+      return word(
+        entry && (block === undefined || entry.block <= block) ? entry.id : 0,
+      );
     }
 
     if (

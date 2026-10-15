@@ -47,6 +47,7 @@ const draft = {
   },
 };
 
+const CONFIRMATIONS = 2;
 const START = Date.parse(draft.startAt) / 1000;
 const END = Date.parse(draft.endAt) / 1000;
 
@@ -59,6 +60,8 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
   const submissions = new InMemorySubmissionRepository(eligibility);
   const scope = { chainId: 84532, contractAddress: CONTRACT };
   const chainDeps = {
+    // Links wait for the same depth the indexer below treats as final.
+    confirmations: CONFIRMATIONS,
     rpc: chain,
     chain: { ...scope, usdcAddress: USDC_ADDRESS },
     events,
@@ -101,6 +104,8 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
       endTime: number;
     }> = {},
     address = CONTRACT,
+    /** Mine the confirmation depth on top (false = leave it unconfirmed). */
+    confirm = true,
   ) {
     const struct = {
       advertiser: ADVERTISER,
@@ -112,14 +117,20 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
     };
     const ref = draftRefFor(draft);
     chain.campaignStructs.set(String(onchainId), struct);
+    const block = chain.mine(
+      1,
+      [logs.created(onchainId, struct.advertiser, ref)],
+      address,
+    );
+    const txHash = chain.lastTxHash;
     if (address === CONTRACT) {
-      chain.campaignIdByDraft.set(
-        `${struct.advertiser.toLowerCase()}:${ref}`,
-        onchainId,
-      );
+      chain.campaignIdByDraft.set(`${struct.advertiser.toLowerCase()}:${ref}`, {
+        id: onchainId,
+        block,
+      });
     }
-    chain.mine(1, [logs.created(onchainId, struct.advertiser, ref)], address);
-    return chain.lastTxHash;
+    if (confirm) chain.mine(CONFIRMATIONS);
+    return txHash;
   }
 
   async function reconcile() {
@@ -127,7 +138,7 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
       chainId: 84532,
       contractAddress: CONTRACT,
       deployBlock: 1n,
-      confirmations: 2,
+      confirmations: CONFIRMATIONS,
       maxBlockRange: 100n,
     });
     await autoLinkCreatedCampaigns({ campaigns, ...chainDeps });
@@ -154,9 +165,24 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
       })
     ).json<Record<string, unknown>>();
 
+  /** Only the indexer pass, without auto-link or status sync. */
+  async function index() {
+    await indexOnce(chain, events, {
+      chainId: 84532,
+      contractAddress: CONTRACT,
+      deployBlock: 1n,
+      confirmations: CONFIRMATIONS,
+      maxBlockRange: 100n,
+    });
+  }
+
   return {
     app,
     chain,
+    chainDeps,
+    events,
+    scope,
+    index,
     campaigns,
     createDraft,
     createOnchain,
@@ -393,6 +419,78 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     expect((await link(second, txHash)).json()).toMatchObject({
       error: { code: "DRAFT_MISMATCH" },
     });
+  });
+});
+
+describe("confirmation and reorgs (ADR-0011)", () => {
+  it("links a creation only once it is buried under the confirmation depth", async () => {
+    const { app, chain, createDraft, createOnchain, link } = await setup();
+    const id = await createDraft();
+    const txHash = createOnchain(1, id, {}, CONTRACT, false);
+    const linkByDraft = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${id}/onchain`,
+        payload: {},
+      });
+
+    // Mined but not final: reconciling, never a permanent link.
+    expect((await link(id, txHash)).json()).toMatchObject({
+      status: "reconciling",
+      code: "TX_UNCONFIRMED",
+    });
+    expect((await linkByDraft()).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+
+    chain.mine(CONFIRMATIONS);
+    expect((await linkByDraft()).statusCode).toBe(200);
+  });
+
+  it("never syncs, and then releases, a link whose creation a reorg replaced", async () => {
+    const fixture = await setup();
+    const { chain, campaigns, createDraft, createOnchain, index } = fixture;
+    const draftA = await createDraft("a");
+    const draftB = await createDraft("b", {
+      contentUrl: "https://example.com/b",
+    });
+
+    // A's creation gets id 1 and is linked once confirmed.
+    const reorgFrom = chain.head + 1n;
+    const txA = createOnchain(1, draftA);
+    expect((await fixture.link(draftA, txA)).statusCode).toBe(200);
+
+    // A reorg deeper than the confirmation depth removes it; on the new
+    // fork draft B's creation takes id 1 and is funded.
+    chain.reorg(reorgFrom);
+    createOnchain(1, draftB);
+    chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    chain.mine(CONFIRMATIONS + 1);
+    await index();
+
+    // B's funding is never applied to A.
+    const sync = await syncCampaignStatuses({
+      campaigns,
+      events: fixture.events,
+      chain: fixture.scope,
+      now: () => new Date(),
+    });
+    expect(sync.orphanedLinks).toEqual([draftA]);
+    expect((await campaigns.getById(draftA))?.status).toBe("pending_onchain");
+
+    // The canonical creation names B: A's link is released, B is linked.
+    const autoLinked = await autoLinkCreatedCampaigns({
+      campaigns,
+      ...fixture.chainDeps,
+    });
+    expect(autoLinked.relinked).toEqual([draftA]);
+    expect(await campaigns.getById(draftA)).toMatchObject({
+      onchainCampaignId: null,
+      onchainContractAddress: null,
+      status: "draft",
+    });
+    expect((await campaigns.getById(draftB))?.onchainCampaignId).toBe("1");
   });
 });
 
