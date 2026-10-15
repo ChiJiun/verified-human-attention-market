@@ -1,6 +1,7 @@
 import { keccak256, stringToBytes, type Hex } from "viem";
 
 import { decodeCampaignManagerLog, FUNCTION_SELECTORS } from "../chain/abi.js";
+import { DEFAULT_CONFIRMATIONS } from "../chain/config.js";
 import {
   reconcileCampaignEvents,
   type OnchainCampaignStatus,
@@ -152,9 +153,6 @@ export function matchesDraft(
     onchain.endTime === unixSeconds(draft.endAt)
   );
 }
-
-/** Same default as the indexer worker's INDEXER_CONFIRMATIONS. */
-export const DEFAULT_CONFIRMATIONS = 10;
 
 export interface OnchainDependencies {
   campaigns: CampaignRepository;

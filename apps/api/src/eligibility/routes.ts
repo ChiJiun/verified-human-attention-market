@@ -65,6 +65,14 @@ export async function registerEligibilityRoutes(
         return fail(409, "CAMPAIGN_NOT_OPEN", "Campaign is not open");
       }
 
+      if (await dependencies.chainHalted()) {
+        return fail(
+          503,
+          "CHAIN_HALTED",
+          "Participation is paused while on-chain state is being recovered",
+        );
+      }
+
       if (!config) {
         return fail(
           503,

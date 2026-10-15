@@ -23,6 +23,33 @@ export interface ChainConfig {
   deployBlock: bigint;
 }
 
+/** Default depth after which a block is treated as final. */
+export const DEFAULT_CONFIRMATIONS = 10;
+
+/**
+ * INDEXER_CONFIRMATIONS for both the API (links) and the indexer worker
+ * (events). Must be a positive integer: 0 would link unconfirmed creations.
+ */
+export function parseConfirmations(value: string | undefined): number {
+  if (value === undefined || value === "") {
+    return DEFAULT_CONFIRMATIONS;
+  }
+
+  const parsed = Number(value);
+
+  if (
+    !/^\d+$/.test(value.trim()) ||
+    !Number.isSafeInteger(parsed) ||
+    parsed < 1
+  ) {
+    throw new ChainConfigError([
+      `INDEXER_CONFIRMATIONS must be a positive integer, got "${value}"`,
+    ]);
+  }
+
+  return parsed;
+}
+
 export class ChainConfigError extends Error {
   constructor(readonly problems: string[]) {
     super(`Invalid chain configuration: ${problems.join("; ")}`);

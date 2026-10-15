@@ -194,4 +194,31 @@ export function defineIndexerContract(harness: IndexerHarness) {
       accountingViolation: false,
     });
   });
+
+  it("records a reorg halt, and resetIndex drops events, cursor and halt (ADR-0011)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
+    chain.mine(10);
+    await indexOnce(chain, repository, config);
+    expect(await repository.getHalt(scope)).toBeNull();
+
+    const at = new Date("2026-10-15T00:00:00.000Z");
+    await repository.haltForReorg(scope, 12n, at);
+    expect(await repository.getHalt(scope)).toEqual({ block: 12n, at });
+    // The cursor is kept until recovery.
+    expect(await repository.getCursor(scope)).not.toBeNull();
+
+    await repository.resetIndex(scope);
+    expect(await repository.getHalt(scope)).toBeNull();
+    expect(await repository.getCursor(scope)).toBeNull();
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    // The next pass rebuilds the index from the deploy block.
+    await indexOnce(chain, repository, config);
+    expect(
+      (await repository.listCampaignEvents(scope, "1")).map(
+        (stored) => stored.event.name,
+      ),
+    ).toEqual(["CampaignCreated", "CampaignFunded"]);
+  });
 }

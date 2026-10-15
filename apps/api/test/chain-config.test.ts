@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
+import { buildApp } from "../src/app.js";
 import {
   ChainConfigError,
   loadChainConfig,
+  parseConfirmations,
   verifyChainConnection,
 } from "../src/chain/config.js";
+import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import { FakeChain } from "./support/fake-chain.js";
 
 const valid = {
   EVM_CHAIN_ID: "84532",
@@ -192,4 +196,41 @@ describe("verifyChainConnection", () => {
       ),
     ).rejects.toThrow(/no contract code/);
   });
+});
+
+describe("INDEXER_CONFIRMATIONS (API and worker)", () => {
+  it("defaults to 10 and accepts positive integers", () => {
+    expect(parseConfirmations(undefined)).toBe(10);
+    expect(parseConfirmations("")).toBe(10);
+    expect(parseConfirmations("3")).toBe(3);
+  });
+
+  it.each(["0", "-1", "abc", "1.5", "1e3", " "])(
+    "refuses %j at startup instead of linking unconfirmed creations or failing later",
+    (value) => {
+      expect(() => parseConfirmations(value)).toThrow(ChainConfigError);
+    },
+  );
+
+  it.each([0, -1, 1.5, Number.NaN])(
+    "buildApp refuses chain.confirmations = %s",
+    (confirmations) => {
+      const contract = "0x" + "c0".repeat(20);
+      expect(() =>
+        buildApp({
+          chain: {
+            rpc: new FakeChain(contract),
+            chain: {
+              chainId: 84532,
+              contractAddress: contract,
+              usdcAddress: "0x" + "d0".repeat(20),
+            },
+            events: new InMemoryChainEventRepository(),
+            now: () => new Date(),
+            confirmations,
+          },
+        }),
+      ).toThrow(/confirmations must be a positive integer/);
+    },
+  );
 });

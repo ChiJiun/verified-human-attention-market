@@ -297,6 +297,12 @@ export const reconciliationState = pgTable(
     }).notNull(),
     // Detects reorgs deeper than the confirmation depth.
     latestConfirmedBlockHash: text("latest_confirmed_block_hash"),
+    /**
+     * Set by the indexer worker when a confirmed block stopped being
+     * canonical. Participation stops until `reorg:recover` (ADR-0011).
+     */
+    haltedAt: timestamp("halted_at", { withTimezone: true, mode: "date" }),
+    haltedBlock: bigint("halted_block", { mode: "number" }),
     updatedAt: timestamp("updated_at", {
       withTimezone: true,
       mode: "date",

@@ -134,7 +134,7 @@ The client's report is never trusted. With a hash, the API fetches the receipt, 
 | 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
 | 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `DRAFT_MISMATCH`, `PARAMETERS_MISMATCH` |
 
-A creation is linked only once it is buried under `INDEXER_CONFIRMATIONS` blocks (`202 TX_UNCONFIRMED` before), so a shallow reorg can never leave a permanent link to a creation that is no longer canonical.
+A creation is linked only once it is buried under `INDEXER_CONFIRMATIONS` blocks (`202 TX_UNCONFIRMED` before), so a shallow reorg can never leave a permanent link to a creation that is no longer canonical. A deeper reorg makes the indexer worker record a halt: until `reorg:recover` runs, World ID requests, eligibility, submissions and claim authorizations for the deployment return `503 CHAIN_HALTED` (RUNBOOK). Independently, a submission is accepted only if `campaignIdByDraft` still names the linked id (`409 CAMPAIGN_NOT_ACTIVE` otherwise, `503 CHAIN_UNAVAILABLE` if the RPC fails), so no work is completed for a stale link even when the worker is down.
 
 Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the confirmed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it never stores transaction state, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
 

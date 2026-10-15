@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { Deployment } from "@vham/shared/deployment";
 
-import { isRetiredDeployment } from "../campaigns/types.js";
+import {
+  isRetiredDeployment,
+  type CampaignRecord,
+} from "../campaigns/types.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import { IdempotencyConflictError } from "../persistence/errors.js";
 import {
@@ -33,6 +36,20 @@ export interface SubmissionServiceDependencies {
   campaigns: CampaignRepository;
   /** Configured deployment; campaigns linked elsewhere are retired. */
   deployment: Deployment | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
+  /**
+   * Live check that the campaign's link is still this draft's canonical
+   * creation (`campaignIdByDraft` on the contract), so nobody completes work
+   * for a link a reorg invalidated even if the indexer is not running.
+   * null = no chain configured (nothing can be paid anyway).
+   */
+  canonicalLink:
+    | ((campaign: CampaignRecord) => Promise<"ok" | "mismatch" | "unavailable">)
+    | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
   now: () => Date;
@@ -51,7 +68,9 @@ export type SubmissionFailureCode =
   | "CAMPAIGN_NOT_ACTIVE"
   | "CAMPAIGN_NOT_STARTED"
   | "CAMPAIGN_ENDED"
-  | "MALFORMED_ANSWERS";
+  | "MALFORMED_ANSWERS"
+  | "CHAIN_HALTED"
+  | "CHAIN_UNAVAILABLE";
 
 export type SubmissionOutcome =
   | { ok: true; submission: SubmissionRecord; created: boolean }
@@ -131,6 +150,10 @@ export async function submitCompletion(
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
   }
 
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
+  }
+
   const mission = await dependencies.campaigns.getMission(campaign.id);
 
   if (!mission) {
@@ -170,6 +193,19 @@ export async function submitCompletion(
 
   if (priorAttempts >= maxAttempts) {
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
+  }
+
+  // Last check before any completion is recorded, and only for a verified
+  // participant (no RPC call for unauthenticated requests): the link must
+  // still be this draft's canonical creation (ADR-0011).
+  if (campaign.onchainCampaignId !== null && dependencies.canonicalLink) {
+    const link = await dependencies.canonicalLink(campaign);
+    if (link === "unavailable") {
+      return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
+    }
+    if (link === "mismatch") {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
   }
 
   const evaluation = evaluateSubmission(mission, input.answers, {

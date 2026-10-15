@@ -76,6 +76,8 @@ import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
+import { draftRefFor, readCampaignIdByDraft } from "./campaigns/onchain.js";
+import type { CampaignRecord } from "./campaigns/types.js";
 
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
@@ -117,6 +119,15 @@ export interface AppDependencies {
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
+  // Same rule as INDEXER_CONFIRMATIONS: 0 would link unconfirmed creations.
+  const confirmations = dependencies.chain?.confirmations;
+  if (
+    confirmations !== undefined &&
+    (!Number.isSafeInteger(confirmations) || confirmations < 1)
+  ) {
+    throw new Error("chain.confirmations must be a positive integer");
+  }
+
   const app = Fastify({
     logger:
       process.env.NODE_ENV === "test"
@@ -300,9 +311,37 @@ export function buildApp(dependencies: AppDependencies = {}) {
         }
       : null;
 
+    // A reorg beyond the confirmation depth stops all participation and
+    // signing for the deployment until recovery (ADR-0011).
+    const chainHalted = async () =>
+      dependencies.chain
+        ? (await dependencies.chain.events.getHalt(
+            dependencies.chain.chain,
+          )) !== null
+        : false;
+    const chainForLinks = dependencies.chain;
+    const canonicalLink = chainForLinks
+      ? async (campaign: CampaignRecord) => {
+          try {
+            const canonical = await readCampaignIdByDraft(
+              chainForLinks.rpc,
+              chainForLinks.chain.contractAddress,
+              campaign.advertiserAddress,
+              draftRefFor(campaign.id),
+            );
+            return canonical === campaign.onchainCampaignId
+              ? ("ok" as const)
+              : ("mismatch" as const);
+          } catch {
+            return "unavailable" as const;
+          }
+        }
+      : null;
+
     await registerEligibilityRoutes(instance, {
       campaigns: campaignRepository,
       deployment,
+      chainHalted,
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
@@ -320,6 +359,8 @@ export function buildApp(dependencies: AppDependencies = {}) {
     await registerSubmissionRoutes(instance, {
       campaigns: campaignRepository,
       deployment,
+      chainHalted,
+      canonicalLink,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
@@ -332,6 +373,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       claims: claimRepository,
       signer: dependencies.claimSigner ?? null,
       dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
+      chainHalted,
       chain: dependencies.chain
         ? {
             chainId: dependencies.chain.chain.chainId,

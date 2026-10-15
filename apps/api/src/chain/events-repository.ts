@@ -56,6 +56,23 @@ export interface ChainEventRepository {
   ): Promise<
     { onchainCampaignId: string; advertiser: string; draftRef: string }[]
   >;
+  /**
+   * Records that confirmed block `block` is no longer canonical (a reorg
+   * deeper than the confirmation depth). Until cleared, the API accepts no
+   * participation and signs nothing for this deployment (ADR-0011).
+   */
+  haltForReorg(scope: ChainScope, block: bigint, at: Date): Promise<void>;
+  getHalt(scope: ChainScope): Promise<ChainHalt | null>;
+  /**
+   * Drops every indexed event, the cursor and any halt for `scope`, so the
+   * worker rebuilds the index from the deploy block. Recovery only.
+   */
+  resetIndex(scope: ChainScope): Promise<void>;
+}
+
+export interface ChainHalt {
+  block: bigint;
+  at: Date;
 }
 
 export const identity = (event: { txHash: string; logIndex: number }) =>
@@ -77,6 +94,28 @@ export function byChainOrder(left: StoredEvent, right: StoredEvent): number {
 export class InMemoryChainEventRepository implements ChainEventRepository {
   private readonly events = new Map<string, StoredEvent & ChainScope>();
   private readonly cursors = new Map<string, IndexerCursor>();
+  private readonly halts = new Map<string, ChainHalt>();
+
+  async haltForReorg(scope: ChainScope, block: bigint, at: Date) {
+    this.halts.set(this.key(scope), { block, at });
+  }
+
+  async getHalt(scope: ChainScope): Promise<ChainHalt | null> {
+    return this.halts.get(this.key(scope)) ?? null;
+  }
+
+  async resetIndex(scope: ChainScope): Promise<void> {
+    for (const [key, stored] of this.events) {
+      if (
+        stored.chainId === scope.chainId &&
+        stored.contractAddress === scope.contractAddress
+      ) {
+        this.events.delete(key);
+      }
+    }
+    this.cursors.delete(this.key(scope));
+    this.halts.delete(this.key(scope));
+  }
 
   private key(scope: ChainScope) {
     return `${scope.chainId}:${scope.contractAddress}`;

@@ -29,6 +29,11 @@ export interface ClaimDependencies {
   now: () => Date;
   /** Global 24 h liability limit in token atomic units; null = none. */
   dailyPayoutLimitAtomic?: bigint | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
 }
 
 export type ClaimOutcome =
@@ -74,6 +79,12 @@ export async function authorizeClaim(
   }
 
   const now = dependencies.now();
+
+  // A recorded deep reorg stops all signing, including replays (ADR-0011).
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
+  }
+
   // A campaign linked on an earlier deployment has an id that may exist on
   // the current contract too: never sign for it there (ADR-0011).
   if (

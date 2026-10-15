@@ -12,6 +12,7 @@ import {
   type ConfirmationStatus,
   type IndexedEvent,
   type IndexerCursor,
+  type ChainHalt,
   type StoredEvent,
 } from "./events-repository.js";
 
@@ -40,6 +41,73 @@ export class PostgresChainEventRepository implements ChainEventRepository {
           latestObservedBlock: BigInt(row.latestObservedBlock),
         }
       : null;
+  }
+
+  async haltForReorg(
+    scope: ChainScope,
+    block: bigint,
+    at: Date,
+  ): Promise<void> {
+    await this.db
+      .insert(reconciliationState)
+      .values({
+        chainId: scope.chainId,
+        contractAddress: scope.contractAddress,
+        latestObservedBlock: Number(block),
+        latestConfirmedBlock: Number(block),
+        latestConfirmedBlockHash: null,
+        updatedAt: at,
+        haltedAt: at,
+        haltedBlock: Number(block),
+      })
+      .onConflictDoUpdate({
+        target: [
+          reconciliationState.chainId,
+          reconciliationState.contractAddress,
+        ],
+        set: { haltedAt: at, haltedBlock: Number(block), updatedAt: at },
+      });
+  }
+
+  async getHalt(scope: ChainScope): Promise<ChainHalt | null> {
+    const [row] = await this.db
+      .select({
+        haltedAt: reconciliationState.haltedAt,
+        haltedBlock: reconciliationState.haltedBlock,
+      })
+      .from(reconciliationState)
+      .where(
+        and(
+          eq(reconciliationState.chainId, scope.chainId),
+          eq(reconciliationState.contractAddress, scope.contractAddress),
+        ),
+      )
+      .limit(1);
+
+    return row?.haltedAt && row.haltedBlock !== null
+      ? { block: BigInt(row.haltedBlock), at: row.haltedAt }
+      : null;
+  }
+
+  async resetIndex(scope: ChainScope): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(chainEvents)
+        .where(
+          and(
+            eq(chainEvents.chainId, scope.chainId),
+            eq(chainEvents.contractAddress, scope.contractAddress),
+          ),
+        );
+      await tx
+        .delete(reconciliationState)
+        .where(
+          and(
+            eq(reconciliationState.chainId, scope.chainId),
+            eq(reconciliationState.contractAddress, scope.contractAddress),
+          ),
+        );
+    });
   }
 
   private rows(

@@ -70,6 +70,7 @@ function fixture() {
   let currentCampaign = campaign;
   /** What the contract's campaignIdByDraft says for this campaign's draft. */
   let canonicalId: number = 7;
+  let halted = false;
   let currentSubmission = submission;
   let currentEligibility = eligibility;
   const claims = new InMemoryClaimRepository(
@@ -138,6 +139,7 @@ function fixture() {
     signer,
     chain: { chainId: 84532, contractAddress: CONTRACT, rpc },
     now: () => current,
+    chainHalted: async () => halted,
   };
   const input = {
     campaignId: campaign.id,
@@ -159,6 +161,9 @@ function fixture() {
     },
     setCanonicalId: (value: number) => {
       canonicalId = value;
+    },
+    setHalted: (value: boolean) => {
+      halted = value;
     },
     setSubmission: (value: typeof submission) => {
       currentSubmission = value;
@@ -260,6 +265,20 @@ describe("EIP-712 claim authorization", () => {
     expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
       ok: false,
       code: "CAMPAIGN_NOT_ACTIVE",
+    });
+  });
+
+  it("signs nothing while a reorg beyond the confirmation depth is unrecovered", async () => {
+    const f = fixture();
+    const issued = await authorizeClaim(f.dependencies, f.input);
+    expect(issued.ok).toBe(true);
+
+    // Not even the replay of an authorization issued before the halt.
+    f.setHalted(true);
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      status: 503,
+      code: "CHAIN_HALTED",
     });
   });
 

@@ -9,9 +9,33 @@ import {
 } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
-import { indexOnce } from "../src/chain/indexer.js";
+import {
+  indexOnce,
+  ReorgBeyondConfirmationsError,
+} from "../src/chain/indexer.js";
+import {
+  applyReorgRecovery,
+  planReorgRecovery,
+} from "../src/chain/reorg-recovery.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
+import type {
+  WorldIdResult,
+  WorldIdVerifier,
+} from "../src/identity/world-id.js";
+
+/** Accepts a proof whose action matches; the nullifier is `human`. */
+class FakeWorldId implements WorldIdVerifier {
+  async verify(request: {
+    action: string;
+    idkitResponse: unknown;
+  }): Promise<WorldIdResult> {
+    const proof = request.idkitResponse as { action: string; human: string };
+    return proof.action === request.action
+      ? { ok: true, nullifier: proof.human }
+      : { ok: false, code: "ACTION_MISMATCH" };
+  }
+}
 import { FakeChain, logs } from "./support/fake-chain.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -74,6 +98,8 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
     submissionRepository: submissions,
     chainId: 84532,
     chain: options.chainConfigured === false ? null : chainDeps,
+    worldIdVerifier: new FakeWorldId(),
+    participantKeySecret: "onchain-test-secret-0123456789abcdef",
     now: () => now,
   });
   apps.push(app);
@@ -419,6 +445,183 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     expect((await link(second, txHash)).json()).toMatchObject({
       error: { code: "DRAFT_MISMATCH" },
     });
+  });
+});
+
+describe("reorg beyond the confirmation depth after activation (ADR-0011)", () => {
+  /**
+   * Draft A is created, linked, funded, indexed and active. Then a reorg
+   * deeper than the confirmation depth removes A's creation; optionally
+   * draft B's creation takes the same on-chain id on the new fork.
+   */
+  async function activeThenDeepReorg(replacement: boolean) {
+    const fixture = await setup();
+    const { app, chain, campaigns, createDraft, createOnchain, reconcile } =
+      fixture;
+    const draftA = await createDraft("a");
+    const draftB = await createDraft("b", {
+      contentUrl: "https://example.com/b",
+    });
+
+    const beforeA = chain.head + 1n;
+    expect(
+      (await fixture.link(draftA, createOnchain(1, draftA))).statusCode,
+    ).toBe(200);
+    chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    chain.mine(CONFIRMATIONS + 1);
+    await reconcile();
+    expect((await campaigns.getById(draftA))?.status).toBe("active");
+
+    chain.reorg(beforeA);
+    if (replacement) {
+      createOnchain(1, draftB);
+      chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    }
+    chain.mine(CONFIRMATIONS + 1);
+    fixture.setNow(new Date(Date.parse(draft.startAt) + 60_000));
+
+    // The worker detects it and records the halt (indexer-worker.ts).
+    const detected = await fixture.index().catch((error: unknown) => error);
+    expect(detected).toBeInstanceOf(ReorgBeyondConfirmationsError);
+    await fixture.events.haltForReorg(
+      fixture.scope,
+      (detected as ReorgBeyondConfirmationsError).blockNumber,
+      new Date(),
+    );
+
+    return { ...fixture, app, draftA, draftB };
+  }
+
+  it.each([
+    ["another draft took the id", true],
+    ["no creation replaced it", false],
+  ])(
+    "halts participation at once, then recovers verifiably (%s)",
+    async (_label, replacement) => {
+      const {
+        app,
+        campaigns,
+        chain,
+        draftA,
+        draftB,
+        events,
+        scope,
+        reconcile,
+      } = await activeThenDeepReorg(replacement);
+      const post = (url: string, payload: object, headers = {}) =>
+        app.inject({ method: "POST", url, payload, headers });
+
+      // A is still "active" in the database, but nobody may start or
+      // finish its mission while the halt is recorded.
+      expect((await campaigns.getById(draftA))?.status).toBe("active");
+      for (const response of [
+        await post(`/v1/campaigns/${draftA}/world-id/request`, {}),
+        await post(`/v1/campaigns/${draftA}/eligibility/verify`, {
+          claimant: CLAIMANT,
+          idkitResponse: { action: `vham-campaign-${draftA}` },
+        }),
+        await post(
+          `/v1/campaigns/${draftA}/submissions`,
+          {
+            eligibilityToken: "00000000-0000-4000-8000-000000000000",
+            claimant: CLAIMANT,
+            answers: [{ questionId: "q1", choiceId: "a" }],
+          },
+          { "idempotency-key": "halted" },
+        ),
+      ]) {
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toMatchObject({
+          error: { code: "CHAIN_HALTED" },
+        });
+      }
+
+      // Dry run: the contract no longer has A's creation.
+      const recovery = {
+        campaigns,
+        events,
+        rpc: chain,
+        chain: scope,
+        confirmations: CONFIRMATIONS,
+      };
+      const plan = await planReorgRecovery(recovery);
+      expect(plan.keep).toEqual([]);
+      expect(plan.release).toEqual([
+        {
+          campaignId: draftA,
+          onchainCampaignId: "1",
+          canonicalOnchainCampaignId: null,
+        },
+      ]);
+
+      // Apply: A is released, the halt is gone, the index is rebuilt.
+      expect(
+        await applyReorgRecovery({ ...recovery, now: () => new Date() }, plan),
+      ).toEqual({ released: [draftA] });
+      expect(await events.getHalt(scope)).toBeNull();
+      expect(await campaigns.getById(draftA)).toMatchObject({
+        onchainCampaignId: null,
+        status: "draft",
+      });
+
+      await reconcile();
+      expect((await campaigns.getById(draftA))?.onchainCampaignId).toBeNull();
+      expect(await campaigns.getById(draftB)).toMatchObject(
+        replacement
+          ? { onchainCampaignId: "1", status: "active" }
+          : { onchainCampaignId: null, status: "draft" },
+      );
+    },
+  );
+
+  it("refuses a completion when the link is no longer canonical, even without the indexer", async () => {
+    const fixture = await setup();
+    const { app, chain, campaigns, createDraft, createOnchain, reconcile } =
+      fixture;
+    const id = await createDraft();
+    await fixture.link(id, createOnchain(1, id));
+    chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    chain.mine(CONFIRMATIONS + 1);
+    await reconcile();
+    expect((await campaigns.getById(id))?.status).toBe("active");
+    fixture.setNow(new Date(Date.parse(draft.startAt) + 60_000));
+
+    const verified = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${id}/eligibility/verify`,
+      payload: {
+        claimant: CLAIMANT,
+        idkitResponse: { action: `vham-campaign-${id}`, human: "h1" },
+      },
+    });
+    expect(verified.statusCode).toBe(201);
+    const submit = (key: string) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${id}/submissions`,
+        headers: { "idempotency-key": key },
+        payload: {
+          eligibilityToken: verified.json<{ eligibilityToken: string }>()
+            .eligibilityToken,
+          claimant: CLAIMANT,
+          answers: [{ questionId: "q1", choiceId: "a" }],
+        },
+      });
+
+    // The contract no longer knows this draft's creation; no halt recorded.
+    const mapping = new Map(chain.campaignIdByDraft);
+    chain.campaignIdByDraft.clear();
+    const refused = await submit("stale-link");
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_ACTIVE" },
+    });
+
+    // Control: with the canonical record back, the same participant passes.
+    for (const [key, value] of mapping) chain.campaignIdByDraft.set(key, value);
+    const accepted = await submit("canonical-link");
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json()).toMatchObject({ status: "accepted" });
   });
 });
 

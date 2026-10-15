@@ -5,7 +5,11 @@ import {
   autoLinkCreatedCampaigns,
   syncCampaignStatuses,
 } from "./campaigns/onchain.js";
-import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
+import {
+  loadChainConfig,
+  parseConfirmations,
+  verifyChainConnection,
+} from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
 import { JsonRpcClient } from "./chain/rpc.js";
@@ -32,13 +36,9 @@ if (!databaseUrl || !chainConfig) {
 // Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
 await verifyChainConnection(chainConfig);
 
-const confirmations = Number(process.env.INDEXER_CONFIRMATIONS ?? 10);
+const confirmations = parseConfirmations(process.env.INDEXER_CONFIRMATIONS);
 const pollMs = Number(process.env.INDEXER_POLL_MS ?? 5_000);
 const maxBlockRange = BigInt(process.env.INDEXER_MAX_BLOCK_RANGE ?? 2_000);
-
-if (!Number.isSafeInteger(confirmations) || confirmations < 1) {
-  throw new Error("INDEXER_CONFIRMATIONS must be a positive integer");
-}
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresChainEventRepository(database.db);
@@ -163,6 +163,18 @@ const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
     }),
   );
 
+// A recorded deep reorg must be recovered first (ADR-0011).
+const existingHalt = await repository.getHalt(scope);
+if (existingHalt) {
+  log("error", "indexer halted by a reorg beyond the confirmation depth", {
+    block: existingHalt.block.toString(),
+    since: existingHalt.at.toISOString(),
+    action:
+      "Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+  });
+  process.exit(1);
+}
+
 let backoffMs = pollMs;
 
 while (!stopping) {
@@ -281,8 +293,22 @@ while (!stopping) {
     });
 
     if (error instanceof ReorgBeyondConfirmationsError) {
-      // Do not guess: settlement data may be wrong. Requires an operator.
-      log("error", error.message, { block: error.blockNumber.toString() });
+      // Do not guess: settlement data may be wrong. Record the halt so the
+      // API stops all participation and signing for this deployment, then
+      // stop. Requires an operator (ADR-0011).
+      try {
+        await repository.haltForReorg(scope, error.blockNumber, new Date());
+      } catch (haltError) {
+        log("error", "COULD NOT RECORD THE REORG HALT: the API is NOT paused", {
+          error:
+            haltError instanceof Error ? haltError.message : String(haltError),
+        });
+      }
+      log("error", error.message, {
+        block: error.blockNumber.toString(),
+        action:
+          "Participation is halted. Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+      });
       break;
     }
 
