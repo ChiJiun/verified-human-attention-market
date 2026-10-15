@@ -1,12 +1,6 @@
 "use client";
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
-import {
-  createCampaignOnce,
-  type BroadcastIntent,
-  type CampaignParameters,
-  type IntentStore,
-} from "@vham/shared/recovery";
 import { useCallback, useEffect, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
@@ -58,52 +52,12 @@ type TxStatus =
   | { state: "idle" }
   | { state: "signing"; label: string }
   | { state: "pending"; label: string; hash: Hash }
-  | { state: "reconciling"; label: string; hash: Hash }
-  | { state: "done"; label: string; hash: Hash }
+  | { state: "reconciling"; label: string; hash: Hash | null }
+  | { state: "done"; label: string; hash: Hash | null }
   | { state: "failed"; label: string; message: string };
 
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
-
-/** Survives a page reload so a broadcast transaction is never sent twice. */
-const pendingKey = (campaignId: string) => `vham:create-tx:${campaignId}`;
-function rememberTx(campaignId: string, hash: Hash | null) {
-  try {
-    if (hash) localStorage.setItem(pendingKey(campaignId), hash);
-    else localStorage.removeItem(pendingKey(campaignId));
-  } catch {
-    // Storage may be unavailable (private mode); the flow still works.
-  }
-}
-function recallTx(campaignId: string): Hash | null {
-  try {
-    return localStorage.getItem(pendingKey(campaignId)) as Hash | null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Where the create intent lives (#13). Saved and read back before the create
- * transaction is sent; errors propagate so nothing is sent without it.
- */
-function intentStore(campaignId: string): IntentStore {
-  const key = `vham:create-intent:${campaignId}`;
-  return {
-    load: () => {
-      const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as BroadcastIntent) : null;
-    },
-    save: (intent) => localStorage.setItem(key, JSON.stringify(intent)),
-    clear: () => {
-      try {
-        localStorage.removeItem(key);
-      } catch {
-        // Nothing to clear when storage is unavailable.
-      }
-    },
-  };
-}
 
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -185,139 +139,94 @@ export default function AdvertiserPage() {
       window.history.replaceState(null, "", `?campaign=${data.id}`);
     });
 
-  /** Reports the creation tx; retries while the API is still reconciling. */
-  async function link(id: string, hash: Hash) {
-    for (let attempt = 0; attempt < 24; attempt += 1) {
+  /**
+   * Links the draft to its on-chain campaign: by transaction hash when known,
+   * otherwise by draft reference (ADR-0011). Retries while the API is still
+   * reconciling. `attempts: 1` only checks.
+   */
+  async function link(id: string, hash: Hash | null, attempts = 24) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const { status } = await api(`/v1/campaigns/${id}/onchain`, {
         method: "POST",
-        body: { txHash: hash },
+        body: hash ? { txHash: hash } : {},
         token: session?.token ?? null,
       });
-      if (status === 200) {
-        rememberTx(id, null);
-        return true;
+      if (status === 200) return true;
+      if (attempt + 1 < attempts) {
+        setTx({ state: "reconciling", label: "Linking campaign", hash });
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
       }
-      setTx({ state: "reconciling", label: "Linking campaign", hash });
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
     return false;
   }
 
+  /**
+   * createCampaign carries the draft's reference, and the contract refuses a
+   * second campaign for the same (advertiser, draft). So a retry, a second tab
+   * or a lost RPC response can never create two campaigns, and nothing has to
+   * be remembered in the browser (#13, ADR-0011).
+   */
   const createOnchain = () =>
     run(async () => {
       if (!wallet || !session || !campaignId) return;
       const label = "Create campaign on-chain";
-      const store = intentStore(campaignId);
 
-      // Already linked, for example by the indexer after a lost response.
-      const { data: current } = await api<Analytics>(
-        `/v1/campaigns/${campaignId}/analytics`,
-        { token: session.token },
+      // Already created (another tab, an earlier attempt, a lost response)?
+      if (await link(campaignId, null, 1)) {
+        setTx({ state: "done", label: "Campaign created", hash: null });
+        await refresh();
+        return;
+      }
+
+      const { data: intent } = await api<PublishIntent>(
+        `/v1/campaigns/${campaignId}/publish`,
+        { method: "POST", token: session.token },
       );
-      if (current.onchainCampaignId) {
-        rememberTx(campaignId, null);
-        store.clear();
-        setAnalytics(current);
-        return;
-      }
-
-      // A transaction from an earlier attempt is reconciled, never resent.
-      const previous = recallTx(campaignId);
-      if (previous) {
-        setTx({
-          state: "reconciling",
-          label: "Linking campaign",
-          hash: previous,
-        });
-        if (await link(campaignId, previous)) {
-          store.clear();
-          setTx({ state: "done", label: "Campaign created", hash: previous });
-          await refresh();
-        }
-        return;
-      }
-
-      // With an earlier intent, its parameters are the ones to recover;
-      // otherwise ask the API for the publish intent.
-      const earlier = store.load();
-      let campaignManager: Address;
-      let expected: CampaignParameters;
-      if (earlier) {
-        campaignManager = (await api<{ campaignManager: Address }>("/v1/chain"))
-          .data.campaignManager;
-        expected = earlier.expected;
-      } else {
-        const { data: intent } = await api<PublishIntent>(
-          `/v1/campaigns/${campaignId}/publish`,
-          { method: "POST", token: session.token },
-        );
-        const args = intent.steps[0]!.args;
-        campaignManager = intent.campaignManager;
-        expected = {
-          rewardPerCompletion: String(args.rewardPerCompletion),
-          maxCompletions: Number(args.maxCompletions),
-          startTime: String(args.startTime),
-          endTime: String(args.endTime),
-        };
-      }
+      const args = intent.steps[0]!.args;
 
       setTx({ state: "signing", label });
-      const outcome = await createCampaignOnce({
-        client: wallet.publicClient,
-        store,
-        from: wallet.address,
-        campaignManager,
-        expected,
-        send: () =>
-          wallet.walletClient.writeContract({
-            account: wallet.address,
-            chain,
-            address: campaignManager,
-            abi: campaignManagerAbi,
-            functionName: "createCampaign",
-            args: [
-              BigInt(expected.rewardPerCompletion),
-              expected.maxCompletions,
-              BigInt(expected.startTime),
-              BigInt(expected.endTime),
-            ],
-          }),
-      });
-
-      if (outcome.kind === "unresolved") {
-        setTx({
-          state: "failed",
-          label,
-          message:
-            outcome.reason === "pending"
-              ? "A transaction from this wallet is still pending and may be this campaign. Wait until your wallet shows it confirmed; it will not be sent twice."
-              : "An earlier attempt is not confirmed on-chain yet, so nothing was sent again. If it was broadcast, the campaign links automatically once it confirms. If your wallet shows no transaction for this campaign, create a new draft instead.",
+      let hash: Hash;
+      try {
+        hash = await wallet.walletClient.writeContract({
+          account: wallet.address,
+          chain,
+          address: intent.campaignManager,
+          abi: campaignManagerAbi,
+          functionName: "createCampaign",
+          args: [
+            BigInt(args.rewardPerCompletion!),
+            Number(args.maxCompletions),
+            BigInt(args.startTime!),
+            BigInt(args.endTime!),
+            args.draftRef as Hash,
+          ],
         });
-        return;
-      }
-
-      const hash = outcome.txHash;
-      rememberTx(campaignId, hash);
-
-      if (outcome.kind === "sent") {
-        setTx({ state: "pending", label, hash });
-        const mined = await waitForTx(wallet.publicClient, hash);
-        if (mined.kind === "reverted") {
-          // Reverted: no campaign exists, so a new attempt is safe.
-          rememberTx(campaignId, null);
-          store.clear();
-          setTx({
-            state: "failed",
-            label,
-            message: "The transaction reverted.",
-          });
+      } catch (caught) {
+        // The transaction may have been broadcast before the error. Look for
+        // it by draft reference; pressing Create again is safe either way.
+        if (await link(campaignId, null)) {
+          setTx({ state: "done", label: "Campaign created", hash: null });
+          await refresh();
           return;
         }
+        throw caught;
+      }
+
+      setTx({ state: "pending", label, hash });
+      const mined = await waitForTx(wallet.publicClient, hash);
+      if (mined.kind === "reverted") {
+        // Usually DraftAlreadyCreated: another attempt created it first.
+        if (await link(campaignId, null, 1)) {
+          setTx({ state: "done", label: "Campaign created", hash });
+          await refresh();
+          return;
+        }
+        setTx({ state: "failed", label, message: "The transaction reverted." });
+        return;
       }
 
       setTx({ state: "reconciling", label: "Linking campaign", hash });
       if (await link(campaignId, hash)) {
-        store.clear();
         setTx({ state: "done", label: "Campaign created", hash });
         await refresh();
       }
@@ -536,7 +445,7 @@ export default function AdvertiserPage() {
             "— still confirming. Do not send it again; this page keeps checking."}
           {tx.state === "done" && "— done."}
           {tx.state === "failed" && `— ${tx.message}`}
-          {"hash" in tx && (
+          {"hash" in tx && tx.hash && (
             <p>
               <code>{tx.hash}</code>
             </p>

@@ -101,6 +101,27 @@ export const campaignManagerAbi = [
   },
   {
     "type": "function",
+    "name": "campaignIdByDraft",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address"
+      },
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "campaigns",
     "inputs": [
       {
@@ -275,6 +296,10 @@ export const campaignManagerAbi = [
       {
         "name": "endTime",
         "type": "uint64"
+      },
+      {
+        "name": "draftRef",
+        "type": "bytes32"
       }
     ],
     "outputs": [
@@ -532,6 +557,11 @@ export const campaignManagerAbi = [
         "name": "advertiser",
         "type": "address",
         "indexed": true
+      },
+      {
+        "name": "draftRef",
+        "type": "bytes32",
+        "indexed": true
       }
     ],
     "anonymous": false
@@ -695,6 +725,16 @@ export const campaignManagerAbi = [
   },
   {
     "type": "error",
+    "name": "DraftAlreadyCreated",
+    "inputs": [
+      {
+        "name": "campaignId",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InsufficientCampaignBudget",
     "inputs": []
   },
@@ -721,6 +761,11 @@ export const campaignManagerAbi = [
   {
     "type": "error",
     "name": "InvalidCompletionLimit",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidDraftRef",
     "inputs": []
   },
   {

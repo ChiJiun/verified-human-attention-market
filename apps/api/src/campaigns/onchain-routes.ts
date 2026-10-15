@@ -5,6 +5,7 @@ import { reconcileCampaignEvents } from "../chain/campaign-state.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import {
+  linkCampaignByDraft,
   linkCampaignByTransaction,
   publishIntent,
   type OnchainDependencies,
@@ -16,9 +17,16 @@ import type { CampaignRepository } from "./repository.js";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const linkBodySchema = z.object({
-  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
-});
+// txHash is optional: without it the draft is linked by its draft reference
+// (ADR-0011), e.g. after a lost RPC response.
+const linkBodySchema = z
+  .object({
+    txHash: z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{64}$/)
+      .optional(),
+  })
+  .optional();
 
 export interface OnchainRouteDependencies {
   authenticate: Authenticate;
@@ -136,14 +144,23 @@ export async function registerOnchainRoutes(
         });
       }
 
-      const outcome = await linkCampaignByTransaction(
-        { ...dependencies.chain, campaigns: dependencies.campaigns },
-        { campaignId: request.params.id, txHash: parsed.data.txHash },
-      );
+      const onchain = {
+        ...dependencies.chain,
+        campaigns: dependencies.campaigns,
+      };
+      const txHash = parsed.data?.txHash;
+      const outcome = txHash
+        ? await linkCampaignByTransaction(onchain, {
+            campaignId: request.params.id,
+            txHash,
+          })
+        : await linkCampaignByDraft(onchain, { campaignId: request.params.id });
 
       if (!outcome.ok) {
         const pending =
-          outcome.code === "TX_PENDING" || outcome.code === "RPC_UNAVAILABLE";
+          outcome.code === "TX_PENDING" ||
+          outcome.code === "NOT_CREATED_YET" ||
+          outcome.code === "RPC_UNAVAILABLE";
         return reply.status(outcome.status).send(
           pending
             ? {

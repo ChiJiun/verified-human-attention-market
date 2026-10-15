@@ -21,6 +21,8 @@ import {
   custom,
   defineChain,
   http,
+  keccak256,
+  stringToBytes,
   type Hash,
   toHex,
   type Abi,
@@ -30,13 +32,6 @@ import {
 import { mnemonicToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-
-import {
-  createCampaignOnce,
-  type BroadcastIntent,
-  type CampaignParameters,
-  type IntentStore,
-} from "@vham/shared/recovery";
 
 import { buildApp } from "../src/app.js";
 import { PostgresAuthRepository } from "../src/auth/repository.js";
@@ -370,33 +365,22 @@ describeE2e("POC economic loop on a local chain", () => {
     }>();
     const create = intent.steps[0]!.args;
 
-    // RPC timeout after broadcast (#13), through the same createCampaignOnce
-    // the web app uses. The node accepts createCampaign but the response is
-    // lost, so the client never receives the hash. Meanwhile the same wallet
-    // creates a different campaign that takes the recorded nonce. Recovery
-    // must never resend, must not pick the other campaign, and must link
-    // exactly one creation.
-    const expected: CampaignParameters = {
-      rewardPerCompletion: String(create.rewardPerCompletion),
-      maxCompletions: Number(create.maxCompletions),
-      startTime: String(create.startTime),
-      endTime: String(create.endTime),
-    };
-    let saved: BroadcastIntent | null = null;
-    const store: IntentStore = {
-      load: () => saved,
-      save: (intent) => {
-        saved = intent;
-      },
-      clear: () => {
-        saved = null;
-      },
-    };
-
+    // RPC timeout after broadcast (#13), made safe by the draft reference
+    // (ADR-0011). The node accepts createCampaign but the response is lost,
+    // so the client never learns the hash. A second tab then sends the same
+    // draft again, and the same wallet creates an identical campaign for a
+    // different draft. Exactly one campaign may be linked to this draft.
+    const draftRef = create.draftRef as Hash;
+    const createArgs = (ref: Hash) =>
+      [
+        BigInt(create.rewardPerCompletion!),
+        Number(create.maxCompletions),
+        BigInt(create.startTime!),
+        BigInt(create.endTime!),
+        ref,
+      ] as const;
     const node = http(RPC_URL)({ chain: anvil });
-    let hashSeenOnlyByNode: Hash | null = null;
-    let decoyHash: Hash | null = null;
-    let broadcasts = 0;
+    let lostHash: Hash | null = null;
     const lossyWallet = createWalletClient({
       account: advertiser,
       chain: anvil,
@@ -404,137 +388,120 @@ describeE2e("POC economic loop on a local chain", () => {
         async request({ method, params }) {
           const result = await node.request({ method, params });
           if (method === "eth_sendRawTransaction") {
-            hashSeenOnlyByNode = result as Hash;
+            lostHash = result as Hash;
             throw new Error("simulated timeout: response lost after broadcast");
           }
           return result;
         },
       }),
     });
-    const createArgs = (parameters: CampaignParameters) =>
-      [
-        BigInt(parameters.rewardPerCompletion),
-        parameters.maxCompletions,
-        BigInt(parameters.startTime),
-        BigInt(parameters.endTime),
-      ] as const;
-    const attempt = () =>
-      createCampaignOnce({
-        client: publicClient,
-        store,
-        from: advertiser.address,
-        campaignManager: managerAddress,
-        expected,
-        send: async () => {
-          broadcasts += 1;
-          if (broadcasts === 1) {
-            // After the intent is recorded, another campaign from the same
-            // wallet is queued first and takes the recorded nonce, so the
-            // lost create goes out with the next one.
-            decoyHash = await wallet(advertiser).writeContract({
-              address: managerAddress,
-              abi: manager.abi,
-              functionName: "createCampaign",
-              args: createArgs({ ...expected, maxCompletions: 5 }),
-            });
-          }
-          return lossyWallet.writeContract({
-            address: managerAddress,
-            abi: manager.abi,
-            functionName: "createCampaign",
-            args: createArgs(expected),
-          });
-        },
-      });
-
-    await testClient.setAutomine(false);
-    const recordedNonce = await publicClient.getTransactionCount({
-      address: advertiser.address,
-      blockTag: "pending",
-    });
-    await expect(attempt()).rejects.toThrow(/response lost after broadcast/);
-    // The intent survives the failure and names the nonce the decoy took.
-    expect(store.load()).toMatchObject({ nonce: recordedNonce, expected });
-    expect(broadcasts).toBe(1);
-    expect(hashSeenOnlyByNode).not.toBeNull();
-
-    // Retrying while both transactions are in the mempool sends nothing.
-    await expect(attempt()).resolves.toEqual({
-      kind: "unresolved",
-      reason: "pending",
-    });
-    expect(broadcasts).toBe(1);
-
-    // If the hash reached the client by another path, reporting it before it
-    // is mined is "reconciling", never a failure.
-    const beforeMined = await app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${campaignId}/onchain`,
-      headers: auth,
-      payload: { txHash: hashSeenOnlyByNode },
-    });
-    expect(beforeMined.statusCode).toBe(202);
-    expect(beforeMined.json()).toMatchObject({ status: "reconciling" });
-
-    await testClient.mine({ blocks: 1 });
-    await testClient.setAutomine(true);
-    expect(
-      (await publicClient.waitForTransactionReceipt({ hash: decoyHash! }))
-        .status,
-    ).toBe("success");
-
-    // Once mined, recovery skips the decoy and finds the lost creation.
-    const recovered = await attempt();
-    if (recovered.kind !== "recovered") {
-      throw new Error(`expected the lost broadcast, got ${recovered.kind}`);
-    }
-    expect(recovered.txHash).toBe(hashSeenOnlyByNode);
-    expect(recovered.txHash).not.toBe(decoyHash);
-    expect(broadcasts).toBe(1);
-    const createHash = recovered.txHash;
-    const reportOnchain = () =>
+    const linkByDraft = () =>
       app.inject({
         method: "POST",
         url: `/v1/campaigns/${campaignId}/onchain`,
         headers: auth,
-        payload: { txHash: createHash },
+        payload: {},
+      });
+    const linkByHash = (txHash: Hash) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/onchain`,
+        headers: auth,
+        payload: { txHash },
       });
 
-    const linked = await reportOnchain();
+    await testClient.setAutomine(false);
+    await expect(
+      lossyWallet.writeContract({
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "createCampaign",
+        args: createArgs(draftRef),
+      }),
+    ).rejects.toThrow(/response lost after broadcast/);
+    expect(lostHash).not.toBeNull();
+
+    // Still in the mempool: linking by draft is "reconciling", not failed.
+    const beforeMined = await linkByDraft();
+    expect(beforeMined.statusCode).toBe(202);
+    expect(beforeMined.json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+
+    // A second tab sends the same draft again. A wallet that simulates first
+    // already refuses (the lost transaction is pending); one that estimated
+    // gas before the first broadcast still sends it, and the contract must
+    // refuse it on-chain.
+    await expect(
+      publicClient.simulateContract({
+        account: advertiser,
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "createCampaign",
+        args: createArgs(draftRef),
+        blockTag: "pending",
+      }),
+    ).rejects.toThrow(/DraftAlreadyCreated/);
+    const retryHash = await wallet(advertiser).writeContract({
+      address: managerAddress,
+      abi: manager.abi,
+      functionName: "createCampaign",
+      args: createArgs(draftRef),
+      gas: 500_000n,
+    });
+    // The same wallet also creates an identical campaign for another draft.
+    const decoyHash = await wallet(advertiser).writeContract({
+      address: managerAddress,
+      abi: manager.abi,
+      functionName: "createCampaign",
+      args: createArgs(keccak256(stringToBytes("vham-draft:someone-else"))),
+    });
+
+    await testClient.mine({ blocks: 1 });
+    await testClient.setAutomine(true);
+    const receipt = (hash: Hash) =>
+      publicClient.waitForTransactionReceipt({ hash });
+    expect((await receipt(lostHash!)).status).toBe("success");
+    // The contract refuses a second campaign for the same draft.
+    expect((await receipt(retryHash)).status).toBe("reverted");
+    expect((await receipt(decoyHash)).status).toBe("success");
+
+    // Linking needs no hash: the contract knows this draft's campaign.
+    const linked = await linkByDraft();
     expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({ status: "pending_onchain" });
     const onchainId = BigInt(
       linked.json<{ onchainCampaignId: string }>().onchainCampaignId,
     );
-    expect(onchainId).toBe(recovered.onchainCampaignId);
-    store.clear();
+    expect(
+      await publicClient.readContract({
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "campaignIdByDraft",
+        args: [advertiser.address, draftRef],
+      }),
+    ).toBe(onchainId);
 
-    // Retrying the same report is idempotent. The chain holds the decoy and
-    // exactly one campaign with this draft's parameters: the lost response
-    // caused no duplicate economic action.
-    const retried = await reportOnchain();
-    expect(retried.statusCode).toBe(200);
-    expect(retried.json()).toMatchObject({
-      onchainCampaignId: onchainId.toString(),
+    // Idempotent, and the other transactions can never be linked here.
+    expect((await linkByDraft()).statusCode).toBe(200);
+    expect((await linkByHash(lostHash!)).statusCode).toBe(200);
+    expect((await linkByHash(decoyHash)).json()).toMatchObject({
+      error: { code: "DRAFT_MISMATCH" },
     });
+    expect((await linkByHash(retryHash)).json()).toMatchObject({
+      error: { code: "TX_REVERTED" },
+    });
+
+    // Exactly one creation carries this draft's reference.
     const creations = await publicClient.getContractEvents({
       address: managerAddress,
       abi: manager.abi,
       eventName: "CampaignCreated",
+      args: { draftRef },
       fromBlock: 0n,
     });
-    expect(creations).toHaveLength(2);
-    const matching = [];
-    for (const creation of creations) {
-      const onchain = (await publicClient.readContract({
-        address: managerAddress,
-        abi: manager.abi,
-        functionName: "campaigns",
-        args: [(creation.args as { campaignId: bigint }).campaignId],
-      })) as readonly unknown[];
-      if (onchain[4] === expected.maxCompletions) matching.push(creation);
-    }
-    expect(matching).toHaveLength(1);
+    expect(creations).toHaveLength(1);
 
     // A hash the node has never seen (dropped or not yet propagated) is also
     // "reconciling", never a failure that would make the advertiser create

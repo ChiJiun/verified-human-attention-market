@@ -4,6 +4,7 @@ import { buildApp } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
 import {
   autoLinkCreatedCampaigns,
+  draftRefFor,
   syncCampaignStatuses,
 } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
@@ -85,8 +86,13 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
   }
 
   /** Simulates the advertiser's createCampaign transaction. */
+  /**
+   * Simulates the advertiser's createCampaign transaction for `draft` (its
+   * draft reference is in the event and the contract mapping, ADR-0011).
+   */
   function createOnchain(
     onchainId: number,
+    draft: string,
     params: Partial<{
       advertiser: string;
       rewardPerCompletion: bigint;
@@ -104,8 +110,15 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
       endTime: END,
       ...params,
     };
+    const ref = draftRefFor(draft);
     chain.campaignStructs.set(String(onchainId), struct);
-    chain.mine(1, [logs.created(onchainId, struct.advertiser)], address);
+    if (address === CONTRACT) {
+      chain.campaignIdByDraft.set(
+        `${struct.advertiser.toLowerCase()}:${ref}`,
+        onchainId,
+      );
+    }
+    chain.mine(1, [logs.created(onchainId, struct.advertiser, ref)], address);
     return chain.lastTxHash;
   }
 
@@ -240,7 +253,7 @@ describe("POST /v1/campaigns/:id/onchain", () => {
   it("links a verified creation transaction idempotently", async () => {
     const { createDraft, createOnchain, link } = await setup();
     const id = await createDraft();
-    const txHash = createOnchain(1);
+    const txHash = createOnchain(1, id);
 
     const first = await link(id, txHash);
     const retry = await link(id, txHash);
@@ -253,9 +266,61 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     });
     expect(retry.statusCode).toBe(200);
 
-    const other = createOnchain(2);
+    const other = createOnchain(2, id);
     expect((await link(id, other)).json()).toMatchObject({
       error: { code: "ALREADY_LINKED" },
+    });
+  });
+
+  it("links by draft reference when no transaction hash is known", async () => {
+    const { createDraft, createOnchain, app } = await setup();
+    const id = await createDraft();
+    const linkByDraft = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${id}/onchain`,
+        payload: {},
+      });
+
+    // Not created yet (or still in the mempool): reconciling, never failed.
+    const before = await linkByDraft();
+    expect(before.statusCode).toBe(202);
+    expect(before.json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+
+    const txHash = createOnchain(4, id);
+    const linked = await linkByDraft();
+    expect(linked.statusCode).toBe(200);
+    expect(linked.json()).toMatchObject({
+      onchainCampaignId: "4",
+      publishTxHash: null,
+      status: "pending_onchain",
+    });
+
+    // Reporting the hash afterwards is the same creation, not a conflict.
+    expect((await linkByDraft()).statusCode).toBe(200);
+    const byHash = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${id}/onchain`,
+      payload: { txHash },
+    });
+    expect(byHash.statusCode).toBe(200);
+  });
+
+  it("rejects a creation that carries another draft's reference", async () => {
+    const { createDraft, createOnchain, link } = await setup();
+    const id = await createDraft("a");
+    // Same wallet, same parameters, but created for a different draft.
+    const otherDraft = await createDraft("b", {
+      contentUrl: "https://example.com/b",
+    });
+    const response = await link(id, createOnchain(5, otherDraft));
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: { code: "DRAFT_MISMATCH" },
     });
   });
 
@@ -293,7 +358,7 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     const { createDraft, createOnchain, link } = await setup();
     const id = await createDraft();
 
-    const response = await link(id, createOnchain(1, params));
+    const response = await link(id, createOnchain(1, id, params));
 
     expect(response.statusCode).toBe(422);
     expect(response.json()).toMatchObject({ error: { code } });
@@ -303,12 +368,12 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     const { chain, createDraft, createOnchain, link } = await setup();
     const id = await createDraft();
 
-    const foreign = createOnchain(1, {}, "0x" + "f".repeat(40));
+    const foreign = createOnchain(1, id, {}, "0x" + "f".repeat(40));
     expect((await link(id, foreign)).json()).toMatchObject({
       error: { code: "NO_CAMPAIGN_CREATED_EVENT" },
     });
 
-    const reverted = createOnchain(2);
+    const reverted = createOnchain(2, id);
     chain.revertedTxs.add(reverted);
     expect((await link(id, reverted)).json()).toMatchObject({
       error: { code: "TX_REVERTED" },
@@ -321,11 +386,12 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     const second = await createDraft("b", {
       contentUrl: "https://example.com/b",
     });
-    const txHash = createOnchain(1);
+    const txHash = createOnchain(1, first);
 
     expect((await link(first, txHash)).statusCode).toBe(200);
+    // The event names the first draft, so the second can never claim it.
     expect((await link(second, txHash)).json()).toMatchObject({
-      error: { code: "ONCHAIN_CAMPAIGN_ALREADY_LINKED" },
+      error: { code: "DRAFT_MISMATCH" },
     });
   });
 });
@@ -335,7 +401,7 @@ describe("on-chain reconciliation", () => {
     const { chain, campaigns, createDraft, createOnchain, link, reconcile } =
       await setup();
     const id = await createDraft();
-    await link(id, createOnchain(1));
+    await link(id, createOnchain(1, id));
 
     chain.mine(1, [logs.funded(1, 10n * USDC)]);
     await reconcile();
@@ -354,7 +420,7 @@ describe("on-chain reconciliation", () => {
     const { chain, campaigns, createDraft, createOnchain, reconcile } =
       await setup();
     const id = await createDraft();
-    createOnchain(7);
+    createOnchain(7, id);
     chain.mine(1, [logs.funded(7, 10n * USDC)]);
     chain.mine(3);
 
@@ -366,20 +432,39 @@ describe("on-chain reconciliation", () => {
     });
   });
 
-  it("does not guess between identical drafts", async () => {
+  it("links the draft named by the event even between identical drafts", async () => {
     const { chain, campaigns, createDraft, createOnchain, reconcile } =
       await setup();
     const first = await createDraft("a");
     const second = await createDraft("b", {
       contentUrl: "https://example.com/b",
     });
-    createOnchain(3);
+    createOnchain(3, second);
     chain.mine(3);
 
     await reconcile();
 
     expect((await campaigns.getById(first))?.onchainCampaignId).toBeNull();
-    expect((await campaigns.getById(second))?.onchainCampaignId).toBeNull();
+    expect((await campaigns.getById(second))?.onchainCampaignId).toBe("3");
+  });
+
+  it("ignores creations that name no known draft", async () => {
+    const { chain, campaigns, createDraft, reconcile } = await setup();
+    const id = await createDraft();
+    // Same advertiser and parameters, but created outside this platform.
+    chain.campaignStructs.set("6", {
+      advertiser: ADVERTISER,
+      rewardPerCompletion: USDC,
+      maxCompletions: 10,
+      startTime: START,
+      endTime: END,
+    });
+    chain.mine(1, [logs.created(6, ADVERTISER)]);
+    chain.mine(3);
+
+    await reconcile();
+
+    expect((await campaigns.getById(id))?.onchainCampaignId).toBeNull();
   });
 });
 
@@ -400,7 +485,7 @@ describe("GET /v1/campaigns/:id/analytics", () => {
     const { chain, createDraft, createOnchain, link, reconcile, analytics } =
       await setup();
     const id = await createDraft();
-    await link(id, createOnchain(1));
+    await link(id, createOnchain(1, id));
     chain.mine(1, [logs.funded(1, 10n * USDC)]);
     chain.mine(1, [logs.claimed(1, CLAIMANT, USDC, 1)]);
     chain.mine(3);
@@ -428,7 +513,7 @@ describe("GET /v1/campaigns/:id/analytics", () => {
     const { chain, createDraft, createOnchain, link, reconcile, analytics } =
       await setup();
     const id = await createDraft("full", { maxCompletions: 2 });
-    await link(id, createOnchain(1, { maxCompletions: 2 }));
+    await link(id, createOnchain(1, id, { maxCompletions: 2 }));
     chain.mine(1, [logs.funded(1, 2n * USDC)]);
     chain.mine(1, [logs.claimed(1, CLAIMANT, USDC, 1)]);
     chain.mine(1, [logs.claimed(1, "0x" + "a".repeat(40), USDC, 2)]);

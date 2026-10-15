@@ -270,9 +270,6 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
-      viem:
-        specifier: 2.38.6
-        version: 2.38.6(typescript@5.9.3)(zod@4.6.5)
       vitest:
         specifier: 5.0.3
         version: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4)(esbuild@0.28.2)(tsx@4.23.15))

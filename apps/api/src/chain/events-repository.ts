@@ -53,7 +53,9 @@ export interface ChainEventRepository {
   /** Confirmed CampaignCreated events, oldest first. */
   listConfirmedCreations(
     scope: ChainScope,
-  ): Promise<{ onchainCampaignId: string; advertiser: string }[]>;
+  ): Promise<
+    { onchainCampaignId: string; advertiser: string; draftRef: string }[]
+  >;
 }
 
 export const identity = (event: { txHash: string; logIndex: number }) =>
@@ -181,7 +183,9 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
 
   async listConfirmedCreations(
     scope: ChainScope,
-  ): Promise<{ onchainCampaignId: string; advertiser: string }[]> {
+  ): Promise<
+    { onchainCampaignId: string; advertiser: string; draftRef: string }[]
+  > {
     return this.inScope(scope)
       .filter((stored) => stored.status === "confirmed")
       .sort(byChainOrder)
@@ -191,6 +195,7 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
               {
                 onchainCampaignId: stored.event.campaignId,
                 advertiser: stored.event.advertiser,
+                draftRef: stored.event.draftRef,
               },
             ]
           : [],

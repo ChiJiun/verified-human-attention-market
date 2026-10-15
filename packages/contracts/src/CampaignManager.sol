@@ -70,8 +70,10 @@ contract CampaignManager {
     error RewardAboveLimit();
     error CompletionsAboveLimit();
     error BudgetAboveLimit();
+    error InvalidDraftRef();
+    error DraftAlreadyCreated(uint256 campaignId);
 
-    event CampaignCreated(uint256 indexed campaignId, address indexed advertiser);
+    event CampaignCreated(uint256 indexed campaignId, address indexed advertiser, bytes32 indexed draftRef);
     event CampaignFunded(uint256 indexed campaignId, uint256 amount);
     event RewardClaimed(uint256 indexed campaignId, address indexed claimant, uint256 amount, bytes32 nonce);
     event CampaignClosed(uint256 indexed campaignId);
@@ -112,6 +114,11 @@ contract CampaignManager {
     mapping(uint256 => Campaign) public campaigns;
     mapping(bytes32 => bool) public consumedNonces;
     mapping(uint256 => mapping(address => bool)) public claimedWallet;
+    /// @notice advertiser => off-chain draft reference => campaign id (ADR-0011).
+    /// Makes campaign creation idempotent per draft: a retried or concurrent
+    /// createCampaign for the same draft reverts instead of creating a second
+    /// campaign. Keyed by advertiser so nobody can occupy another's reference.
+    mapping(address => mapping(bytes32 => uint256)) public campaignIdByDraft;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -148,11 +155,16 @@ contract CampaignManager {
         emit SignerUpdated(address(0), authorizedSigner_);
     }
 
-    function createCampaign(uint96 rewardPerCompletion, uint32 maxCompletions, uint64 startTime, uint64 endTime)
-        external
-        whenNotPaused
-        returns (uint256 campaignId)
-    {
+    function createCampaign(
+        uint96 rewardPerCompletion,
+        uint32 maxCompletions,
+        uint64 startTime,
+        uint64 endTime,
+        bytes32 draftRef
+    ) external whenNotPaused returns (uint256 campaignId) {
+        if (draftRef == bytes32(0)) revert InvalidDraftRef();
+        uint256 existing = campaignIdByDraft[msg.sender][draftRef];
+        if (existing != 0) revert DraftAlreadyCreated(existing);
         if (rewardPerCompletion == 0) revert InvalidReward();
         if (maxCompletions == 0) revert InvalidCompletionLimit();
         if (rewardPerCompletion > maxRewardPerCompletion) revert RewardAboveLimit();
@@ -170,6 +182,7 @@ contract CampaignManager {
         }
 
         campaignId = ++campaignCount;
+        campaignIdByDraft[msg.sender][draftRef] = campaignId;
 
         campaigns[campaignId] = Campaign({
             advertiser: msg.sender,
@@ -184,7 +197,7 @@ contract CampaignManager {
             status: CampaignStatus.Draft
         });
 
-        emit CampaignCreated(campaignId, msg.sender);
+        emit CampaignCreated(campaignId, msg.sender, draftRef);
     }
 
     function fundCampaign(uint256 campaignId, uint256 amount) external whenNotPaused {

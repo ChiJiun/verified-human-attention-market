@@ -66,6 +66,7 @@ Official references:
 | ADR-0005 POC Economics | ✅ Accepted |
 | ADR-0006 On-chain Exposure Limits | ✅ Accepted |
 | ADR-0007 World ID Integration | ✅ Accepted |
+| ADR-0011 Idempotent Campaign Creation | ✅ Accepted; needs a Base Sepolia redeploy |
 | ADR-0008 Signer Custody and Payout Limits | ✅ Accepted |
 | ADR-0009 Quality Signals and Reputation Scope | ✅ Accepted |
 | API Spec v0 | ✅ Drafted |
@@ -95,7 +96,7 @@ Official references:
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
-| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); create survives a lost RPC response without a second `createCampaign` (#13). Close/refund buttons not built yet |
+| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). Close/refund buttons not built yet |
 | End-to-end POC | ✅ Local anvil E2E in CI, including an RPC timeout after broadcast that reconciles without a duplicate campaign; full flow on Base Sepolia on 2026-10-14 (#13, `docs/DEMO.md`) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
 | Testnet deployment | ✅ Base Sepolia deployment (#19) and full flow with a real World ID proof on 2026-10-14: create, fund, verify, answer, claim, close, refund (#13; see docs/DEMO.md) |

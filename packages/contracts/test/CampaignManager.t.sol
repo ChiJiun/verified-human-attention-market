@@ -9,6 +9,8 @@ interface Vm {
     function prank(address sender) external;
     function warp(uint256 newTimestamp) external;
     function expectRevert(bytes4 revertData) external;
+    function expectRevert(bytes calldata revertData) external;
+    function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData, address emitter) external;
 }
 
 contract MockUSDC {
@@ -359,7 +361,7 @@ contract CampaignManagerTest {
         uint64 localEnd = localStart + 30 minutes;
 
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(reward, completions, localStart, localEnd);
+        uint256 campaignId = manager.createCampaign(reward, completions, localStart, localEnd, _nextRef());
 
         vm.prank(advertiser);
         token.approve(address(manager), requiredBudget);
@@ -375,7 +377,7 @@ contract CampaignManagerTest {
 
     function test_ExposureLimitBoundariesAccepted() public {
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, _nextRef());
 
         (,,, uint96 reward, uint32 completions,,,,,) = manager.campaigns(campaignId);
         require(reward == ONE_USDC && completions == MAX_COMPLETIONS, "boundary stored");
@@ -384,40 +386,40 @@ contract CampaignManagerTest {
     function test_RewardAboveLimitRejected() public {
         vm.expectRevert(CampaignManager.RewardAboveLimit.selector);
         vm.prank(advertiser);
-        manager.createCampaign(uint96(ONE_USDC + 1), 1, startTime, endTime);
+        manager.createCampaign(uint96(ONE_USDC + 1), 1, startTime, endTime, _nextRef());
     }
 
     function test_CompletionsAboveLimitRejected() public {
         vm.expectRevert(CampaignManager.CompletionsAboveLimit.selector);
         vm.prank(advertiser);
-        manager.createCampaign(1, MAX_COMPLETIONS + 1, startTime, endTime);
+        manager.createCampaign(1, MAX_COMPLETIONS + 1, startTime, endTime, _nextRef());
     }
 
     function test_VeryLargeDirectCallsRejected() public {
         vm.expectRevert(CampaignManager.RewardAboveLimit.selector);
         vm.prank(advertiser);
-        manager.createCampaign(type(uint96).max, type(uint32).max, startTime, endTime);
+        manager.createCampaign(type(uint96).max, type(uint32).max, startTime, endTime, _nextRef());
 
         vm.expectRevert(CampaignManager.CompletionsAboveLimit.selector);
         vm.prank(advertiser);
-        manager.createCampaign(1, type(uint32).max, startTime, endTime);
+        manager.createCampaign(1, type(uint32).max, startTime, endTime, _nextRef());
     }
 
     function test_BudgetAboveLimitRejected() public {
         CampaignManager tight =
             new CampaignManager(address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(5 * ONE_USDC));
 
-        tight.createCampaign(uint96(ONE_USDC), 5, startTime, endTime);
+        tight.createCampaign(uint96(ONE_USDC), 5, startTime, endTime, _nextRef());
 
         vm.expectRevert(CampaignManager.BudgetAboveLimit.selector);
-        tight.createCampaign(uint96(ONE_USDC), 6, startTime, endTime);
+        tight.createCampaign(uint96(ONE_USDC), 6, startTime, endTime, _nextRef());
     }
 
     function testFuzz_CreateNeverExceedsExposureLimits(uint96 reward, uint32 completions) public {
         if (reward == 0 || completions == 0) return;
 
         vm.prank(advertiser);
-        try manager.createCampaign(reward, completions, startTime, endTime) returns (uint256 campaignId) {
+        try manager.createCampaign(reward, completions, startTime, endTime, _nextRef()) returns (uint256 campaignId) {
             (,,, uint96 storedReward, uint32 storedCompletions,,,,,) = manager.campaigns(campaignId);
             require(storedReward <= manager.maxRewardPerCompletion(), "reward limit");
             require(storedCompletions <= manager.maxCompletionsPerCampaign(), "completion limit");
@@ -438,7 +440,7 @@ contract CampaignManagerTest {
 
     function test_FundingAfterEndRejected() public {
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, _nextRef());
 
         vm.prank(advertiser);
         token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
@@ -452,7 +454,7 @@ contract CampaignManagerTest {
 
     function test_CancelUnfundedDraft() public {
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, _nextRef());
 
         vm.expectRevert(CampaignManager.Unauthorized.selector);
         vm.prank(address(0xDEAD));
@@ -479,9 +481,59 @@ contract CampaignManagerTest {
         manager.cancelCampaign(campaignId);
     }
 
+    uint256 private draftRefCounter;
+
+    /// @dev A fresh, non-zero draft reference for each created campaign.
+    function _nextRef() private returns (bytes32) {
+        return bytes32(++draftRefCounter);
+    }
+
+    function test_DuplicateDraftRefReverts() public {
+        bytes32 ref = keccak256("draft-1");
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        require(manager.campaignIdByDraft(advertiser, ref) == campaignId, "draft recorded");
+
+        // A retried or concurrent create for the same draft never makes a second campaign.
+        vm.expectRevert(abi.encodeWithSelector(CampaignManager.DraftAlreadyCreated.selector, campaignId));
+        vm.prank(advertiser);
+        manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        require(manager.campaignCount() == campaignId, "no second campaign");
+    }
+
+    function test_DraftRefIsScopedToTheAdvertiser() public {
+        bytes32 ref = keccak256("draft-shared");
+        vm.prank(address(0xBEEF));
+        uint256 other = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        // Someone else using the same reference first cannot block this advertiser.
+        vm.prank(advertiser);
+        uint256 own = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        require(own != other, "separate campaigns");
+        require(manager.campaignIdByDraft(advertiser, ref) == own, "own mapping");
+        require(manager.campaignIdByDraft(address(0xBEEF), ref) == other, "other mapping");
+    }
+
+    function test_ZeroDraftRefRejected() public {
+        vm.expectRevert(CampaignManager.InvalidDraftRef.selector);
+        vm.prank(advertiser);
+        manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, bytes32(0));
+    }
+
+    function test_CampaignCreatedCarriesDraftRef() public {
+        bytes32 ref = keccak256("draft-event");
+        vm.expectEmit(true, true, true, true, address(manager));
+        emit CampaignManager.CampaignCreated(1, advertiser, ref);
+        vm.prank(advertiser);
+        manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+    }
+
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), maxCompletions, startTime, endTime);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), maxCompletions, startTime, endTime, _nextRef());
 
         uint256 budget = ONE_USDC * maxCompletions;
 

@@ -119,24 +119,24 @@ Unknown or malformed campaign ids return `404`.
 
 ## POST /v1/campaigns/:id/publish
 
-Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime)` on `CampaignManager`, `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
+Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime, draftRef)` on `CampaignManager` (`draftRef = keccak256("vham-draft:" + draftId)`, ADR-0011), `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
 
 ## POST /v1/campaigns/:id/onchain
 
-Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16).
+Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16), or `{}` to link by draft reference when no hash is known (ADR-0011).
 
-The client's report is never trusted. The API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
+The client's report is never trusted. With a hash, the API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser **and the draft's `draftRef`**, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
 
 | Status | Meaning |
 | --- | --- |
-| 200 | linked (idempotent for the same `txHash`) |
-| 202 `TX_PENDING`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
+| 200 | linked (idempotent for the same creation, by hash or by draft) |
+| 202 `TX_PENDING`, 202 `NOT_CREATED_YET`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
 | 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
-| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `PARAMETERS_MISMATCH` |
+| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `DRAFT_MISMATCH`, `PARAMETERS_MISMATCH` |
 
-If the broadcast succeeded but the RPC response was lost, the client has no hash. The web app sends `createCampaign` through `createCampaignOnce` (`@vham/shared/recovery`): it saves an intent (sender, next nonce, block, expected parameters) and reads it back before sending, and sends nothing if storage fails. While an intent exists it never sends again; it only links a confirmed `CampaignCreated` from that sender, at or after that nonce, whose on-chain parameters equal the draft's. Any other state is "unresolved" (one RPC view cannot prove a transaction was not broadcast): the page waits and the indexer auto-link below covers the rest. The intent is cleared only after linking, a revert, or a wallet rejection (EIP-1193 4001). The e2e job drops the `eth_sendRawTransaction` response while the same wallet queues another campaign that takes the recorded nonce.
+Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)`: `0` means not created yet (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it never stores transaction state, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
 
-If the hash is never reported (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the advertiser's **single** unlinked draft with identical economics. Ambiguous matches are logged for manual resolution.
+If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution.
 
 Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.
 

@@ -16,11 +16,17 @@ export const addressWord = (address: string) =>
 type LogSpec = { topics: string[]; data: string };
 
 export const logs = {
-  created: (campaignId: number, advertiser: string): LogSpec => ({
+  /** `draftRef` defaults to a non-zero placeholder (ADR-0011). */
+  created: (
+    campaignId: number,
+    advertiser: string,
+    draftRef: string = word(0xd0000 + campaignId),
+  ): LogSpec => ({
     topics: [
       EVENT_TOPICS.CampaignCreated,
       word(campaignId),
       addressWord(advertiser),
+      draftRef,
     ],
     data: "0x",
   }),
@@ -70,6 +76,8 @@ export class FakeChain implements ChainRpc {
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
+  /** On-chain `campaignIdByDraft(advertiser, draftRef)` storage. */
+  readonly campaignIdByDraft = new Map<string, number>();
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
     string,
@@ -234,6 +242,15 @@ export class FakeChain implements ChainRpc {
   async call(to: string, data: string): Promise<string> {
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
+    }
+
+    if (
+      to === this.contract &&
+      data.startsWith(FUNCTION_SELECTORS.campaignIdByDraft)
+    ) {
+      const advertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
+      const draftRef = `0x${data.slice(10 + 64, 10 + 128)}`;
+      return word(this.campaignIdByDraft.get(`${advertiser}:${draftRef}`) ?? 0);
     }
 
     if (

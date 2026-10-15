@@ -1,3 +1,5 @@
+import { keccak256, stringToBytes, type Hex } from "viem";
+
 import { decodeCampaignManagerLog, FUNCTION_SELECTORS } from "../chain/abi.js";
 import {
   reconcileCampaignEvents,
@@ -29,6 +31,37 @@ export interface OnchainCampaign {
 }
 
 const word = (value: bigint) => value.toString(16).padStart(64, "0");
+
+/**
+ * The draft's reference passed to `createCampaign` (ADR-0011). The contract
+ * records one campaign per (advertiser, draftRef) and rejects a second, so a
+ * retried, concurrent or lost-response create can never make two campaigns,
+ * and a creation can never be attributed to a different draft.
+ */
+export function draftRefFor(campaignId: string): Hex {
+  return keccak256(stringToBytes(`vham-draft:${campaignId}`));
+}
+
+/** Reads `campaignIdByDraft(advertiser, draftRef)`; null when none exists. */
+export async function readCampaignIdByDraft(
+  rpc: Pick<ChainRpc, "call">,
+  contractAddress: string,
+  advertiser: string,
+  draftRef: string,
+): Promise<string | null> {
+  const result = await rpc.call(
+    contractAddress,
+    `${FUNCTION_SELECTORS.campaignIdByDraft}${advertiser.slice(2).toLowerCase().padStart(64, "0")}${draftRef.slice(2).toLowerCase()}`,
+  );
+  const body = result.startsWith("0x") ? result.slice(2) : result;
+
+  if (body.length !== 64 || !/^[0-9a-f]+$/.test(body)) {
+    throw new RpcError("campaignIdByDraft returned malformed data");
+  }
+
+  const id = BigInt(`0x${body}`);
+  return id === 0n ? null : id.toString();
+}
 
 /** Reads `campaigns(id)` via eth_call (10 static words). */
 export async function readOnchainCampaign(
@@ -137,6 +170,7 @@ export function publishIntent(
           maxCompletions: campaign.maxCompletions,
           startTime: unixSeconds(campaign.startAt),
           endTime: unixSeconds(campaign.endAt),
+          draftRef: draftRefFor(campaign.id),
         },
       },
       {
@@ -150,7 +184,8 @@ export function publishIntent(
         args: { campaignId: "<from CampaignCreated>", amount: budget },
       },
     ],
-    // Report the createCampaign tx hash here; success is verified on-chain.
+    // Report the createCampaign tx hash here, or POST without one to link by
+    // draft reference; success is always verified on-chain.
     linkEndpoint: `/v1/campaigns/${campaign.id}/onchain`,
   };
 }
@@ -163,6 +198,8 @@ export type LinkFailureCode =
   | "TX_REVERTED"
   | "NO_CAMPAIGN_CREATED_EVENT"
   | "ADVERTISER_MISMATCH"
+  | "DRAFT_MISMATCH"
+  | "NOT_CREATED_YET"
   | "PARAMETERS_MISMATCH"
   | "ALREADY_LINKED"
   | "ONCHAIN_CAMPAIGN_ALREADY_LINKED";
@@ -196,10 +233,11 @@ export async function linkCampaignByTransaction(
 
   const txHash = input.txHash.toLowerCase();
 
-  if (campaign.onchainCampaignId !== null) {
-    return campaign.publishTxHash === txHash
-      ? { ok: true, campaign }
-      : { ok: false, status: 409, code: "ALREADY_LINKED" };
+  if (
+    campaign.onchainCampaignId !== null &&
+    campaign.publishTxHash === txHash
+  ) {
+    return { ok: true, campaign };
   }
 
   try {
@@ -226,6 +264,18 @@ export async function linkCampaignByTransaction(
       return { ok: false, status: 422, code: "ADVERTISER_MISMATCH" };
     }
 
+    if (created.draftRef !== draftRefFor(campaign.id)) {
+      return { ok: false, status: 422, code: "DRAFT_MISMATCH" };
+    }
+
+    // Already linked another way (by draft reference or the indexer): the
+    // same creation is idempotent, anything else is a conflict.
+    if (campaign.onchainCampaignId !== null) {
+      return campaign.onchainCampaignId === created.campaignId
+        ? { ok: true, campaign }
+        : { ok: false, status: 409, code: "ALREADY_LINKED" };
+    }
+
     const onchain = await readOnchainCampaign(
       dependencies.rpc,
       dependencies.chain.contractAddress,
@@ -239,6 +289,73 @@ export async function linkCampaignByTransaction(
     const linked = await dependencies.campaigns.linkOnchain(campaign.id, {
       onchainCampaignId: created.campaignId,
       publishTxHash: txHash,
+      status: "pending_onchain",
+      updatedAt: dependencies.now(),
+    });
+
+    return { ok: true, campaign: linked };
+  } catch (error) {
+    if (error instanceof RpcError) {
+      return { ok: false, status: 503, code: "RPC_UNAVAILABLE" };
+    }
+
+    if (error instanceof CampaignLinkConflictError) {
+      return { ok: false, status: 409, code: error.code };
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * Links a draft without a transaction hash: the contract's
+ * `campaignIdByDraft(advertiser, draftRef)` says whether this draft's
+ * campaign exists. Used after a lost RPC response or by another tab.
+ * "Not created yet" is reported as pending, never as a failure.
+ */
+export async function linkCampaignByDraft(
+  dependencies: OnchainDependencies,
+  input: { campaignId: string },
+): Promise<LinkOutcome> {
+  const campaign = await dependencies.campaigns.getById(input.campaignId);
+
+  if (!campaign) {
+    return { ok: false, status: 404, code: "CAMPAIGN_NOT_FOUND" };
+  }
+
+  if (campaign.chainId !== dependencies.chain.chainId) {
+    return { ok: false, status: 409, code: "WRONG_CHAIN" };
+  }
+
+  if (campaign.onchainCampaignId !== null) {
+    return { ok: true, campaign };
+  }
+
+  try {
+    const onchainCampaignId = await readCampaignIdByDraft(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+    );
+
+    if (!onchainCampaignId) {
+      return { ok: false, status: 202, code: "NOT_CREATED_YET" };
+    }
+
+    const onchain = await readOnchainCampaign(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      onchainCampaignId,
+    );
+
+    if (!onchain || !matchesDraft(campaign, onchain)) {
+      return { ok: false, status: 422, code: "PARAMETERS_MISMATCH" };
+    }
+
+    const linked = await dependencies.campaigns.linkOnchain(campaign.id, {
+      onchainCampaignId,
+      publishTxHash: null,
       status: "pending_onchain",
       updatedAt: dependencies.now(),
     });
@@ -319,8 +436,9 @@ export async function syncCampaignStatuses(dependencies: {
 /**
  * Recovery for lost transaction hashes (e.g. the browser closed after
  * broadcast): links a confirmed CampaignCreated event to the advertiser's
- * single unlinked draft with identical economics. Ambiguous matches are left
- * for manual resolution rather than guessed.
+ * unlinked draft whose draft reference it carries (ADR-0011), after checking
+ * the economics. Events without a matching draft are ignored; `ambiguous`
+ * stays for events whose economics contradict their draft.
  */
 export async function autoLinkCreatedCampaigns(
   dependencies: OnchainDependencies & { events: ChainEventRepository },
@@ -350,24 +468,28 @@ export async function autoLinkCreatedCampaigns(
       continue;
     }
 
+    const draft = drafts.find(
+      (candidate) => draftRefFor(candidate.id) === created.draftRef,
+    );
+
+    if (!draft) {
+      continue;
+    }
+
     const onchain = await readOnchainCampaign(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       created.onchainCampaignId,
     );
-    const matches = onchain
-      ? drafts.filter((draft) => matchesDraft(draft, onchain))
-      : [];
 
-    if (matches.length !== 1) {
-      if (matches.length > 1) {
-        ambiguous.push(created.onchainCampaignId);
-      }
+    if (!onchain || !matchesDraft(draft, onchain)) {
+      // The event names this draft but the economics differ: never guess.
+      ambiguous.push(created.onchainCampaignId);
       continue;
     }
 
     try {
-      await dependencies.campaigns.linkOnchain(matches[0]!.id, {
+      await dependencies.campaigns.linkOnchain(draft.id, {
         onchainCampaignId: created.onchainCampaignId,
         publishTxHash: null,
         status: "pending_onchain",

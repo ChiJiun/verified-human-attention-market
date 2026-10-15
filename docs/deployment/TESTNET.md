@@ -2,6 +2,8 @@
 
 > Issue #19. External facts checked on **2026-10-12**, re-checked **2026-10-13** (chain ID 84532, public RPC, and the Circle USDC address were unchanged). Re-check them immediately before every deployment (AGENTS.md §19).
 
+> **Redeploy required (ADR-0011, 2026-10-15).** `createCampaign` now takes a `draftRef`, so the contract deployed on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, run recorded in `docs/DEMO.md`) is incompatible with the current API and web app. Deploy again with the steps below; the new record replaces `deployments/84532.json`, and the old one is kept in `deployments/archive/`.
+
 | Fact | Value | Source |
 | --- | --- | --- |
 | Chain | Base Sepolia, chain ID `84532` | https://docs.base.org/base-chain/quickstart/connecting-to-base |

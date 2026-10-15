@@ -213,7 +213,9 @@ export class PostgresChainEventRepository implements ChainEventRepository {
 
   async listConfirmedCreations(
     scope: ChainScope,
-  ): Promise<{ onchainCampaignId: string; advertiser: string }[]> {
+  ): Promise<
+    { onchainCampaignId: string; advertiser: string; draftRef: string }[]
+  > {
     const rows = await this.db
       .select({ payload: chainEvents.payload })
       .from(chainEvents)
@@ -234,6 +236,7 @@ export class PostgresChainEventRepository implements ChainEventRepository {
             {
               onchainCampaignId: event.campaignId,
               advertiser: event.advertiser,
+              draftRef: event.draftRef,
             },
           ]
         : [];

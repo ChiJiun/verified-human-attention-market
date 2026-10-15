@@ -64,6 +64,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   ALREADY_LINKED: { retryable: false },
   ONCHAIN_CAMPAIGN_ALREADY_LINKED: { retryable: false },
   ADVERTISER_MISMATCH: { retryable: false },
+  DRAFT_MISMATCH: { retryable: false },
   PARAMETERS_MISMATCH: { retryable: false },
   TX_REVERTED: { retryable: false },
   ALREADY_COMPLETED: { retryable: false },
@@ -95,6 +96,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   CAMPAIGN_CAP_REACHED: { retryable: true },
   NO_CAMPAIGN_CREATED_EVENT: { retryable: true },
   TX_PENDING: { retryable: true },
+  NOT_CREATED_YET: { retryable: true },
   DAILY_LIMIT_REACHED: { retryable: true },
   RATE_LIMITED: { retryable: true },
 
