@@ -2,7 +2,19 @@
 
 > Issue #19. External facts checked on **2026-10-12**, re-checked **2026-10-13** (chain ID 84532, public RPC, and the Circle USDC address were unchanged). Re-check them immediately before every deployment (AGENTS.md §19).
 
-> **Redeploy required (ADR-0011, 2026-10-15).** `createCampaign` now takes a `draftRef`, so the contract deployed on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, run recorded in `docs/DEMO.md`) is incompatible with the current API and web app. Deploy again with the steps below; the new record replaces `deployments/84532.json`, and the old one is kept in `deployments/archive/`.
+> **Redeploy required (ADR-0011, 2026-10-15).** `createCampaign` now takes a `draftRef`, so the contract deployed on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, run recorded in `docs/DEMO.md`) is incompatible with the current API and web app. Its record is archived in `deployments/archive/`. The API refuses to start against it: it has code, but `campaignIdByDraft` reverts.
+
+## Moving to a new CampaignManager
+
+On-chain campaign ids restart at 1 on every deployment, so the database links campaigns by `(chain, contract, id)` (migration 0011). The same database can be kept:
+
+1. Stop the API and the indexer worker.
+2. Run `pnpm --filter @vham/api db:migrate`. Campaigns linked before this migration are marked `pre-adr-0011`: they keep their history but are never synced, signed for, or shown with events from another contract.
+3. Deploy (below). The script writes a new `deployments/84532.json`; commit it.
+4. Set `CAMPAIGN_MANAGER_ADDRESS` and `CAMPAIGN_MANAGER_DEPLOY_BLOCK` from the new record. Indexed events and the indexer cursor are scoped by contract address, so indexing starts fresh from the new deploy block.
+5. Start the API and indexer; startup verifies the new contract.
+
+Campaigns on the old contract cannot move: create new drafts.
 
 | Fact | Value | Source |
 | --- | --- | --- |

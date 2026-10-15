@@ -89,6 +89,13 @@ function rpcStub(results: Record<string, unknown>) {
     };
     const key =
       method === "eth_getCode" ? `${method}:${String(params[0])}` : method;
+    if (!(key in results)) {
+      // Like a reverting eth_call on a contract without the function.
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: 3 } }),
+        { status: 200 },
+      );
+    }
     return new Response(
       JSON.stringify({ jsonrpc: "2.0", id: 1, result: results[key] }),
       {
@@ -109,9 +116,24 @@ describe("verifyChainConnection", () => {
           eth_chainId: "0x14a34",
           [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
           [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+          eth_call: `0x${"0".repeat(64)}`,
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it("refuses a CampaignManager deployed before ADR-0011", async () => {
+    // Code exists, but campaignIdByDraft reverts.
+    await expect(
+      verifyChainConnection(
+        config,
+        rpcStub({
+          eth_chainId: "0x14a34",
+          [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
+          [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+        }),
+      ),
+    ).rejects.toThrow(/before ADR-0011/);
   });
 
   it("fails when the RPC is a different chain", async () => {

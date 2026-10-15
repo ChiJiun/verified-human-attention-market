@@ -78,6 +78,13 @@
       "when": 1791920000000,
       "tag": "0010_quality_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792037056010,
+      "tag": "0011_campaign_contract_address",
+      "breakpoints": true
     }
   ]
 }

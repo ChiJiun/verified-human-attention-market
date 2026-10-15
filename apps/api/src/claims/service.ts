@@ -72,9 +72,12 @@ export async function authorizeClaim(
   }
 
   const now = dependencies.now();
+  // A campaign linked on an earlier deployment has an id that may exist on
+  // the current contract too: never sign for it there (ADR-0011).
   if (
     campaign.onchainCampaignId === null ||
-    campaign.chainId !== chain.chainId
+    campaign.chainId !== chain.chainId ||
+    campaign.onchainContractAddress !== chain.contractAddress.toLowerCase()
   ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
   }

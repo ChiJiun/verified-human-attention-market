@@ -19,6 +19,8 @@ export interface CampaignRecord {
   id: string;
   chainId: number;
   onchainCampaignId: string | null;
+  /** Lowercase CampaignManager address of the on-chain id (ADR-0011). */
+  onchainContractAddress: string | null;
   /** Transaction that created the on-chain campaign, once linked. */
   publishTxHash: string | null;
   advertiserAddress: string;

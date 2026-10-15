@@ -26,6 +26,11 @@ export const campaigns = pgTable(
       precision: 78,
       scale: 0,
     }),
+    /**
+     * CampaignManager the on-chain id belongs to. Ids restart at 1 on every
+     * deployment, so a link is (chain, contract, id), never (chain, id).
+     */
+    onchainContractAddress: text("onchain_contract_address"),
     publishTxHash: text("publish_tx_hash"),
     advertiserAddress: text("advertiser_address").notNull(),
     creationIdempotencyKey: text("creation_idempotency_key").notNull(),
@@ -62,9 +67,14 @@ export const campaigns = pgTable(
       table.creationIdempotencyKey,
     ),
     // One database campaign per canonical on-chain campaign.
-    uniqueIndex("campaigns_chain_onchain_id_uq").on(
+    uniqueIndex("campaigns_chain_contract_onchain_id_uq").on(
       table.chainId,
+      table.onchainContractAddress,
       table.onchainCampaignId,
+    ),
+    check(
+      "campaigns_onchain_link_check",
+      sql`(${table.onchainCampaignId} IS NULL) = (${table.onchainContractAddress} IS NULL)`,
     ),
     check(
       "campaigns_status_check",

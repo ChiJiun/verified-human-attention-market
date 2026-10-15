@@ -35,6 +35,7 @@ const campaign = {
   id: "campaign",
   chainId: 84532,
   onchainCampaignId: "7",
+  onchainContractAddress: CONTRACT,
   status: "active",
   rewardAtomic: "1000000",
   maxCompletions: 1,
@@ -234,6 +235,21 @@ describe("EIP-712 claim authorization", () => {
     });
     // Expired and the campaign is closed: no fresh liability is created.
     f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_NOT_ACTIVE",
+    });
+  });
+
+  it("never signs for a campaign linked on another deployment (ADR-0011)", async () => {
+    const f = fixture();
+    // Same on-chain id 7, but on the CampaignManager used before a redeploy:
+    // the current contract's campaign 7 is someone else's.
+    f.setCampaign({
+      ...campaign,
+      onchainContractAddress: `0x${"99".repeat(20)}`,
+    });
+
     expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
       ok: false,
       code: "CAMPAIGN_NOT_ACTIVE",

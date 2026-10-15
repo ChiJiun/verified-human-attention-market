@@ -250,9 +250,11 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 
 用真的 World ID（production、Orb 驗證過的 World App）、Base Sepolia 上的 `CampaignManager` 和 Circle 測試 USDC 跑完一次完整流程，全部成功。
 
+> 這次用的是 ADR-0011 之前的 v1 合約，部署紀錄已移到 `packages/contracts/deployments/archive/`。新版合約（`createCampaign` 帶 `draftRef`）需要重新部署並重跑一次，見 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md)。
+
 | 項目 | 值 |
 | --- | --- |
-| `CampaignManager` | `0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`（紀錄：`packages/contracts/deployments/84532.json`） |
+| `CampaignManager` | `0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`（v1，紀錄已封存：`packages/contracts/deployments/archive/84532-2026-10-14-pre-adr-0011.json`） |
 | Campaign | on-chain ID `1`；1 USDC × 最多 3 筆；入金 3 USDC |
 | World ID | `production`，action `vham-campaign-<campaignId>`，`proofOfHuman()` |
 

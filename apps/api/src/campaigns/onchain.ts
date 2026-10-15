@@ -271,7 +271,8 @@ export async function linkCampaignByTransaction(
     // Already linked another way (by draft reference or the indexer): the
     // same creation is idempotent, anything else is a conflict.
     if (campaign.onchainCampaignId !== null) {
-      return campaign.onchainCampaignId === created.campaignId
+      return campaign.onchainCampaignId === created.campaignId &&
+        campaign.onchainContractAddress === dependencies.chain.contractAddress
         ? { ok: true, campaign }
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
@@ -288,6 +289,7 @@ export async function linkCampaignByTransaction(
 
     const linked = await dependencies.campaigns.linkOnchain(campaign.id, {
       onchainCampaignId: created.campaignId,
+      contractAddress: dependencies.chain.contractAddress,
       publishTxHash: txHash,
       status: "pending_onchain",
       updatedAt: dependencies.now(),
@@ -328,7 +330,11 @@ export async function linkCampaignByDraft(
   }
 
   if (campaign.onchainCampaignId !== null) {
-    return { ok: true, campaign };
+    // Linked on another deployment (before a redeploy): never reuse it.
+    return campaign.onchainContractAddress ===
+      dependencies.chain.contractAddress
+      ? { ok: true, campaign }
+      : { ok: false, status: 409, code: "ALREADY_LINKED" };
   }
 
   try {
@@ -355,6 +361,7 @@ export async function linkCampaignByDraft(
 
     const linked = await dependencies.campaigns.linkOnchain(campaign.id, {
       onchainCampaignId,
+      contractAddress: dependencies.chain.contractAddress,
       publishTxHash: null,
       status: "pending_onchain",
       updatedAt: dependencies.now(),
@@ -403,6 +410,7 @@ export async function syncCampaignStatuses(dependencies: {
 
   for (const campaign of await dependencies.campaigns.listLinked(
     dependencies.chain.chainId,
+    dependencies.chain.contractAddress,
   )) {
     const events = await dependencies.events.listCampaignEvents(
       dependencies.chain,
@@ -453,6 +461,7 @@ export async function autoLinkCreatedCampaigns(
     if (
       await dependencies.campaigns.findByOnchainId(
         dependencies.chain.chainId,
+        dependencies.chain.contractAddress,
         created.onchainCampaignId,
       )
     ) {
@@ -491,6 +500,7 @@ export async function autoLinkCreatedCampaigns(
     try {
       await dependencies.campaigns.linkOnchain(draft.id, {
         onchainCampaignId: created.onchainCampaignId,
+        contractAddress: dependencies.chain.contractAddress,
         publishTxHash: null,
         status: "pending_onchain",
         updatedAt: dependencies.now(),

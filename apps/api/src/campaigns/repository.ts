@@ -35,6 +35,8 @@ export class CampaignLinkConflictError extends Error {
 
 export interface OnchainLink {
   onchainCampaignId: string;
+  /** Lowercase CampaignManager address; ids restart on every deployment. */
+  contractAddress: string;
   publishTxHash: string | null;
   status: CampaignStatus;
   updatedAt: Date;
@@ -57,9 +59,14 @@ export interface CampaignRepository {
     status: CampaignStatus,
     updatedAt: Date,
   ): Promise<void>;
-  listLinked(chainId: number): Promise<CampaignRecord[]>;
+  /** Campaigns linked to this contract; other deployments are excluded. */
+  listLinked(
+    chainId: number,
+    contractAddress: string,
+  ): Promise<CampaignRecord[]>;
   findByOnchainId(
     chainId: number,
+    contractAddress: string,
     onchainCampaignId: string,
   ): Promise<CampaignRecord | null>;
   listUnlinkedDrafts(
@@ -105,6 +112,7 @@ function mapCampaign(row: typeof campaigns.$inferSelect): CampaignRecord {
     id: row.id,
     chainId: row.chainId,
     onchainCampaignId: row.onchainCampaignId,
+    onchainContractAddress: row.onchainContractAddress,
     publishTxHash: row.publishTxHash,
     advertiserAddress: row.advertiserAddress,
     creationIdempotencyKey: row.creationIdempotencyKey,
@@ -134,6 +142,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
         .values({
           ...campaignValues,
           onchainCampaignId: null,
+          onchainContractAddress: null,
           publishTxHash: null,
         })
         .onConflictDoNothing({
@@ -226,6 +235,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
         .update(campaigns)
         .set({
           onchainCampaignId: link.onchainCampaignId,
+          onchainContractAddress: link.contractAddress,
           publishTxHash: link.publishTxHash,
           status: link.status,
           updatedAt: link.updatedAt,
@@ -234,7 +244,8 @@ export class PostgresCampaignRepository implements CampaignRepository {
         .returning();
     } catch (error) {
       if (
-        uniqueViolationConstraint(error) === "campaigns_chain_onchain_id_uq"
+        uniqueViolationConstraint(error) ===
+        "campaigns_chain_contract_onchain_id_uq"
       ) {
         throw new CampaignLinkConflictError("ONCHAIN_CAMPAIGN_ALREADY_LINKED");
       }
@@ -251,7 +262,10 @@ export class PostgresCampaignRepository implements CampaignRepository {
       throw new Error("Campaign not found");
     }
 
-    if (existing.onchainCampaignId !== link.onchainCampaignId) {
+    if (
+      existing.onchainCampaignId !== link.onchainCampaignId ||
+      existing.onchainContractAddress !== link.contractAddress
+    ) {
       throw new CampaignLinkConflictError("ALREADY_LINKED");
     }
 
@@ -269,13 +283,17 @@ export class PostgresCampaignRepository implements CampaignRepository {
       .where(eq(campaigns.id, id));
   }
 
-  async listLinked(chainId: number): Promise<CampaignRecord[]> {
+  async listLinked(
+    chainId: number,
+    contractAddress: string,
+  ): Promise<CampaignRecord[]> {
     const rows = await this.db
       .select()
       .from(campaigns)
       .where(
         and(
           eq(campaigns.chainId, chainId),
+          eq(campaigns.onchainContractAddress, contractAddress.toLowerCase()),
           isNotNull(campaigns.onchainCampaignId),
         ),
       );
@@ -285,6 +303,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
 
   async findByOnchainId(
     chainId: number,
+    contractAddress: string,
     onchainCampaignId: string,
   ): Promise<CampaignRecord | null> {
     const [row] = await this.db
@@ -293,6 +312,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
       .where(
         and(
           eq(campaigns.chainId, chainId),
+          eq(campaigns.onchainContractAddress, contractAddress.toLowerCase()),
           eq(campaigns.onchainCampaignId, onchainCampaignId),
         ),
       )
@@ -356,6 +376,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     const record: CampaignRecord = {
       ...campaignValues,
       onchainCampaignId: null,
+      onchainContractAddress: null,
       publishTxHash: null,
     };
 
@@ -388,7 +409,10 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     }
 
     if (existing.onchainCampaignId !== null) {
-      if (existing.onchainCampaignId !== link.onchainCampaignId) {
+      if (
+        existing.onchainCampaignId !== link.onchainCampaignId ||
+        existing.onchainContractAddress !== link.contractAddress
+      ) {
         throw new CampaignLinkConflictError("ALREADY_LINKED");
       }
       return existing;
@@ -397,6 +421,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     for (const record of this.records.values()) {
       if (
         record.chainId === existing.chainId &&
+        record.onchainContractAddress === link.contractAddress &&
         record.onchainCampaignId === link.onchainCampaignId
       ) {
         throw new CampaignLinkConflictError("ONCHAIN_CAMPAIGN_ALREADY_LINKED");
@@ -406,6 +431,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     const updated: CampaignRecord = {
       ...existing,
       onchainCampaignId: link.onchainCampaignId,
+      onchainContractAddress: link.contractAddress,
       publishTxHash: link.publishTxHash,
       status: link.status,
       updatedAt: link.updatedAt,
@@ -427,21 +453,28 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     }
   }
 
-  async listLinked(chainId: number): Promise<CampaignRecord[]> {
+  async listLinked(
+    chainId: number,
+    contractAddress: string,
+  ): Promise<CampaignRecord[]> {
     return [...this.records.values()].filter(
       (record) =>
-        record.chainId === chainId && record.onchainCampaignId !== null,
+        record.chainId === chainId &&
+        record.onchainContractAddress === contractAddress.toLowerCase() &&
+        record.onchainCampaignId !== null,
     );
   }
 
   async findByOnchainId(
     chainId: number,
+    contractAddress: string,
     onchainCampaignId: string,
   ): Promise<CampaignRecord | null> {
     return (
       [...this.records.values()].find(
         (record) =>
           record.chainId === chainId &&
+          record.onchainContractAddress === contractAddress.toLowerCase() &&
           record.onchainCampaignId === onchainCampaignId,
       ) ?? null
     );

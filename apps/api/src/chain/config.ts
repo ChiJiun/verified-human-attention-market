@@ -1,3 +1,5 @@
+import { FUNCTION_SELECTORS } from "./abi.js";
+
 /**
  * Contract/chain configuration validated at API startup (issue #19).
  * Wrong-chain or missing-address configuration fails fast instead of
@@ -166,5 +168,22 @@ export async function verifyChainConnection(
         `${key} has no contract code on chain ${config.chainId}`,
       ]);
     }
+  }
+
+  // ADR-0011: the API and web app need `campaignIdByDraft`. A contract from
+  // before it has code but reverts here, and must be redeployed rather than
+  // used with the new createCampaign ABI.
+  const probe = await rpc(fetchImpl, config.rpcUrl, "eth_call", [
+    {
+      to: config.campaignManagerAddress,
+      data: `${FUNCTION_SELECTORS.campaignIdByDraft}${"0".repeat(64)}${"0".repeat(63)}1`,
+    },
+    "latest",
+  ]).catch(() => null);
+
+  if (typeof probe !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(probe)) {
+    throw new ChainConfigError([
+      "CAMPAIGN_MANAGER_ADDRESS is a CampaignManager from before ADR-0011 (no campaignIdByDraft). Redeploy it (docs/deployment/TESTNET.md) and update the address.",
+    ]);
   }
 }

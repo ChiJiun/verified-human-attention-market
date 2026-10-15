@@ -109,7 +109,7 @@ Done on `main`:
 
 Next, in dependency order:
 
-1. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. Archive `deployments/84532.json`, deploy, and re-run the flow (World ID needs the owner's scan). Then close M1 (#12, #13, #19) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Missing UX: close/refund buttons in the advertiser page.
+1. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md, deploy, and re-run the flow (World ID needs the owner's scan). Then close M1 (#12, #13, #19) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Missing UX: close/refund buttons in the advertiser page.
 2. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.

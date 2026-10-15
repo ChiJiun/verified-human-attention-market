@@ -224,7 +224,14 @@ export async function registerOnchainRoutes(
 
       let settlement = null;
 
-      if (dependencies.chain && campaign.onchainCampaignId !== null) {
+      // Events are read only from the deployment the campaign is linked to;
+      // ids restart on every deployment (ADR-0011).
+      if (
+        dependencies.chain &&
+        campaign.onchainCampaignId !== null &&
+        campaign.onchainContractAddress ===
+          dependencies.chain.chain.contractAddress
+      ) {
         const events = await dependencies.chain.events.listCampaignEvents(
           dependencies.chain.chain,
           campaign.onchainCampaignId,
@@ -242,6 +249,7 @@ export async function registerOnchainRoutes(
       return reply.send({
         campaignId: campaign.id,
         onchainCampaignId: campaign.onchainCampaignId,
+        onchainContractAddress: campaign.onchainContractAddress,
         status: campaign.status,
         rewardPerCompletion: campaign.rewardAtomic,
         maxCompletions: campaign.maxCompletions,

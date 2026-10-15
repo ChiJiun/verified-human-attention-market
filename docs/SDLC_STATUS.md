@@ -12,7 +12,7 @@ Requirements    ✅ Baseline complete
 System Design   ✅ Baseline complete
 Implementation 🟡 Active
 Testing        🟡 Active
-Deployment     🟡 Base Sepolia testnet only (2026-10-14); no real funds
+Deployment     🟡 Base Sepolia testnet only; v1 run done 2026-10-14, ADR-0011 redeploy pending; no real funds
 Operations     ⬜ Not started
 ```
 
@@ -84,7 +84,7 @@ Official references:
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
-| Deployment tooling / canonical ABI | ✅ Script + CI-checked ABI + fail-fast config; API and web use the canonical ABI at runtime; Base Sepolia record in `packages/contracts/deployments/84532.json` (#19) |
+| Deployment tooling / canonical ABI | ✅ Script + CI-checked ABI + fail-fast config; API and web use the canonical ABI at runtime; the API refuses a CampaignManager from before ADR-0011. The 2026-10-14 record is archived in `packages/contracts/deployments/archive/`; no current Base Sepolia record until the redeploy |
 | Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
 | Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
@@ -97,9 +97,9 @@ Official references:
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). Close/refund buttons not built yet |
-| End-to-end POC | ✅ Local anvil E2E in CI, including an RPC timeout after broadcast that reconciles without a duplicate campaign; full flow on Base Sepolia on 2026-10-14 (#13, `docs/DEMO.md`) |
+| End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
-| Testnet deployment | ✅ Base Sepolia deployment (#19) and full flow with a real World ID proof on 2026-10-14: create, fund, verify, answer, claim, close, refund (#13; see docs/DEMO.md) |
+| Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
 
 ## Remaining Gate Before Implementation
@@ -119,15 +119,15 @@ Official references:
 - Foundry baseline currently passes 13 unit/fuzz tests plus 3 stateful invariants.
 - Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
-- Base Sepolia run on 2026-10-14 with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
+- Base Sepolia run on 2026-10-14 (v1 contract, before ADR-0011) with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
 
 ## Next SDLC Actions
 
-1. Close M1 (#12, #13, #19) once the Base Sepolia record and the create-recovery fix are reviewed.
+1. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow; then close M1 (#12, #13).
 2. Add close and refund buttons to the advertiser page (the Base Sepolia run used `cast send`).
 3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
 4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
 
 ---
 
-**Current gate:** The local economic loop and the Base Sepolia deployment are verified. Real funds remain blocked by the production-readiness gate (#29).
+**Current gate:** The local economic loop is verified, including ADR-0011. The Base Sepolia flow was verified on the v1 contract and must be repeated on the ADR-0011 deployment. Real funds remain blocked by the production-readiness gate (#29).

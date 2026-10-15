@@ -11,7 +11,8 @@ The database is **not** the source of truth for final settlement. On-chain event
 | --- | --- | --- |
 | id | uuid/text | internal ID |
 | chain_id | bigint | target EVM chain |
-| onchain_campaign_id | numeric nullable | set after creation; `UNIQUE (chain_id, onchain_campaign_id)` |
+| onchain_campaign_id | numeric nullable | set after creation; `UNIQUE (chain_id, onchain_contract_address, onchain_campaign_id)` |
+| onchain_contract_address | text nullable | CampaignManager the id belongs to (ids restart on every deployment, ADR-0011); `CHECK` set together with `onchain_campaign_id`. Rows linked before migration 0011 are marked `pre-adr-0011` and never match a configured contract |
 | advertiser_address | text | normalized EVM address |
 | content_url | text | first mission |
 | reward_atomic | numeric | USDC atomic units |

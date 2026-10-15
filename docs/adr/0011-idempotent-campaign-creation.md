@@ -23,6 +23,9 @@ A single RPC observation cannot prove a transaction was not broadcast, so no cli
 5. Linking requires the event's `draftRef` to equal the draft's (`DRAFT_MISMATCH` otherwise). `POST /onchain` without a hash links through `campaignIdByDraft(advertiser, draftRef)`; "not created yet" is `202 reconciling`. The indexer auto-link matches drafts by `draftRef` instead of by economics.
 6. The web app keeps no transaction state: it first asks the API to link by draft; only then sends. A retry is always safe because the contract refuses a duplicate.
 
+7. **Deployments are kept apart in the database.** On-chain ids restart at 1 on every deployment, so a campaign link is `(chain_id, onchain_contract_address, onchain_campaign_id)` (migration 0011). Status sync, auto-link, reconciliation and analytics only read campaigns linked to the configured contract, and the claim service refuses to sign for a campaign linked to another contract. Rows linked before the migration are marked `pre-adr-0011`.
+8. **The API refuses an older contract at startup:** `campaignIdByDraft` must answer, which a pre-ADR-0011 contract cannot (it reverts although it has code).
+
 ## Consequences
 
 - Retries, concurrent tabs and lost responses can never create two campaigns for one draft; a duplicate costs only the reverted transaction's gas.
