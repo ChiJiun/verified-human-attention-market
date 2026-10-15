@@ -1,11 +1,13 @@
-import { bytesToHex, hexToBytes, stringToBytes } from "viem";
+import { bytesToHex, hexToBytes, stringToBytes, verifyMessage } from "viem";
 import { describe, expect, it } from "vitest";
 
+import { buildApp } from "../src/app.js";
 import {
   createRpSigner,
   hashToField,
   rpSignatureMessage,
 } from "../src/identity/rp-signature.js";
+import { signedInAs } from "./support/auth.js";
 
 /** Official vectors: https://docs.world.org/world-id/idkit/signatures (2026-10-13). */
 const KEY = `0x${"ab".repeat(32)}`;
@@ -85,8 +87,6 @@ describe("World ID RP signatures", () => {
 
 describe("POST /v1/campaigns/:id/world-id/request", () => {
   async function setup(configured: boolean) {
-    const { buildApp } = await import("../src/app.js");
-    const { signedInAs } = await import("./support/auth.js");
     const signer = createRpSigner(KEY);
     const now = new Date("2026-10-05T10:00:00.000Z");
     const app = buildApp({
@@ -131,7 +131,6 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   }
 
   it("returns the campaign action and a verifiable rp_context", async () => {
-    const { verifyMessage } = await import("viem");
     const { app, signer, id } = await setup(true);
     const response = await app.inject({
       method: "POST",
