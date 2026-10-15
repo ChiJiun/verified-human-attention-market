@@ -87,7 +87,7 @@ Recommended for the MVP: **option A**.
 
 | Option | User signs | Who pays gas | Notes |
 | --- | --- | --- | --- |
-| **A. Operator batch payout** | nothing | platform | New settlement contract; operator submits batched payouts within on-chain per-campaign budgets and daily caps |
+| **A. Operator batch payout** | one gas-free EIP-712 signature per withdrawal, from the destination wallet (§3a); nothing per view | platform | New settlement contract; operator submits batched payouts within on-chain per-campaign budgets and daily caps |
 | B. User claim via paymaster (ERC-4337) | one signature per withdrawal | paymaster | Keeps user-initiated claims; adds smart accounts and a paymaster provider |
 | C. Merkle root per epoch | one signature, relayed | relayer | Good for many recipients; more operational complexity |
 
@@ -103,15 +103,25 @@ A new contract, not an in-place change to `CampaignManager` (no proxy upgradeabi
 - payouts identified by a one-time `withdrawalId` (§3a);
 - **reservations enforced on-chain before any refund** (see below).
 
-**Liability commitment.** The contract keeps, per campaign, `committed` (credits moved into a platform-wide `userLiability` balance) and `paid`. The operator calls `commitCredits(campaignId, amount)` at least daily and once more after the campaign ends; the contract requires `committed ≤ funded`. Payouts are drawn only from `userLiability`. The advertiser can refund `funded − committed` only after the **final** commitment for an ended campaign, so money already owed to users can never be refunded, even though user balances do not expire (D3).
+**Credit receipts.** Every credit gets a sequential index per campaign. With each credit the backend issues the user a signed EIP-712 receipt `CreditReceipt(campaignId, index, cumulativeAmount)`, where `cumulativeAmount` is the campaign's total credited amount up to and including that credit. The receipt names no account or wallet, so revealing it discloses nothing about the user beyond one campaign's running total.
 
-Liveness fallback: if the operator never posts the final commitment, the advertiser may refund the uncommitted remainder after a long timeout (for example 30 days after the end). Credits not yet committed at that point are lost to users, which is why commitments must be frequent and monitored (alert on a missed daily commitment).
+**Liability commitment.** The contract keeps, per campaign, `committedIndex`, `committed` (moved into a platform-wide `userLiability` balance) and `paid`. `commitThrough(campaignId, index, cumulativeAmount, signature)`:
 
-Bound on operator power: it can over-commit an advertiser's budget into `userLiability`, but never more than was funded. Publishing a Merkle root of account balances with each commitment (later) lets anyone audit it.
+- verifies the operator's receipt signature;
+- requires `index > committedIndex` and `committed ≤ cumulativeAmount ≤ funded`;
+- sets `committedIndex = index` and moves `cumulativeAmount − committed` into `userLiability`.
+
+**Anyone can call it.** The operator calls it at least daily and once after the campaign ends. A user, or a watchtower acting for users, can call it with their own receipt at any time: one receipt commits every earlier credit of that campaign too, without other users' receipts, and a receipt can never be counted twice.
+
+**Refund rule.** Payouts are drawn only from `userLiability`. The advertiser can refund `funded − committed` only after the campaign ends **and** a refund window has passed (for example 30 days), and refunding closes the campaign to further commitments. Credits whose receipts are committed before the refund can never be refunded, so committed balances do not expire (D3).
+
+**Explicit balance rule.** A credit is owed from the moment its receipt is issued. During normal operation the operator commits it. If the operator stops, the receipt holder has until the refund window ends to commit it; the user's client does this automatically when it sees an uncommitted receipt older than one day. A receipt not committed by anyone before the advertiser refunds cannot be enforced against that campaign. This is the only way an issued credit can be lost, and it requires both the operator and every holder of a later receipt to stay silent for the whole window. Submitting a receipt costs gas; in that emergency path it is paid by the submitter (or a platform-independent watchtower), the one exception to R3.
+
+Bound on operator power: it can only commit what it signed receipts for, and never more than was funded. It still decides who is paid out of `userLiability` (see Trust model change). If the operator disappears completely, committed funds stay locked rather than returning to the advertiser; an operator-independent user exit would need receipts bound to a user key and is out of scope for this ADR.
 
 ## Trust model change
 
-In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by funded budgets, committed liabilities, one-time withdrawal ids and daily caps, but within those limits it decides who is paid. Mitigation for later: publish a Merkle commitment of balances with each `commitCredits`.
+In M1 the user holds a signed authorization and settles it alone. Under option A the user trusts the platform to pay out accrued balances. Funds stay escrowed on-chain and the operator is bounded by funded budgets, signed receipts, one-time withdrawal ids and daily caps, but within those limits it decides who is paid. Users can force their credits into `userLiability` without the operator, but cannot withdraw without it. Mitigation for later: publish a Merkle commitment of account balances with each daily commitment.
 
 ## Rejected alternatives
 
@@ -132,6 +142,7 @@ Still open:
 5. Whether a session-proof result echoes the RP `nonce` (needed for §3a step 3). If not, bind the withdrawal through the proof `signal` instead, if session proofs support one.
 6. How dwell time is measured robustly on the client (visibility, focus, idle detection) and which anomalies the server rejects.
 7. Whether dormant balances should eventually expire after all (D3), since committed liabilities otherwise stay in the contract indefinitely.
+8. Length of the refund window, and whether the platform runs an independent watchtower that commits receipts if the operator stops.
 
 ## Sequencing
 
