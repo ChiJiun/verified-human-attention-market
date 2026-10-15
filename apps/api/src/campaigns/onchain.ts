@@ -237,7 +237,11 @@ export async function linkCampaignByTransaction(
     campaign.onchainCampaignId !== null &&
     campaign.publishTxHash === txHash
   ) {
-    return { ok: true, campaign };
+    // The same hash on an earlier deployment is not this contract's creation.
+    return campaign.onchainContractAddress ===
+      dependencies.chain.contractAddress
+      ? { ok: true, campaign }
+      : { ok: false, status: 409, code: "ALREADY_LINKED" };
   }
 
   try {

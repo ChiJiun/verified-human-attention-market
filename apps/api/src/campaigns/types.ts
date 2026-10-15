@@ -15,6 +15,25 @@ export type CampaignStatus =
   | "settled"
   | "cancelled";
 
+/**
+ * A campaign linked on a CampaignManager other than the configured one (for
+ * example before a redeploy, ADR-0011) is retired here: its rewards can only
+ * be signed for and paid on that old contract, so it must not accept new
+ * World ID verifications or completions. `null` = no chain configured.
+ */
+export function isRetiredDeployment(
+  campaign: Pick<
+    CampaignRecord,
+    "onchainCampaignId" | "onchainContractAddress"
+  >,
+  campaignManagerAddress: string | null,
+): boolean {
+  return (
+    campaign.onchainCampaignId !== null &&
+    campaign.onchainContractAddress !== campaignManagerAddress?.toLowerCase()
+  );
+}
+
 export interface CampaignRecord {
   id: string;
   chainId: number;

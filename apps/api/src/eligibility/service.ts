@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
   type WorldIdFailureCode,
@@ -15,6 +16,8 @@ import {
 
 export interface EligibilityServiceDependencies {
   campaigns: CampaignRepository;
+  /** Configured CampaignManager; campaigns linked elsewhere are retired. */
+  campaignManagerAddress: string | null;
   eligibility: EligibilityRepository;
   worldId: WorldIdVerifier;
   /** null when not configured: eligibility is refused (fail closed). */
@@ -63,7 +66,11 @@ export async function verifyEligibility(
 
   const now = dependencies.now();
 
-  if (now >= campaign.endAt || !["draft", "active"].includes(campaign.status)) {
+  if (
+    now >= campaign.endAt ||
+    !["draft", "active"].includes(campaign.status) ||
+    isRetiredDeployment(campaign, dependencies.campaignManagerAddress)
+  ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_OPEN" };
   }
 

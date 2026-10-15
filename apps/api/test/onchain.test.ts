@@ -468,6 +468,66 @@ describe("on-chain reconciliation", () => {
   });
 });
 
+describe("campaigns of a retired deployment (ADR-0011)", () => {
+  const OLD_CONTRACT = "0x" + "0d".repeat(20);
+
+  /** An active campaign linked on the contract used before a redeploy. */
+  async function retiredCampaign() {
+    const fixture = await setup();
+    const id = await fixture.createDraft();
+    await fixture.campaigns.linkOnchain(id, {
+      onchainCampaignId: "1",
+      contractAddress: OLD_CONTRACT,
+      publishTxHash: "0x" + "ab".repeat(32),
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:00:00.000Z"),
+    });
+    fixture.setNow(new Date(Date.parse(draft.startAt) + 60_000));
+    return { ...fixture, id };
+  }
+
+  it("accepts no new World ID verification or completion", async () => {
+    const { app, id } = await retiredCampaign();
+    const post = (url: string, payload: unknown, headers = {}) =>
+      app.inject({ method: "POST", url, payload: payload as object, headers });
+
+    // Still "active" in the database, but its rewards could only be signed
+    // for on the old contract, so participants must not start or finish it.
+    expect(
+      (await post(`/v1/campaigns/${id}/world-id/request`, {})).json(),
+    ).toMatchObject({ error: { code: "CAMPAIGN_NOT_OPEN" } });
+    expect(
+      (
+        await post(`/v1/campaigns/${id}/eligibility/verify`, {
+          claimant: CLAIMANT,
+          idkitResponse: { action: `vham-campaign-${id}` },
+        })
+      ).json(),
+    ).toMatchObject({ error: { code: "CAMPAIGN_NOT_OPEN" } });
+    expect(
+      (
+        await post(
+          `/v1/campaigns/${id}/submissions`,
+          {
+            eligibilityToken: "00000000-0000-4000-8000-000000000000",
+            claimant: CLAIMANT,
+            answers: [{ questionId: "q1", choiceId: "a" }],
+          },
+          { "idempotency-key": "retired" },
+        )
+      ).json(),
+    ).toMatchObject({ error: { code: "CAMPAIGN_NOT_ACTIVE" } });
+  });
+
+  it("does not accept the old creation hash as this contract's link", async () => {
+    const { link, id } = await retiredCampaign();
+
+    expect((await link(id, "0x" + "ab".repeat(32))).json()).toMatchObject({
+      error: { code: "ALREADY_LINKED" },
+    });
+  });
+});
+
 describe("GET /v1/campaigns/:id/analytics", () => {
   it("reports no settlement before the campaign is on-chain", async () => {
     const { createDraft, analytics } = await setup();

@@ -125,7 +125,7 @@ Returns the on-chain transaction intent for a `draft` (no state change): `create
 
 Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16), or `{}` to link by draft reference when no hash is known (ADR-0011).
 
-The client's report is never trusted. With a hash, the API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser **and the draft's `draftRef`**, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
+The client's report is never trusted. With a hash, the API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser **and the draft's `draftRef`**, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_contract_address, onchain_campaign_id)`; ids restart on every deployment, ADR-0011) with status `pending_onchain`.
 
 | Status | Meaning |
 | --- | --- |

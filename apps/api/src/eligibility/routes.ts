@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { isRetiredDeployment } from "../campaigns/types.js";
 import { campaignAction } from "../identity/world-id.js";
 import type { RpSigner } from "../identity/rp-signature.js";
 import {
@@ -58,7 +59,8 @@ export async function registerEligibilityRoutes(
 
       if (
         now >= campaign.endAt ||
-        !["draft", "active"].includes(campaign.status)
+        !["draft", "active"].includes(campaign.status) ||
+        isRetiredDeployment(campaign, dependencies.campaignManagerAddress)
       ) {
         return fail(409, "CAMPAIGN_NOT_OPEN", "Campaign is not open");
       }
