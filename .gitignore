@@ -23,6 +23,11 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local agent tooling state and files `next dev` regenerates on every run
+.serena/
+apps/web/AGENTS.md
+apps/web/CLAUDE.md
+
 # Foundry
 broadcast/
 packages/contracts/cache/

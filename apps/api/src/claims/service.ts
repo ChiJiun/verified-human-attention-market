@@ -2,6 +2,7 @@ import { campaignManagerAbi } from "@vham/shared/contracts";
 import { encodeFunctionData, type Address } from "viem";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
@@ -23,6 +24,12 @@ export interface ClaimDependencies {
     chainId: number;
     contractAddress: Address;
     rpc: Pick<ChainRpc, "call">;
+    /**
+     * Indexed events: confirmed RewardClaimed nonces free their cap slot
+     * before the authorization expires. Optional; without it the cap counts
+     * every unexpired authorization (safe but slower to free slots).
+     */
+    events?: Pick<ChainEventRepository, "listCampaignEvents"> | null;
   } | null;
   now: () => Date;
   /** Global 24 h liability limit in token atomic units; null = none. */
@@ -116,6 +123,31 @@ export async function authorizeClaim(
 
   const nowSeconds = Math.floor(now.getTime() / 1000);
 
+  // Confirmed payouts are already in `paidCompletions`; their (possibly
+  // unexpired) signatures must not be counted as outstanding as well,
+  // otherwise paid slots stay blocked for up to MAX_AUTHORIZATION_TTL and a
+  // verified human can be refused in a short campaign. Only confirmed events
+  // count: an observed event could still be reorged out while the signature
+  // remains redeemable.
+  const redeemedNonces = new Set<string>();
+  if (chain.events) {
+    const events = await chain.events.listCampaignEvents(
+      {
+        chainId: chain.chainId,
+        contractAddress: chain.contractAddress.toLowerCase(),
+      },
+      campaign.onchainCampaignId,
+    );
+    for (const stored of events) {
+      if (
+        stored.status === "confirmed" &&
+        stored.event.name === "RewardClaimed"
+      ) {
+        redeemedNonces.add(stored.event.nonce.toLowerCase());
+      }
+    }
+  }
+
   try {
     const result = await dependencies.claims.issueOnce({
       submissionId: submission.id,
@@ -137,6 +169,7 @@ export async function authorizeClaim(
               rewardAtomic: BigInt(campaign.rewardAtomic),
             },
       onchainPaidCompletions: chainState.paidCompletions,
+      redeemedNonces,
       sign: () =>
         signer.sign({
           campaignId: BigInt(campaign.onchainCampaignId!),

@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import { reconcileCampaignEvents } from "../../src/chain/campaign-state.js";
 import type { ChainEventRepository } from "../../src/chain/events-repository.js";
 import {
+  ConfirmedRangeChangedError,
   indexOnce,
   ReorgBeyondConfirmationsError,
   type IndexerConfig,
@@ -140,6 +141,36 @@ export function defineIndexerContract(harness: IndexerHarness) {
     const { confirmed, pending } = await state();
     expect(confirmed.paidCompletions).toBe(1);
     expect(pending.paidCompletions).toBe(1);
+  });
+
+  it("never commits logs read across a reorg; the next pass sees the canonical chain", async () => {
+    const { chain, config, repository, scope, state } = setup(harness);
+    // Block 10 holds the campaign; with maxBlockRange 4 it is read in the
+    // second batch (9..12), after batch 5..8 was already committed.
+    chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
+    chain.mine(10);
+
+    // While batch 9..12 is being read, block 10 is replaced on a new fork
+    // without the campaign; eth_getLogs answers from that fork.
+    chain.beforeGetLogs = (query) => {
+      if (query.fromBlock === 9n) {
+        chain.beforeGetLogs = null;
+        chain.reorg(10n);
+      }
+    };
+
+    await expect(indexOnce(chain, repository, config)).rejects.toBeInstanceOf(
+      ConfirmedRangeChangedError,
+    );
+    // Only the batch read before the change was committed.
+    expect((await repository.getCursor(scope))?.latestConfirmedBlock).toBe(8n);
+    expect((await repository.listCampaignEvents(scope, "1")).length).toBe(0);
+
+    // The retry indexes the canonical chain, where the campaign never existed.
+    const result = await indexOnce(chain, repository, config);
+    expect(result.confirmedThrough).toBe(chain.head - 3n);
+    expect((await state()).confirmed.status).toBe("not_found");
+    expect((await state()).pending.status).toBe("not_found");
   });
 
   it("stops on a reorg deeper than the confirmation depth", async () => {

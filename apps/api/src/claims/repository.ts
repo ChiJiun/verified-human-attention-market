@@ -1,4 +1,13 @@
-import { and, count, eq, gt, isNotNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gt,
+  isNotNull,
+  ne,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
 import type { Database } from "../db/client.js";
@@ -27,6 +36,14 @@ export interface ClaimIssueInput {
   alreadyClaimed: boolean;
   /** Live on-chain paid completions for the campaign. */
   onchainPaidCompletions: number;
+  /**
+   * Lowercase nonces of this campaign's RewardClaimed events that are
+   * confirmed on-chain. Their authorizations are already counted in
+   * `onchainPaidCompletions`, so they are not outstanding liability even
+   * while the signature is unexpired. Empty = count every unexpired
+   * authorization (safe, but a slot stays blocked until expiry).
+   */
+  redeemedNonces?: ReadonlySet<string>;
   sign: () => Promise<SignedClaim>;
   /**
    * Global 24 h payout-liability circuit breaker (#23): rewards of all
@@ -147,6 +164,9 @@ export class PostgresClaimRepository implements ClaimRepository {
 
       // Every unexpired authorization must stay redeemable:
       // paid on-chain + outstanding (unexpired, other submissions) < cap.
+      // Authorizations already redeemed on-chain are counted by
+      // `onchainPaidCompletions` and must not block a slot a second time.
+      const redeemed = [...(input.redeemedNonces ?? [])];
       const [outstanding] = await tx
         .select({ value: count() })
         .from(submissions)
@@ -155,6 +175,9 @@ export class PostgresClaimRepository implements ClaimRepository {
             eq(submissions.campaignId, input.campaignId),
             gt(submissions.claimExpiresAt, input.now),
             ne(submissions.id, input.submissionId),
+            ...(redeemed.length > 0
+              ? [notInArray(submissions.claimNonce, redeemed)]
+              : []),
           ),
         );
 
@@ -283,11 +306,13 @@ export class InMemoryClaimRepository implements ClaimRepository {
       if (!campaign || !input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
+      const redeemed = input.redeemedNonces ?? new Set<string>();
       const outstanding = [...this.records.entries()].filter(
         ([submissionId, record]) =>
           submissionId !== input.submissionId &&
           record.campaignId === input.campaignId &&
-          unexpired(record.claim),
+          unexpired(record.claim) &&
+          !redeemed.has(record.claim.payload.nonce.toLowerCase()),
       ).length;
       if (
         outstanding + input.onchainPaidCompletions >=

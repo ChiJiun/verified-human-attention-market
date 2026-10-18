@@ -88,7 +88,7 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-Status as of 2026-10-13 (verify against GitHub, which is authoritative):
+Status as of 2026-10-18 (verify against GitHub, which is authoritative):
 
 Done on `main`:
 
@@ -107,11 +107,12 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
+- #19 closed 2026-10-15: `CampaignManager` is deployed on Base Sepolia and recorded in `packages/contracts/deployments/84532.json`
+
 Next, in dependency order:
 
 1. **#12 — live World ID check.** The IDKit widget is wired in `apps/web` (IDKit 4.4.0, `proofOfHuman()`, v4 proofs only; ADR-0007). It has only been verified against the API contract and the simulated mode; the first real proof happens in the Base Sepolia run. Close #12 only after that run.
-2. **#19 remainder** — record the real testnet deployment (`packages/contracts/deployments/84532.json`).
-3. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app).
+2. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app). PR #62 carries the run record plus the contract-level `draftRef` / idempotent-creation redesign (ADR-0011) and is still under review; continue from that branch rather than re-doing the run on `main`.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
@@ -605,7 +606,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is the **#12 remainder** (real World ID), then #19/#13 on Base Sepolia (see §4), unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is the **#12 remainder** (real World ID), then #13 on Base Sepolia (see §4), unless GitHub state shows that work has already advanced.
 
 ---
 
