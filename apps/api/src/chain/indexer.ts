@@ -37,6 +37,20 @@ export class ReorgBeyondConfirmationsError extends Error {
   }
 }
 
+/**
+ * The chain changed while a confirmed range was being read (reorg or a
+ * load-balanced provider switching nodes between calls). Nothing from the
+ * range was committed; the pass is simply retried.
+ */
+export class ConfirmedRangeChangedError extends Error {
+  constructor(readonly blockNumber: bigint) {
+    super(
+      `Block ${blockNumber} changed while its logs were being read; retrying`,
+    );
+    this.name = "ConfirmedRangeChangedError";
+  }
+}
+
 function decode(
   logs: RawLog[],
   contractAddress: string,
@@ -77,6 +91,10 @@ function decode(
  *   losing or duplicating events: (chain, tx, logIndex) is the identity.
  * - The cursor stores the hash of the last confirmed block; if it changes,
  *   the pass stops with ReorgBeyondConfirmationsError instead of guessing.
+ * - A confirmed batch is committed only if the hash of its last block is the
+ *   same before and after eth_getLogs (and matches the logs of that block),
+ *   so logs read across a reorg or a provider node switch are never stored
+ *   under a block hash they do not belong to.
  * - The unconfirmed tail is re-read on every pass; events that disappear in
  *   a shallow reorg are marked "orphaned" and never count as settlement.
  */
@@ -114,15 +132,27 @@ export async function indexOnce(
         ? from + config.maxBlockRange - 1n
         : safeHead;
 
+    const toBlock = await rpc.getBlock(to);
+
+    if (!toBlock) {
+      break;
+    }
+
     const logs = await rpc.getLogs({
       address: scope.contractAddress,
       fromBlock: from,
       toBlock: to,
     });
-    const toBlock = await rpc.getBlock(to);
+    const toBlockAfter = await rpc.getBlock(to);
 
-    if (!toBlock) {
-      break;
+    if (
+      !toBlockAfter ||
+      toBlockAfter.hash !== toBlock.hash ||
+      logs.some(
+        (log) => log.blockNumber === to && log.blockHash !== toBlock.hash,
+      )
+    ) {
+      throw new ConfirmedRangeChangedError(to);
     }
 
     const { events, skipped } = decode(logs, scope.contractAddress);

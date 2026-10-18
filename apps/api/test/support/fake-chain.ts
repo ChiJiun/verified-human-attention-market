@@ -67,6 +67,9 @@ export class FakeChain implements ChainRpc {
   private txCounter = 0;
   failGetLogsAfter: number | null = null;
   getLogsCalls = 0;
+  /** Runs before each eth_getLogs answer, e.g. to reorg mid-read. */
+  beforeGetLogs:
+    ((query: { fromBlock: bigint; toBlock: bigint }) => void) | null = null;
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
@@ -188,6 +191,8 @@ export class FakeChain implements ChainRpc {
     ) {
       throw new RpcError("simulated provider outage");
     }
+
+    this.beforeGetLogs?.(query);
 
     return this.blocks
       .filter(

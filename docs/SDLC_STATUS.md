@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-10-13
+> Last reviewed: 2026-10-18
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -83,7 +83,7 @@ Official references:
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
 | On-chain exposure limits | ✅ ADR-0006 (#18) |
-| Deployment tooling / canonical ABI | 🟡 Script + CI-checked ABI + fail-fast config; API and web both use the canonical ABI at runtime (#19); testnet record pending |
+| Deployment tooling / canonical ABI | ✅ Script + CI-checked ABI + fail-fast config; API and web both use the canonical ABI at runtime; Base Sepolia deployment recorded in `packages/contracts/deployments/84532.json` (#19 closed 2026-10-15) |
 | Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
 | Wallet authentication (SIWE) | ✅ #37 |
 | Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
@@ -95,7 +95,7 @@ Official references:
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
-| Web flows | ⬜ #11, #12 |
+| Web flows | 🟡 Advertiser flow done (#11); participant flow with IDKit widget wired, first real World ID proof pending in the Base Sepolia run (#12) |
 | End-to-end POC | 🟡 Local anvil E2E in CI (`docs/DEMO.md`); Base Sepolia pending (#13) |
 | World ID integration | 🟡 Backend verification (ADR-0007, #9), RP signature endpoint and `IDKitRequestWidget` in the mission page (#12, IDKit 4.4.0). Not yet exercised against a real World App / Developer Portal app: that happens in the Base Sepolia run (#13) |
 | Testnet deployment | 🟡 `CampaignManager` deployed to Base Sepolia on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, tx `0x2903d8ac…0338`, block 48106357; record in `packages/contracts/deployments/84532.json`). Owner, signer, token and code verified on-chain. The full flow on Base Sepolia (#13) is still pending |
@@ -108,7 +108,7 @@ Official references:
 - [x] POC gas UX selected.
 - [x] Claim authorization trust model selected.
 - [x] POC campaign economics selected.
-- [ ] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment.
+- [x] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment (re-checked 2026-10-14, `docs/deployment/TESTNET.md`).
 
 ## Implementation Evidence
 
@@ -121,11 +121,10 @@ Official references:
 
 ## Next SDLC Actions
 
-1. Add wallet authentication for advertiser ownership and analytics (#37).
-2. Build advertiser and verified-user flows (#11–#12).
-3. Complete advertiser analytics access control (#20).
-4. Run end-to-end POC before public testnet demo (#13).
+1. Exercise the real World ID proof in the mission page against a Developer Portal app (#12 remainder).
+2. Land the Base Sepolia run record and the idempotent on-chain creation redesign under review in PR #62 (#13 remainder, ADR-0011 proposal).
+3. Close the production-readiness gate items that remain open: external security review and named on-call (#29).
 
 ---
 
-**Current gate:** Implementation is active. Deployment remains blocked until the local economic loop and testnet configuration are verified.
+**Current gate:** Implementation is active. The local economic loop runs in CI and `CampaignManager` is on Base Sepolia; the public testnet demo waits for the full Base Sepolia run (#13) with a real World ID proof (#12).

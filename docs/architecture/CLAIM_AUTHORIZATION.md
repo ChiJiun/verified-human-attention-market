@@ -94,8 +94,15 @@ confirmation depth; these reads do not. RPC failures fail closed.
   `onchain paidCompletions + unexpired authorizations of other submissions <
   maxCompletions`. Every unexpired signature therefore stays redeemable, and
   late participants never receive a signature the contract would reject with
-  `CompletionLimitReached`. An already-paid authorization that has not yet
-  expired is counted twice, which only errs on the safe side.
+  `CompletionLimitReached`. An authorization whose `RewardClaimed` event is
+  **confirmed** by the indexer is already part of `paidCompletions` and is
+  not counted as outstanding again, so a paid slot is reusable at once
+  instead of after the 15 minute TTL (otherwise, once more than half of a
+  campaign's rewards were paid within one TTL, every further verified human
+  would be refused until the earlier signatures expired). Payouts that are
+  only observed (not yet confirmed) or not indexed yet are still counted
+  twice, which errs on the safe side: an observed event can be reorged out
+  while its signature remains redeemable.
 - **Expiry:** an authorization that expired unredeemed is **reissued** with a
   new nonce and `issuedAt` (still subject to the cap and an active, open
   campaign). The contract pays each wallet once per campaign
