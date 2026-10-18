@@ -520,7 +520,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   it("stores an acceptance only together with its authorization (ADR-0011)", async () => {
     const campaignId = await createCampaign();
     await repository.linkOnchain(campaignId, {
-      onchainCampaignId: "7",
+      onchainCampaignId: "11",
       contractAddress: CONTRACT_ADDRESS,
       publishTxHash: null,
       status: "active",
@@ -572,7 +572,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
           onchainPaidCompletions: 0,
           sign: () =>
             signer.sign({
-              campaignId: 7n,
+              campaignId: 11n,
               draftRef: draftRefFor(campaignId),
               claimant: claimantAddress as `0x${string}`,
               amount: 1000000n,
@@ -591,7 +591,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     expect(saved).toMatchObject({
       result: "accepted",
       claimNonce: issued!.claim.payload.nonce,
-      claimOnchainCampaignId: "7",
+      claimOnchainCampaignId: "11",
       claimContractAddress: CONTRACT_ADDRESS,
     });
     expect(await submissionRepository.countByEligibility(eligibilityId)).toBe(
@@ -602,7 +602,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   it("reissues an authorization signed for a previous on-chain id (ADR-0011)", async () => {
     const campaignId = await createCampaign();
     await repository.linkOnchain(campaignId, {
-      onchainCampaignId: "7",
+      onchainCampaignId: "12",
       contractAddress: CONTRACT_ADDRESS,
       publishTxHash: null,
       status: "active",
@@ -635,26 +635,26 @@ describeWithDatabase("PostgresCampaignRepository", () => {
           }),
       });
 
-    const first = await issue(7n);
+    const first = await issue(12n);
     expect(first.created).toBe(true);
-    // Still bound to id 7: replayed, not re-signed.
-    expect(await issue(7n)).toMatchObject({ created: false });
+    // Still bound to id 12: replayed, not re-signed.
+    expect(await issue(12n)).toMatchObject({ created: false });
 
-    // Recovery after a deep reorg relinks the draft to id 9.
+    // Recovery after a deep reorg relinks the draft to id 13.
     await database.db
       .update(campaigns)
-      .set({ onchainCampaignId: "9" })
+      .set({ onchainCampaignId: "13" })
       .where(eq(campaigns.id, campaignId));
 
-    const reissued = await issue(9n);
+    const reissued = await issue(13n);
     expect(reissued.created).toBe(true);
-    expect(reissued.claim.payload.campaignId).toBe(9n);
+    expect(reissued.claim.payload.campaignId).toBe(13n);
     expect(reissued.claim.payload.nonce).not.toBe(first.claim.payload.nonce);
     const [saved] = await database.db
       .select()
       .from(submissions)
       .where(eq(submissions.id, submission.id));
-    expect(saved?.claimOnchainCampaignId).toBe("9");
+    expect(saved?.claimOnchainCampaignId).toBe("13");
     expect(saved?.claimNonce).toBe(reissued.claim.payload.nonce);
   });
 
