@@ -418,8 +418,10 @@ describeWithDatabase("PostgresCampaignRepository", () => {
           }),
       });
 
-    const first = await acceptedSubmission("4");
-    const second = await acceptedSubmission("5");
+    // Wallets unique in this shared test database: the retention tests
+    // count every campaign a wallet appears in.
+    const first = await acceptedSubmission("a");
+    const second = await acceptedSubmission("b");
     const firstClaim = await issue(first, 0);
     expect(firstClaim.created).toBe(true);
 
