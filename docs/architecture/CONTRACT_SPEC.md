@@ -93,12 +93,17 @@ function createCampaign(
     uint96 rewardPerCompletion,
     uint32 maxCompletions,
     uint64 startTime,
-    uint64 endTime
+    uint64 endTime,
+    bytes32 draftRef // ADR-0011: one campaign per (advertiser, draftRef)
 ) external returns (uint256 campaignId);
+
+function campaignIdByDraft(address advertiser, bytes32 draftRef)
+    external view returns (uint256); // 0 = none
 
 function fundCampaign(
     uint256 campaignId,
-    uint256 amount
+    uint256 amount,
+    bytes32 draftRef // ADR-0011: must name campaignId for msg.sender
 ) external;
 
 function claim(
@@ -124,12 +129,12 @@ Immutable constructor parameters bound every campaign:
 - `maxCompletionsPerCampaign`
 - `maxCampaignBudget` (`reward × completions`)
 
-`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`. `fundCampaign` rejects campaigns whose `endTime` has passed. `cancelCampaign` cancels an unfunded draft.
+`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`, with `InvalidDraftRef` for a zero reference, and with `DraftAlreadyCreated(campaignId)` when the sender already created a campaign for that reference (ADR-0011). `fundCampaign` rejects campaigns whose `endTime` has passed and reverts with `WrongDraft` unless `campaignIdByDraft[msg.sender][draftRef] == campaignId`, so after a deep reorg an advertiser cannot fund another of their drafts that took the same id (ADR-0011). `cancelCampaign` cancels an unfunded draft. `claim` reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][authorization.draftRef] == authorization.campaignId`, so an authorization never pays from a campaign created for another draft (ADR-0011; EIP-712 type in CLAIM_AUTHORIZATION.md).
 
 ## Events
 
 ```solidity
-event CampaignCreated(uint256 indexed campaignId, address indexed advertiser);
+event CampaignCreated(uint256 indexed campaignId, address indexed advertiser, bytes32 indexed draftRef);
 event CampaignFunded(uint256 indexed campaignId, uint256 amount);
 event RewardClaimed(
     uint256 indexed campaignId,

@@ -1,3 +1,5 @@
+import { FUNCTION_SELECTORS } from "./abi.js";
+
 /**
  * Contract/chain configuration validated at API startup (issue #19).
  * Wrong-chain or missing-address configuration fails fast instead of
@@ -19,6 +21,33 @@ export interface ChainConfig {
   campaignManagerAddress: string;
   /** First block to index (deployment block). */
   deployBlock: bigint;
+}
+
+/** Default depth after which a block is treated as final. */
+export const DEFAULT_CONFIRMATIONS = 10;
+
+/**
+ * INDEXER_CONFIRMATIONS for both the API (links) and the indexer worker
+ * (events). Must be a positive integer: 0 would link unconfirmed creations.
+ */
+export function parseConfirmations(value: string | undefined): number {
+  if (value === undefined || value === "") {
+    return DEFAULT_CONFIRMATIONS;
+  }
+
+  const parsed = Number(value);
+
+  if (
+    !/^\d+$/.test(value.trim()) ||
+    !Number.isSafeInteger(parsed) ||
+    parsed < 1
+  ) {
+    throw new ChainConfigError([
+      `INDEXER_CONFIRMATIONS must be a positive integer, got "${value}"`,
+    ]);
+  }
+
+  return parsed;
 }
 
 export class ChainConfigError extends Error {
@@ -167,4 +196,86 @@ export async function verifyChainConnection(
       ]);
     }
   }
+
+  // ADR-0011: the API and web app need `campaignIdByDraft`. A contract from
+  // before it has code but reverts here, and must be redeployed rather than
+  // used with the new createCampaign ABI. Transport and provider errors are
+  // reported as such, never as an incompatible contract.
+  const probe = await probeCampaignIdByDraft(fetchImpl, config);
+
+  if (probe === "unsupported") {
+    throw new ChainConfigError([
+      "CAMPAIGN_MANAGER_ADDRESS is a CampaignManager from before ADR-0011 (campaignIdByDraft reverts). Redeploy it (docs/deployment/TESTNET.md) and update the address.",
+    ]);
+  }
+}
+
+async function probeCampaignIdByDraft(
+  fetchImpl: typeof fetch,
+  config: ChainConfig,
+): Promise<"supported" | "unsupported"> {
+  const unavailable = (detail: string) =>
+    new ChainConfigError([
+      `Could not verify CAMPAIGN_MANAGER_ADDRESS: RPC eth_call ${detail}. This is a provider problem, not a contract version problem; retry or use another RPC.`,
+    ]);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(config.rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_call",
+        params: [
+          {
+            to: config.campaignManagerAddress,
+            data: `${FUNCTION_SELECTORS.campaignIdByDraft}${"0".repeat(64)}${"0".repeat(63)}1`,
+          },
+          "latest",
+        ],
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    throw unavailable(
+      `failed (${error instanceof Error ? error.message : "network error"})`,
+    );
+  }
+
+  if (!response.ok) {
+    throw unavailable(`returned HTTP ${response.status}`);
+  }
+
+  const body = (await response.json().catch(() => null)) as {
+    result?: unknown;
+    error?: { code?: unknown; message?: unknown };
+  } | null;
+
+  if (body?.error) {
+    // Execution reverted: EIP-1474 code 3, or a "revert" message from
+    // providers that use another code.
+    const message = String(body.error.message ?? "");
+    if (body.error.code === 3 || /revert/i.test(message)) {
+      return "unsupported";
+    }
+    throw unavailable(
+      `returned error ${String(body.error.code)} ${message}`.trim(),
+    );
+  }
+
+  if (body?.result === "0x") {
+    // No return data at all: the function does not exist.
+    return "unsupported";
+  }
+
+  if (
+    typeof body?.result !== "string" ||
+    !/^0x[0-9a-fA-F]{64}$/.test(body.result)
+  ) {
+    throw unavailable("returned malformed data");
+  }
+
+  return "supported";
 }

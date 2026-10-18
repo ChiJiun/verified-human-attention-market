@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { Deployment } from "@vham/shared/deployment";
+
+import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
   type WorldIdFailureCode,
@@ -15,6 +18,13 @@ import {
 
 export interface EligibilityServiceDependencies {
   campaigns: CampaignRepository;
+  /** Configured deployment; campaigns linked elsewhere are retired. */
+  deployment: Deployment | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
   eligibility: EligibilityRepository;
   worldId: WorldIdVerifier;
   /** null when not configured: eligibility is refused (fail closed). */
@@ -26,6 +36,7 @@ export type EligibilityFailureCode =
   | WorldIdFailureCode
   | "CAMPAIGN_NOT_FOUND"
   | "CAMPAIGN_NOT_OPEN"
+  | "CHAIN_HALTED"
   | "PARTICIPANT_WALLET_MISMATCH"
   | "WALLET_ALREADY_BOUND";
 
@@ -63,8 +74,16 @@ export async function verifyEligibility(
 
   const now = dependencies.now();
 
-  if (now >= campaign.endAt || !["draft", "active"].includes(campaign.status)) {
+  if (
+    now >= campaign.endAt ||
+    !["draft", "active"].includes(campaign.status) ||
+    isRetiredDeployment(campaign, dependencies.deployment)
+  ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_OPEN" };
+  }
+
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
   }
 
   if (!dependencies.participantKeySecret) {

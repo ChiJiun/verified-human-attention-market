@@ -1,7 +1,11 @@
 import { and, asc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
-import { chainEvents, reconciliationState } from "../db/schema.js";
+import {
+  chainEvents,
+  indexerHalts,
+  reconciliationState,
+} from "../db/schema.js";
 import type { CampaignManagerEvent } from "./abi.js";
 import {
   byChainOrder,
@@ -12,6 +16,7 @@ import {
   type ConfirmationStatus,
   type IndexedEvent,
   type IndexerCursor,
+  type ChainHalt,
   type StoredEvent,
 } from "./events-repository.js";
 
@@ -40,6 +45,87 @@ export class PostgresChainEventRepository implements ChainEventRepository {
           latestObservedBlock: BigInt(row.latestObservedBlock),
         }
       : null;
+  }
+
+  private haltWhere(scope: ChainScope) {
+    return and(
+      eq(indexerHalts.chainId, scope.chainId),
+      eq(indexerHalts.contractAddress, scope.contractAddress),
+    );
+  }
+
+  async haltForReorg(
+    scope: ChainScope,
+    block: bigint,
+    at: Date,
+  ): Promise<void> {
+    await this.db
+      .insert(indexerHalts)
+      .values({
+        chainId: scope.chainId,
+        contractAddress: scope.contractAddress,
+        haltedBlock: Number(block),
+        haltedAt: at,
+        recoveryAppliedAt: null,
+      })
+      .onConflictDoUpdate({
+        target: [indexerHalts.chainId, indexerHalts.contractAddress],
+        set: {
+          haltedBlock: Number(block),
+          haltedAt: at,
+          recoveryAppliedAt: null,
+        },
+      });
+  }
+
+  async getHalt(scope: ChainScope): Promise<ChainHalt | null> {
+    const [row] = await this.db
+      .select()
+      .from(indexerHalts)
+      .where(this.haltWhere(scope))
+      .limit(1);
+
+    return row
+      ? {
+          block: BigInt(row.haltedBlock),
+          at: row.haltedAt,
+          recoveryAppliedAt: row.recoveryAppliedAt,
+        }
+      : null;
+  }
+
+  async markRecoveryApplied(scope: ChainScope, at: Date): Promise<boolean> {
+    const rows = await this.db
+      .update(indexerHalts)
+      .set({ recoveryAppliedAt: at })
+      .where(this.haltWhere(scope))
+      .returning({ chainId: indexerHalts.chainId });
+    return rows.length > 0;
+  }
+
+  async clearHalt(scope: ChainScope): Promise<void> {
+    await this.db.delete(indexerHalts).where(this.haltWhere(scope));
+  }
+
+  async resetIndex(scope: ChainScope): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(chainEvents)
+        .where(
+          and(
+            eq(chainEvents.chainId, scope.chainId),
+            eq(chainEvents.contractAddress, scope.contractAddress),
+          ),
+        );
+      await tx
+        .delete(reconciliationState)
+        .where(
+          and(
+            eq(reconciliationState.chainId, scope.chainId),
+            eq(reconciliationState.contractAddress, scope.contractAddress),
+          ),
+        );
+    });
   }
 
   private rows(
@@ -213,7 +299,9 @@ export class PostgresChainEventRepository implements ChainEventRepository {
 
   async listConfirmedCreations(
     scope: ChainScope,
-  ): Promise<{ onchainCampaignId: string; advertiser: string }[]> {
+  ): Promise<
+    { onchainCampaignId: string; advertiser: string; draftRef: string }[]
+  > {
     const rows = await this.db
       .select({ payload: chainEvents.payload })
       .from(chainEvents)
@@ -234,6 +322,7 @@ export class PostgresChainEventRepository implements ChainEventRepository {
             {
               onchainCampaignId: event.campaignId,
               advertiser: event.advertiser,
+              draftRef: event.draftRef,
             },
           ]
         : [];

@@ -38,16 +38,13 @@ export class ReorgBeyondConfirmationsError extends Error {
 }
 
 /**
- * The chain changed while a confirmed range was being read (reorg or a
- * load-balanced provider switching nodes between calls). Nothing from the
- * range was committed; the pass is simply retried.
+ * The chain changed between reads of one range (or the RPC answered from
+ * different forks). Transient: nothing was committed; the next pass retries.
  */
-export class ConfirmedRangeChangedError extends Error {
+export class InconsistentChainReadError extends Error {
   constructor(readonly blockNumber: bigint) {
-    super(
-      `Block ${blockNumber} changed while its logs were being read; retrying`,
-    );
-    this.name = "ConfirmedRangeChangedError";
+    super(`Inconsistent chain read at block ${blockNumber}; retrying`);
+    this.name = "InconsistentChainReadError";
   }
 }
 
@@ -132,6 +129,11 @@ export async function indexOnce(
         ? from + config.maxBlockRange - 1n
         : safeHead;
 
+    // Header, logs, header again: if the chain reorganizes between these
+    // calls (or a load-balanced RPC answers from different forks), logs of
+    // a stale fork could be committed under the new fork's block hash and
+    // never be detected later. Every log must sit in the canonical block of
+    // its height, and the range end must not move while reading.
     const toBlock = await rpc.getBlock(to);
 
     if (!toBlock) {
@@ -143,16 +145,24 @@ export async function indexOnce(
       fromBlock: from,
       toBlock: to,
     });
-    const toBlockAfter = await rpc.getBlock(to);
+    const canonicalHashes = new Map<bigint, string>([[to, toBlock.hash]]);
 
-    if (
-      !toBlockAfter ||
-      toBlockAfter.hash !== toBlock.hash ||
-      logs.some(
-        (log) => log.blockNumber === to && log.blockHash !== toBlock.hash,
-      )
-    ) {
-      throw new ConfirmedRangeChangedError(to);
+    for (const log of logs) {
+      if (!canonicalHashes.has(log.blockNumber)) {
+        const block = await rpc.getBlock(log.blockNumber);
+        canonicalHashes.set(log.blockNumber, block?.hash ?? "");
+      }
+      if (
+        canonicalHashes.get(log.blockNumber) !== log.blockHash.toLowerCase()
+      ) {
+        throw new InconsistentChainReadError(log.blockNumber);
+      }
+    }
+
+    const toBlockAgain = await rpc.getBlock(to);
+
+    if (!toBlockAgain || toBlockAgain.hash !== toBlock.hash) {
+      throw new InconsistentChainReadError(to);
     }
 
     const { events, skipped } = decode(logs, scope.contractAddress);

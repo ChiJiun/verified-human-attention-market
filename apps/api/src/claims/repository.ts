@@ -1,3 +1,4 @@
+import { draftRefFor } from "../campaigns/onchain.js";
 import {
   and,
   count,
@@ -10,7 +11,7 @@ import {
 } from "drizzle-orm";
 import type { Address, Hex } from "viem";
 
-import type { Database } from "../db/client.js";
+import type { DbExecutor, PersistenceScope } from "../db/client.js";
 import { campaigns, submissions } from "../db/schema.js";
 import type { SignedClaim } from "./signer.js";
 
@@ -69,6 +70,12 @@ export interface ClaimRepository {
   issueOnce(input: ClaimIssueInput): Promise<ClaimIssueResult>;
   /** Latest authorization per accepted submission (for reconciliation). */
   listIssuedClaims(campaignId: string): Promise<IssuedClaim[]>;
+  /**
+   * The same repository running inside the caller's transaction, so an
+   * authorization can be issued atomically with the submission it pays
+   * (ADR-0011). Stores without transactions return themselves.
+   */
+  within(scope: PersistenceScope): ClaimRepository;
 }
 
 function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
@@ -78,14 +85,16 @@ function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
     !row.claimIssuedAt ||
     !row.claimExpiresAt ||
     !row.claimContractAddress ||
-    !row.claimChainId
+    !row.claimChainId ||
+    !row.claimOnchainCampaignId
   ) {
     return null;
   }
 
   return {
     payload: {
-      campaignId: 0n, // Filled with the campaign's canonical on-chain id below.
+      campaignId: BigInt(row.claimOnchainCampaignId),
+      draftRef: "0x", // Filled with the campaign's draft reference below.
       claimant: row.claimantAddress as Address,
       amount: 0n, // Filled with the campaign reward below.
       nonce: row.claimNonce as Hex,
@@ -98,7 +107,12 @@ function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
   };
 }
 
-/** Unexpired stored authorization, or null if none / expired. */
+/**
+ * Unexpired stored authorization, or null if none, expired, or signed for
+ * another on-chain id or deployment than the campaign is linked to now
+ * (after a deep reorg or a redeploy): the contract would reject that
+ * signature, so it is treated like an expired one and reissued.
+ */
 function restoreClaim(
   row: typeof submissions.$inferSelect,
   campaign: typeof campaigns.$inferSelect,
@@ -112,14 +126,39 @@ function restoreClaim(
   if (!campaign.onchainCampaignId) {
     throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
   }
-  claim.payload.campaignId = BigInt(campaign.onchainCampaignId);
+  if (!isBoundTo(row, campaign)) {
+    return null;
+  }
+  claim.payload.draftRef = draftRefFor(campaign.id);
   claim.payload.amount = BigInt(campaign.rewardAtomic);
   return claim;
 }
 
+/** The stored signature was issued for the campaign's current link. */
+function isBoundTo(
+  row: Pick<
+    typeof submissions.$inferSelect,
+    "claimOnchainCampaignId" | "claimContractAddress" | "claimChainId"
+  >,
+  campaign: Pick<
+    typeof campaigns.$inferSelect,
+    "onchainCampaignId" | "onchainContractAddress" | "chainId"
+  >,
+): boolean {
+  return (
+    row.claimOnchainCampaignId === campaign.onchainCampaignId &&
+    row.claimContractAddress === campaign.onchainContractAddress &&
+    row.claimChainId === campaign.chainId
+  );
+}
+
 /** Campaign-row lock serializes issuance and bounds signed liabilities. */
 export class PostgresClaimRepository implements ClaimRepository {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: DbExecutor) {}
+
+  within(scope: PersistenceScope): ClaimRepository {
+    return scope ? new PostgresClaimRepository(scope) : this;
+  }
 
   async issueOnce(input: ClaimIssueInput): Promise<ClaimIssueResult> {
     return this.db.transaction(async (tx) => {
@@ -165,7 +204,8 @@ export class PostgresClaimRepository implements ClaimRepository {
       // Every unexpired authorization must stay redeemable:
       // paid on-chain + outstanding (unexpired, other submissions) < cap.
       // Authorizations already redeemed on-chain are counted by
-      // `onchainPaidCompletions` and must not block a slot a second time.
+      // `onchainPaidCompletions` and must not block a slot a second time;
+      // those signed for a previous link cannot be redeemed at all.
       const redeemed = [...(input.redeemedNonces ?? [])];
       const [outstanding] = await tx
         .select({ value: count() })
@@ -175,6 +215,12 @@ export class PostgresClaimRepository implements ClaimRepository {
             eq(submissions.campaignId, input.campaignId),
             gt(submissions.claimExpiresAt, input.now),
             ne(submissions.id, input.submissionId),
+            eq(submissions.claimOnchainCampaignId, campaign.onchainCampaignId),
+            eq(
+              submissions.claimContractAddress,
+              campaign.onchainContractAddress ?? "",
+            ),
+            eq(submissions.claimChainId, campaign.chainId),
             ...(redeemed.length > 0
               ? [notInArray(submissions.claimNonce, redeemed)]
               : []),
@@ -212,9 +258,12 @@ export class PostgresClaimRepository implements ClaimRepository {
       const claim = await input.sign();
       if (
         claim.payload.campaignId !== BigInt(campaign.onchainCampaignId) ||
+        claim.payload.draftRef !== draftRefFor(campaign.id) ||
         claim.payload.claimant.toLowerCase() !== row.claimantAddress ||
         claim.payload.amount !== BigInt(campaign.rewardAtomic) ||
         claim.chainId !== campaign.chainId ||
+        claim.contractAddress.toLowerCase() !==
+          campaign.onchainContractAddress ||
         claim.payload.issuedAt >
           BigInt(Math.floor(input.now.getTime() / 1000)) ||
         claim.payload.expiresAt <= claim.payload.issuedAt ||
@@ -229,6 +278,7 @@ export class PostgresClaimRepository implements ClaimRepository {
           claimSignature: claim.signature,
           claimContractAddress: claim.contractAddress.toLowerCase(),
           claimChainId: claim.chainId,
+          claimOnchainCampaignId: claim.payload.campaignId.toString(),
           claimIssuedAt: new Date(Number(claim.payload.issuedAt) * 1000),
           claimExpiresAt: new Date(Number(claim.payload.expiresAt) * 1000),
           updatedAt: input.now,
@@ -269,10 +319,17 @@ export class InMemoryClaimRepository implements ClaimRepository {
     private readonly getSubmission: (
       id: string,
     ) => Promise<{ campaignId: string; result: string } | null>,
-    private readonly getCampaign: (
-      id: string,
-    ) => Promise<{ status: string; maxCompletions: number } | null>,
+    private readonly getCampaign: (id: string) => Promise<{
+      status: string;
+      maxCompletions: number;
+      onchainCampaignId?: string | null;
+      onchainContractAddress?: string | null;
+    } | null>,
   ) {}
+
+  within(): ClaimRepository {
+    return this;
+  }
 
   async issueOnce(input: ClaimIssueInput): Promise<ClaimIssueResult> {
     const previous = this.queue;
@@ -282,20 +339,27 @@ export class InMemoryClaimRepository implements ClaimRepository {
     });
     await previous;
     try {
+      const [submission, campaign] = await Promise.all([
+        this.getSubmission(input.submissionId),
+        this.getCampaign(input.campaignId),
+      ]);
       const unexpired = (claim: SignedClaim) =>
         Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
+      // Signed for the link the campaign has now (see isBoundTo).
+      const bound = (claim: SignedClaim) =>
+        campaign?.onchainCampaignId == null ||
+        (claim.payload.campaignId === BigInt(campaign.onchainCampaignId) &&
+          (campaign.onchainContractAddress == null ||
+            claim.contractAddress.toLowerCase() ===
+              campaign.onchainContractAddress.toLowerCase()));
       const existing = this.records.get(input.submissionId);
-      if (existing && unexpired(existing.claim)) {
+      if (existing && unexpired(existing.claim) && bound(existing.claim)) {
         return { claim: existing.claim, created: false };
       }
       if (input.alreadyClaimed) {
         throw new ClaimIssueError("ALREADY_CLAIMED");
       }
 
-      const [submission, campaign] = await Promise.all([
-        this.getSubmission(input.submissionId),
-        this.getCampaign(input.campaignId),
-      ]);
       if (
         !submission ||
         submission.campaignId !== input.campaignId ||
@@ -312,6 +376,7 @@ export class InMemoryClaimRepository implements ClaimRepository {
           submissionId !== input.submissionId &&
           record.campaignId === input.campaignId &&
           unexpired(record.claim) &&
+          bound(record.claim) &&
           !redeemed.has(record.claim.payload.nonce.toLowerCase()),
       ).length;
       if (

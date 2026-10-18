@@ -12,7 +12,11 @@ import {
   type ClaimSigner,
 } from "./claims/signer.js";
 import { buildApp } from "./app.js";
-import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
+import {
+  loadChainConfig,
+  parseConfirmations,
+  verifyChainConnection,
+} from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
@@ -233,6 +237,8 @@ const app = buildApp({
   chain: chainConfig
     ? {
         rpc: new JsonRpcClient(chainConfig.rpcUrl),
+        // Links wait for the same depth the indexer treats as final.
+        confirmations: parseConfirmations(process.env.INDEXER_CONFIRMATIONS),
         chain: {
           chainId: chainConfig.chainId,
           contractAddress: chainConfig.campaignManagerAddress,

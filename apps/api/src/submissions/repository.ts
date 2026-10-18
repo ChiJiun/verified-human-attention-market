@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { and, asc, count, eq, gte } from "drizzle-orm";
 
-import type { Database } from "../db/client.js";
+import type { Database, PersistenceScope } from "../db/client.js";
 import { answers, eligibility, submissions } from "../db/schema.js";
 import type {
   EligibilityRecord,
@@ -44,6 +44,16 @@ export interface NewSubmission {
   /** Quality reason codes (#25); empty when none. */
   qualityFlags?: string[];
   createdAt: Date;
+  /**
+   * Runs after the submission and its answers are stored and before they are
+   * committed, inside the same transaction; if it throws, nothing is
+   * persisted. Used to sign the claim authorization together with an
+   * acceptance so that no accepted completion exists without one (ADR-0011).
+   */
+  beforeCommit?: (
+    submission: SubmissionRecord,
+    scope: PersistenceScope,
+  ) => Promise<void>;
 }
 
 export interface QualitySummary {
@@ -317,7 +327,12 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
                 )
                 .returning();
 
-        return mapSubmission(row, answerRows);
+        const record = mapSubmission(row, answerRows);
+        if (input.beforeCommit) {
+          // Throwing here rolls the whole insert back.
+          await input.beforeCommit(record, tx);
+        }
+        return record;
       });
     } catch (error) {
       if (uniqueViolationConstraint(error) === ACCEPTED_PER_ELIGIBILITY) {
@@ -529,6 +544,16 @@ export class InMemorySubmissionRepository implements SubmissionRepository {
     };
 
     this.records.set(record.id, record);
+
+    if (input.beforeCommit) {
+      try {
+        await input.beforeCommit(record, null);
+      } catch (error) {
+        // Same as a rolled-back transaction: nothing was persisted.
+        this.records.delete(record.id);
+        throw error;
+      }
+    }
 
     return { submission: record, created: true };
   }

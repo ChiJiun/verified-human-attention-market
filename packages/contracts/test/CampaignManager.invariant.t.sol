@@ -90,6 +90,7 @@ contract CampaignInvariantHandler {
 
         CampaignManager.ClaimAuthorization memory authorization = CampaignManager.ClaimAuthorization({
             campaignId: campaignId,
+            draftRef: keccak256("invariant"),
             claimant: claimant,
             amount: rewardPerCompletion,
             nonce: keccak256(abi.encode(seed, claimant, totalClaimed)),
@@ -159,9 +160,10 @@ contract CampaignManagerInvariantTest {
 
         token.mint(advertiser, FUNDED_BUDGET);
 
-        campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime);
+        campaignId =
+            manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, keccak256("invariant"));
         token.approve(address(manager), FUNDED_BUDGET);
-        manager.fundCampaign(campaignId, FUNDED_BUDGET);
+        manager.fundCampaign(campaignId, FUNDED_BUDGET, keccak256("invariant"));
 
         vm.warp(startTime);
 
