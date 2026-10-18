@@ -183,6 +183,13 @@ export const submissions = pgTable(
     claimSignature: text("claim_signature"),
     claimContractAddress: text("claim_contract_address"),
     claimChainId: bigint("claim_chain_id", { mode: "number" }),
+    // On-chain campaign id the signature was issued for. After a deep reorg
+    // the draft can be relinked to another id; a stored authorization for the
+    // old id is then unredeemable and must be reissued (ADR-0011).
+    claimOnchainCampaignId: numeric("claim_onchain_campaign_id", {
+      precision: 78,
+      scale: 0,
+    }),
     claimIssuedAt: timestamp("claim_issued_at", {
       withTimezone: true,
       mode: "date",

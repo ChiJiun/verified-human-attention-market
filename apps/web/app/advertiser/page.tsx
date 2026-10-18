@@ -72,6 +72,33 @@ type TxStatus =
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
 
+/**
+ * Per-draft marker that a createCampaign transaction may have been broadcast
+ * (set right before the wallet is asked to send, cleared once the draft is
+ * linked or the wallet refused). It survives a reload, so the page offers
+ * "Check again" first instead of a second send that would only revert
+ * (DraftAlreadyCreated) and cost gas.
+ */
+const attemptKey = (campaignId: string) => `vham:create-attempt:${campaignId}`;
+function rememberAttempt(campaignId: string, at: number | null) {
+  try {
+    if (at === null) localStorage.removeItem(attemptKey(campaignId));
+    else localStorage.setItem(attemptKey(campaignId), String(at));
+  } catch {
+    // Storage may be unavailable (private mode); the flow still works.
+  }
+}
+function recallAttempt(campaignId: string): number | null {
+  try {
+    const raw = localStorage.getItem(attemptKey(campaignId));
+    return raw ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+/** After this long a pending creation is assumed dropped; Create is offered again. */
+const RETRY_CREATE_AFTER_MS = 10 * 60_000;
+
 /** EIP-1193 4001: the user rejected the request, so nothing was sent. */
 function isUserRejection(error: unknown): boolean {
   for (
@@ -111,7 +138,17 @@ export default function AdvertiserPage() {
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("campaign");
-    if (id) setCampaignId(id);
+    if (id) {
+      setCampaignId(id);
+      // A creation may still be pending from before a reload.
+      setAwaitingLink(recallAttempt(id) !== null);
+    }
+  }, []);
+
+  /** The draft is linked: no creation can be pending any more. */
+  const linked = useCallback((id: string) => {
+    rememberAttempt(id, null);
+    setAwaitingLink(false);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -122,10 +159,11 @@ export default function AdvertiserPage() {
         { token: session.token },
       );
       setAnalytics(data);
+      if (data.status !== "draft") linked(campaignId);
     } catch (caught) {
       setError(describeError(caught));
     }
-  }, [campaignId, session]);
+  }, [campaignId, session, linked]);
 
   useEffect(() => {
     void api<{ chainId: number; campaignManager: string }>("/v1/chain")
@@ -238,6 +276,7 @@ export default function AdvertiserPage() {
 
       // Already created (another tab, an earlier attempt, a lost response)?
       if (await link(campaignId, null, 1)) {
+        linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
         await refresh();
         return;
@@ -250,6 +289,10 @@ export default function AdvertiserPage() {
       const args = intent.steps[0]!.args;
 
       setTx({ state: "signing", label });
+      // From here on a transaction may exist even if this page never learns
+      // its hash (reload, lost response): remember it before asking the wallet.
+      rememberAttempt(campaignId, Date.now());
+      setAwaitingLink(true);
       let hash: Hash;
       try {
         hash = await wallet.walletClient.writeContract({
@@ -270,8 +313,12 @@ export default function AdvertiserPage() {
         // The transaction may have been broadcast before the error. Look for
         // it by draft reference; pressing Create again is safe either way.
         // Rejected in the wallet: nothing was sent.
-        if (isUserRejection(caught)) throw caught;
+        if (isUserRejection(caught)) {
+          linked(campaignId);
+          throw caught;
+        }
         if (await link(campaignId, null)) {
+          linked(campaignId);
           setTx({ state: "done", label: "Campaign created", hash: null });
           await refresh();
           return;
@@ -282,7 +329,6 @@ export default function AdvertiserPage() {
           message:
             "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
         });
-        setAwaitingLink(true);
         return;
       }
 
@@ -291,6 +337,7 @@ export default function AdvertiserPage() {
       if (mined.kind === "reverted") {
         // Usually DraftAlreadyCreated: another attempt created it first.
         if (await link(campaignId, null, 1)) {
+          linked(campaignId);
           setTx({ state: "done", label: "Campaign created", hash });
           await refresh();
           return;
@@ -301,6 +348,7 @@ export default function AdvertiserPage() {
 
       setTx({ state: "reconciling", label: "Linking campaign", hash });
       if (await link(campaignId, hash)) {
+        linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash });
         await refresh();
       } else {
@@ -310,7 +358,6 @@ export default function AdvertiserPage() {
           message:
             "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
         });
-        setAwaitingLink(true);
       }
     });
 
@@ -319,7 +366,7 @@ export default function AdvertiserPage() {
     run(async () => {
       if (!session || !campaignId) return;
       if (await link(campaignId, null, 1)) {
-        setAwaitingLink(false);
+        linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
         await refresh();
         return;
@@ -452,7 +499,10 @@ export default function AdvertiserPage() {
         address: manager,
         abi: campaignManagerAbi,
         functionName: "fundCampaign",
-        args: [BigInt(current.onchainCampaignId), amount],
+        // The contract re-checks the draft reference inside the funding
+        // transaction, closing the gap between this page's read and the
+        // moment the money moves (ADR-0011).
+        args: [BigInt(current.onchainCampaignId), amount, current.draftRef],
       });
       setTx({ state: "pending", label: "Fund campaign", hash: fundHash });
       const funded = await waitForTx(wallet.publicClient, fundHash);
@@ -595,10 +645,26 @@ export default function AdvertiserPage() {
                 Create on-chain
               </button>
             )}
-            {awaitingLink && (
-              <button onClick={checkLink} disabled={busy}>
-                Check again
-              </button>
+            {analytics?.status === "draft" && awaitingLink && (
+              <>
+                <button onClick={checkLink} disabled={busy}>
+                  Check again
+                </button>
+                {(() => {
+                  const attemptAt = recallAttempt(campaignId);
+                  return attemptAt !== null &&
+                    Date.now() - attemptAt > RETRY_CREATE_AFTER_MS ? (
+                    <button
+                      className="secondary"
+                      onClick={createOnchain}
+                      disabled={busy || wrongNetwork}
+                      title="If the earlier transaction was mined after all, this one reverts (DraftAlreadyCreated) and only costs gas."
+                    >
+                      Create on-chain anyway
+                    </button>
+                  ) : null;
+                })()}
+              </>
             )}
             {analytics?.status === "pending_onchain" &&
               onCurrentDeployment &&

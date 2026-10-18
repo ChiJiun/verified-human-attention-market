@@ -119,7 +119,7 @@ Unknown or malformed campaign ids return `404`.
 
 ## POST /v1/campaigns/:id/publish
 
-Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime, draftRef)` on `CampaignManager` (`draftRef = keccak256("vham-draft:" + draftId)`, ADR-0011), `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
+Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime, draftRef)` on `CampaignManager` (`draftRef = keccak256("vham-draft:" + draftId)`, ADR-0011), `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget, draftRef)` (the contract reverts with `WrongDraft` unless the reference names that id for the sender). Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
 
 ## POST /v1/campaigns/:id/onchain
 
@@ -266,7 +266,7 @@ Accepted response:
 }
 ```
 
-If signing fails (e.g. `SIGNER_MISMATCH`, `CHAIN_UNAVAILABLE`, or no signer configured), the completion is still accepted and `claim` is `{ "status": "pending_authorization", "code": "<reason or null>" }`; the authorization endpoint below can be called again.
+The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed.
 
 # Claims
 

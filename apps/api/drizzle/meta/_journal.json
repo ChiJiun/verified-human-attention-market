@@ -92,6 +92,13 @@
       "when": 1792047681316,
       "tag": "0012_indexer_halts",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792299241623,
+      "tag": "0013_claim_onchain_campaign_id",
+      "breakpoints": true
     }
   ]
 }

@@ -34,7 +34,7 @@ contract EventTopicsTest {
         CampaignManager manager = CampaignManager(address(0));
         require(manager.campaigns.selector == bytes4(0x141961bc), "campaigns");
         require(CampaignManager.createCampaign.selector == bytes4(0x646c64f3), "createCampaign");
-        require(CampaignManager.fundCampaign.selector == bytes4(0x918eab15), "fundCampaign");
+        require(CampaignManager.fundCampaign.selector == bytes4(0x98b98012), "fundCampaign");
         require(manager.campaignIdByDraft.selector == bytes4(0x6003492a), "campaignIdByDraft");
     }
 }

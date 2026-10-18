@@ -124,6 +124,14 @@ confirmation depth; these reads do not. RPC failures fail closed.
 - **Close:** issuance stops as soon as `closedAt != 0` on-chain, so no
   authorization is issued after the issuance deadline that the refund grace
   period relies on.
+- **At acceptance:** a new accepted completion is signed inside the
+  transaction that records it (`PostgresClaimRepository.within(tx)`); if no
+  authorization can be issued the acceptance is rolled back, so an accepted
+  completion without a redeemable authorization never exists (ADR-0011).
+- **Binding:** the stored authorization records the on-chain campaign id,
+  chain and contract it was signed for. It is replayed only while these equal
+  the campaign's current link; after a deep-reorg relink or a redeploy it is
+  unredeemable, is not counted as outstanding, and a new one is issued.
 
 Submission endpoint accepts an `Idempotency-Key`.
 

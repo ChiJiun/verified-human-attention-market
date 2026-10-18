@@ -204,10 +204,15 @@ contract CampaignManager {
         emit CampaignCreated(campaignId, msg.sender, draftRef);
     }
 
-    function fundCampaign(uint256 campaignId, uint256 amount) external whenNotPaused {
+    /// @notice Funds the campaign created for `draftRef`. The reference is
+    /// checked in the same transaction as the transfer: after a deep reorg the
+    /// same id can belong to another draft of this advertiser with the same
+    /// budget, and a client that only carries the id would fund it (ADR-0011).
+    function fundCampaign(uint256 campaignId, uint256 amount, bytes32 draftRef) external whenNotPaused {
         Campaign storage campaign = _campaign(campaignId);
 
         if (msg.sender != campaign.advertiser) revert Unauthorized();
+        if (campaignIdByDraft[msg.sender][draftRef] != campaignId) revert WrongDraft();
         if (campaign.status != CampaignStatus.Draft) revert InvalidCampaignStatus();
         if (campaign.fundedBudget != 0) revert AlreadyFunded();
         if (block.timestamp >= campaign.endTime) revert CampaignAlreadyEnded();

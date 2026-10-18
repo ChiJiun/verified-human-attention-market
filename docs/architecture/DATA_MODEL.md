@@ -82,6 +82,7 @@ Replaying the same participant + wallet is idempotent. The same participant with
 | claim_signature | text nullable | EIP-712 signature; never private key |
 | claim_chain_id | bigint nullable | domain chain ID |
 | claim_contract_address | text nullable | domain verifying contract |
+| claim_onchain_campaign_id | numeric(78,0) nullable | on-chain id the signature was issued for; a replay requires it, the chain and the contract to equal the campaign's current link, otherwise the authorization is reissued (ADR-0011, migration 0013) |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 
@@ -92,7 +93,7 @@ Enforced constraints (migration `0002_submission_integrity`):
 - `UNIQUE (claim_nonce)`;
 - `CHECK`: accepted ⇒ `rejection_code IS NULL`; rejected ⇒ `rejection_code IS NOT NULL`;
 - the submission's campaign and claimant must match its eligibility record, and eligibility must not be expired (checked in the repository);
-- submission and its answers are written in one transaction;
+- submission and its answers are written in one transaction, and an accepted submission is committed only together with its claim authorization (`beforeCommit`, ADR-0011);
 - `campaign_id` FK is `ON DELETE RESTRICT`, so deleting a campaign cannot silently erase completion history.
 
 Do not store signer private material.

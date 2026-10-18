@@ -433,6 +433,39 @@ describe("EIP-712 claim authorization", () => {
     ).toMatchObject({ ok: false, code: "CAMPAIGN_CAP_REACHED" });
   });
 
+  it("reissues an authorization signed for a previous on-chain id after a deep reorg (ADR-0011)", async () => {
+    const f = fixture();
+    f.setCampaign({ ...campaign, maxCompletions: 1 });
+    const first = await authorizeClaim(f.dependencies, f.input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.claim.payload.campaignId).toBe(7n);
+
+    // Recovery relinked the draft: its canonical creation now has id 9. The
+    // stored signature names id 7 and can never be redeemed on the contract.
+    f.setCampaign({ ...campaign, maxCompletions: 1, onchainCampaignId: "9" });
+    f.setCanonicalId(9);
+
+    // It is not outstanding liability either: another human gets the slot.
+    f.setSubmission({ ...submission!, id: "submission-2" });
+    const other = await authorizeClaim(f.dependencies, {
+      ...f.input,
+      submissionId: "submission-2",
+    });
+    expect(other).toMatchObject({ ok: true, created: true });
+    if (!other.ok) return;
+    expect(other.claim.payload.campaignId).toBe(9n);
+    expect(other.claim.payload.nonce).not.toBe(first.claim.payload.nonce);
+
+    // The first human's stale signature is never replayed: a new one would
+    // be issued for id 9, but the cap is now full.
+    f.setSubmission(submission);
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_CAP_REACHED",
+    });
+  });
+
   it("enforces the global 24 h payout limit (#23)", async () => {
     const f = fixture();
     f.setCampaign({ ...campaign, maxCompletions: 10 });

@@ -362,14 +362,15 @@ contract CampaignManagerTest {
         uint64 localStart = uint64(block.timestamp + 1);
         uint64 localEnd = localStart + 30 minutes;
 
+        bytes32 ref = _nextRef();
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(reward, completions, localStart, localEnd, _nextRef());
+        uint256 campaignId = manager.createCampaign(reward, completions, localStart, localEnd, ref);
 
         vm.prank(advertiser);
         token.approve(address(manager), requiredBudget);
 
         vm.prank(advertiser);
-        manager.fundCampaign(campaignId, requiredBudget);
+        manager.fundCampaign(campaignId, requiredBudget, ref);
 
         (, uint128 fundedBudget,,,,,,,,) = manager.campaigns(campaignId);
         require(fundedBudget == requiredBudget, "funded budget");
@@ -441,8 +442,9 @@ contract CampaignManagerTest {
     }
 
     function test_FundingAfterEndRejected() public {
+        bytes32 ref = _nextRef();
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, _nextRef());
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
 
         vm.prank(advertiser);
         token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
@@ -451,12 +453,40 @@ contract CampaignManagerTest {
 
         vm.expectRevert(CampaignManager.CampaignAlreadyEnded.selector);
         vm.prank(advertiser);
-        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
+    }
+
+    /// Funding names the draft it pays for: after a deep reorg the same id can
+    /// belong to another draft with the same budget (ADR-0011).
+    function test_FundingForAnotherDraftRejected() public {
+        bytes32 ref = _nextRef();
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+
+        vm.expectRevert(CampaignManager.WrongDraft.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, keccak256("another-draft"));
+
+        // A zero reference never names a campaign either.
+        vm.expectRevert(CampaignManager.WrongDraft.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, bytes32(0));
+
+        require(token.balanceOf(address(manager)) == 0, "nothing escrowed");
+        require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Draft, "still a draft");
+
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
+        require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Active, "funded with its own draft");
     }
 
     function test_CancelUnfundedDraft() public {
+        bytes32 ref = _nextRef();
         vm.prank(advertiser);
-        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, _nextRef());
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
 
         vm.expectRevert(CampaignManager.Unauthorized.selector);
         vm.prank(address(0xDEAD));
@@ -472,7 +502,7 @@ contract CampaignManagerTest {
 
         vm.expectRevert(CampaignManager.InvalidCampaignStatus.selector);
         vm.prank(advertiser);
-        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
     }
 
     function test_CannotCancelFundedCampaign() public {
@@ -561,7 +591,7 @@ contract CampaignManagerTest {
         vm.prank(advertiser);
         token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
         vm.prank(advertiser);
-        manager.fundCampaign(idA, ONE_USDC * MAX_COMPLETIONS);
+        manager.fundCampaign(idA, ONE_USDC * MAX_COMPLETIONS, refA);
         vm.warp(startTime);
 
         CampaignManager.ClaimAuthorization memory authA = _authorization(idA, claimant, keccak256("nonce-A"));
@@ -577,7 +607,7 @@ contract CampaignManagerTest {
         vm.prank(advertiser);
         token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
         vm.prank(advertiser);
-        manager.fundCampaign(idB, ONE_USDC * MAX_COMPLETIONS);
+        manager.fundCampaign(idB, ONE_USDC * MAX_COMPLETIONS, refB);
         vm.warp(startTime);
 
         vm.expectRevert(CampaignManager.WrongDraft.selector);
@@ -604,7 +634,7 @@ contract CampaignManagerTest {
         token.approve(address(manager), budget);
 
         vm.prank(advertiser);
-        manager.fundCampaign(campaignId, budget);
+        manager.fundCampaign(campaignId, budget, ref);
 
         return campaignId;
     }

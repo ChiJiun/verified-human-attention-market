@@ -272,7 +272,14 @@ export function publishIntent(
       {
         contract: chain.contractAddress,
         function: "fundCampaign",
-        args: { campaignId: "<from CampaignCreated>", amount: budget },
+        // The contract checks the reference in the funding transaction, so
+        // after a deep reorg money cannot land on another draft's campaign
+        // that took the same id (ADR-0011).
+        args: {
+          campaignId: "<from CampaignCreated>",
+          amount: budget,
+          draftRef: draftRefFor(campaign.id),
+        },
       },
     ],
     // Report the createCampaign tx hash here, or POST without one to link by

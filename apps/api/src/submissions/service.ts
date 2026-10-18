@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import type { LiveCampaignState } from "../campaigns/onchain.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { ClaimOutcome } from "../claims/service.js";
+import type { SignedClaim } from "../claims/signer.js";
+import type { PersistenceScope } from "../db/client.js";
 import type { Deployment } from "@vham/shared/deployment";
 
 import {
@@ -53,9 +56,32 @@ export interface SubmissionServiceDependencies {
     ((campaign: CampaignRecord) => Promise<LiveCampaignState>) | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
+  /**
+   * Signs the claim authorization inside the transaction that records an
+   * accepted completion (ADR-0011): either both are persisted or neither,
+   * so no accepted completion can exist that the contract would not pay
+   * (campaign closed between the checks and the signature, signer down,
+   * payout limit reached, cap reached). The participant's attempt is then
+   * not consumed and the same request can be retried. null = no signer
+   * configured (local development without a chain).
+   */
+  authorize?:
+    | ((
+        submission: SubmissionRecord,
+        scope: PersistenceScope,
+      ) => Promise<ClaimOutcome>)
+    | null;
   now: () => Date;
   maxAttempts?: number;
   quality?: QualityConfig;
+}
+
+/** The authorization could not be issued: the acceptance is rolled back. */
+class AuthorizationRefusedError extends Error {
+  constructor(readonly outcome: { status: number; code: string }) {
+    super(`Claim authorization refused: ${outcome.code}`);
+    this.name = "AuthorizationRefusedError";
+  }
 }
 
 export type SubmissionFailureCode =
@@ -71,10 +97,23 @@ export type SubmissionFailureCode =
   | "CAMPAIGN_ENDED"
   | "MALFORMED_ANSWERS"
   | "CHAIN_HALTED"
-  | "CHAIN_UNAVAILABLE";
+  | "CHAIN_UNAVAILABLE"
+  // Authorization refused at acceptance (nothing was recorded).
+  | "CAMPAIGN_CAP_REACHED"
+  | "ALREADY_CLAIMED"
+  | "DAILY_LIMIT_REACHED"
+  | "SIGNER_UNAVAILABLE"
+  | "SIGNER_MISMATCH"
+  | "AUTHORIZATION_UNAVAILABLE";
 
 export type SubmissionOutcome =
-  | { ok: true; submission: SubmissionRecord; created: boolean }
+  | {
+      ok: true;
+      submission: SubmissionRecord;
+      created: boolean;
+      /** Signed with a new acceptance; null for replays or without a signer. */
+      claim: SignedClaim | null;
+    }
   | { ok: false; status: number; code: SubmissionFailureCode };
 
 /** Rejections that are not genuine attempts and are therefore not stored. */
@@ -137,7 +176,7 @@ export async function submitCompletion(
       return { ok: false, status: 409, code: "IDEMPOTENCY_CONFLICT" };
     }
 
-    return { ok: true, submission: existing, created: false };
+    return { ok: true, submission: existing, created: false, claim: null };
   }
 
   const campaign = await dependencies.campaigns.getById(input.campaignId);
@@ -242,6 +281,9 @@ export async function submitCompletion(
     quality,
   );
 
+  const authorize = dependencies.authorize ?? null;
+  let signed: SignedClaim | null = null;
+
   try {
     const result = await dependencies.submissions.recordIdempotent({
       id: randomUUID(),
@@ -256,10 +298,31 @@ export async function submitCompletion(
       answers: evaluation.answers,
       qualityFlags,
       createdAt: now,
+      ...(evaluation.result === "accepted" && authorize
+        ? {
+            // Acceptance means payable: sign in the same transaction and
+            // roll the acceptance back if no authorization can be issued.
+            beforeCommit: async (submission, scope) => {
+              const outcome = await authorize(submission, scope);
+              if (!outcome.ok) {
+                throw new AuthorizationRefusedError(outcome);
+              }
+              signed = outcome.claim;
+            },
+          }
+        : {}),
     });
 
-    return { ok: true, ...result };
+    return { ok: true, ...result, claim: signed };
   } catch (error) {
+    if (error instanceof AuthorizationRefusedError) {
+      return {
+        ok: false,
+        status: error.outcome.status,
+        code: error.outcome.code as SubmissionFailureCode,
+      };
+    }
+
     if (error instanceof DuplicateCompletionError) {
       return { ok: false, status: 409, code: "ALREADY_COMPLETED" };
     }

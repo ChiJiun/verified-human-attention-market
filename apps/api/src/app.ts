@@ -376,7 +376,23 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
-      // Sign at acceptance so a later close cannot strand it (ADR-0011).
+      // Acceptance means payable (ADR-0011): a new acceptance is signed
+      // inside its own transaction, so either the completion and its
+      // authorization are both stored or neither is. Replays return the
+      // stored authorization through issueAuthorization.
+      authorize:
+        claimDependencies.signer && claimDependencies.chain
+          ? (submission, scope) =>
+              authorizeClaim(
+                { ...claimDependencies, claims: claimRepository.within(scope) },
+                {
+                  campaignId: submission.campaignId,
+                  submissionId: submission.id,
+                  eligibilityToken: submission.eligibilityId,
+                  submission,
+                },
+              )
+          : null,
       issueAuthorization:
         claimDependencies.signer && claimDependencies.chain
           ? (input) => authorizeClaim(claimDependencies, input)

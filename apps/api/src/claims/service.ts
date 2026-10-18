@@ -55,7 +55,16 @@ const SIGNER_SELECTOR = encodeFunctionData({
 
 export async function authorizeClaim(
   dependencies: ClaimDependencies,
-  input: { campaignId: string; submissionId: string; eligibilityToken: string },
+  input: {
+    campaignId: string;
+    submissionId: string;
+    eligibilityToken: string;
+    /**
+     * The submission when the caller already holds it, e.g. the row it just
+     * inserted in a transaction that is not committed yet (ADR-0011).
+     */
+    submission?: Awaited<ReturnType<SubmissionRepository["getById"]>>;
+  },
 ): Promise<ClaimOutcome> {
   const { signer, chain } = dependencies;
   if (!signer || !chain) {
@@ -64,7 +73,9 @@ export async function authorizeClaim(
 
   const [campaign, submission, eligibility] = await Promise.all([
     dependencies.campaigns.getById(input.campaignId),
-    dependencies.submissions.getById(input.submissionId),
+    input.submission && input.submission.id === input.submissionId
+      ? input.submission
+      : dependencies.submissions.getById(input.submissionId),
     dependencies.eligibility.getById(input.eligibilityToken),
   ]);
 

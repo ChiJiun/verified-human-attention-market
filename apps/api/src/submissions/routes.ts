@@ -22,10 +22,10 @@ export async function registerSubmissionRoutes(
   app: FastifyInstance,
   dependencies: SubmissionServiceDependencies & {
     /**
-     * Signs the claim authorization for an accepted completion in the same
-     * request (ADR-0011): an authorization issued before the advertiser
-     * closes the campaign stays claimable after the close, so acceptance and
-     * payability cannot be separated by a later close. null = no signer.
+     * Returns the authorization of an accepted completion on a replay (the
+     * one signed at acceptance, reissued if it expired). New acceptances are
+     * signed inside their transaction through `authorize` (ADR-0011).
+     * null = no signer.
      */
     issueAuthorization:
       | ((input: {
@@ -92,13 +92,17 @@ export async function registerSubmissionRoutes(
       let claim: Record<string, unknown> | null = null;
 
       if (submission.result === "accepted") {
-        const authorization = dependencies.issueAuthorization
-          ? await dependencies.issueAuthorization({
-              campaignId: request.params.id,
-              submissionId: submission.id,
-              eligibilityToken: parsed.data.eligibilityToken,
-            })
-          : null;
+        // A new acceptance was signed in its own transaction; a replay
+        // returns the stored authorization (reissued if it expired).
+        const authorization = outcome.claim
+          ? { ok: true as const, claim: outcome.claim }
+          : dependencies.issueAuthorization
+            ? await dependencies.issueAuthorization({
+                campaignId: request.params.id,
+                submissionId: submission.id,
+                eligibilityToken: parsed.data.eligibilityToken,
+              })
+            : null;
         claim = authorization?.ok
           ? {
               status: "authorized",

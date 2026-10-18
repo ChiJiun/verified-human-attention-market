@@ -337,6 +337,10 @@ export const campaignManagerAbi = [
       {
         "name": "amount",
         "type": "uint256"
+      },
+      {
+        "name": "draftRef",
+        "type": "bytes32"
       }
     ],
     "outputs": [],

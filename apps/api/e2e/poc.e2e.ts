@@ -37,6 +37,7 @@ import { buildApp } from "../src/app.js";
 import { PostgresAuthRepository } from "../src/auth/repository.js";
 import {
   autoLinkCreatedCampaigns,
+  draftRefFor,
   readOnchainCampaign,
   syncCampaignStatuses,
 } from "../src/campaigns/onchain.js";
@@ -546,6 +547,7 @@ describeE2e("POC economic loop on a local chain", () => {
     await send(advertiser, managerAddress, manager.abi, "fundCampaign", [
       onchainId,
       10n * USDC,
+      draftRefFor(campaignId),
     ]);
     await reconcile();
 
