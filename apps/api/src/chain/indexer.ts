@@ -88,6 +88,10 @@ function decode(
  *   losing or duplicating events: (chain, tx, logIndex) is the identity.
  * - The cursor stores the hash of the last confirmed block; if it changes,
  *   the pass stops with ReorgBeyondConfirmationsError instead of guessing.
+ * - A confirmed batch is committed only if the hash of its last block is the
+ *   same before and after eth_getLogs (and matches the logs of that block),
+ *   so logs read across a reorg or a provider node switch are never stored
+ *   under a block hash they do not belong to.
  * - The unconfirmed tail is re-read on every pass; events that disappear in
  *   a shallow reorg are marked "orphaned" and never count as settlement.
  */

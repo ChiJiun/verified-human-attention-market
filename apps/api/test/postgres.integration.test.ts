@@ -365,6 +365,122 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     expect(saved?.claimNonce).toBe(first.claim.payload.nonce);
   });
 
+  it("does not count a confirmed payout as outstanding liability", async () => {
+    const createdAt = new Date("2026-10-05T10:00:00.000Z");
+    const campaignId = randomUUID();
+    await repository.createIdempotent({
+      id: campaignId,
+      chainId: 84532,
+      advertiserAddress: "0x" + "2".repeat(40),
+      creationIdempotencyKey: `cap-${campaignId}`,
+      creationRequestHash: `hash-${campaignId}`,
+      contentUrl: "https://example.com/cap",
+      rewardAtomic: "1000000",
+      maxCompletions: 2,
+      startAt: new Date("2026-10-05T10:15:00.000Z"),
+      endAt: new Date("2026-10-05T11:15:00.000Z"),
+      status: "draft",
+      createdAt,
+      updatedAt: createdAt,
+      mission: testMission("https://example.com/cap"),
+    });
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: "8",
+      publishTxHash: `0x${"b".repeat(64)}`,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+
+    const eligibilityRepository = new PostgresEligibilityRepository(
+      database.db,
+    );
+    const submissionRepository = new PostgresSubmissionRepository(database.db);
+    const missionId = await missionIdFor(campaignId);
+    const acceptedSubmission = async (digit: string) => {
+      const claimantAddress = `0x${digit.repeat(40)}`;
+      const { eligibility: record } =
+        await eligibilityRepository.recordIdempotent({
+          id: randomUUID(),
+          campaignId,
+          participantKey: digit.repeat(64),
+          claimantAddress,
+          provider: "world_id",
+          verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+          expiresAt: new Date("2026-10-05T11:15:00.000Z"),
+        });
+      const answers = [{ questionId: "q1", normalizedAnswer: "a", score: "1" }];
+      const { submission } = await submissionRepository.recordIdempotent({
+        id: randomUUID(),
+        campaignId,
+        eligibilityId: record.id,
+        missionId,
+        idempotencyKey: randomUUID(),
+        requestHash: hashSubmissionRequest({
+          campaignId,
+          claimantAddress,
+          answers,
+        }),
+        claimantAddress,
+        result: "accepted",
+        rejectionCode: null,
+        answers,
+        createdAt: new Date("2026-10-05T10:30:00.000Z"),
+      });
+      return { submissionId: submission.id, claimantAddress };
+    };
+
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const claims = new PostgresClaimRepository(database.db);
+    const now = new Date("2026-10-05T10:31:00.000Z");
+    const issue = (
+      target: { submissionId: string; claimantAddress: string },
+      paid: number,
+      redeemedNonces?: Set<string>,
+    ) =>
+      claims.issueOnce({
+        campaignId,
+        submissionId: target.submissionId,
+        now,
+        canIssue: true,
+        alreadyClaimed: false,
+        onchainPaidCompletions: paid,
+        ...(redeemedNonces ? { redeemedNonces } : {}),
+        sign: () =>
+          signer.sign({
+            campaignId: 8n,
+            claimant: target.claimantAddress as `0x${string}`,
+            amount: 1000000n,
+            chainId: 84532,
+            contractAddress: `0x${"2".repeat(40)}`,
+            issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
+          }),
+      });
+
+    // Wallets unique in this shared test database: the retention tests
+    // count every campaign a wallet appears in.
+    const first = await acceptedSubmission("a");
+    const second = await acceptedSubmission("b");
+    const firstClaim = await issue(first, 0);
+    expect(firstClaim.created).toBe(true);
+
+    // The first wallet was paid on-chain, but its signature is unexpired:
+    // without the indexed payout it is counted twice (safe side).
+    await expect(issue(second, 1)).rejects.toMatchObject({
+      code: "CAMPAIGN_CAP_REACHED",
+    });
+
+    // With the confirmed payout known, the slot is free immediately.
+    const secondClaim = await issue(
+      second,
+      1,
+      new Set([firstClaim.claim.payload.nonce.toLowerCase()]),
+    );
+    expect(secondClaim.created).toBe(true);
+    expect(secondClaim.claim.payload.nonce).not.toBe(
+      firstClaim.claim.payload.nonce,
+    );
+  });
+
   describe("chain indexer persistence", () => {
     defineIndexerContract({
       repository: () => new PostgresChainEventRepository(database.db),

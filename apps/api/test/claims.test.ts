@@ -10,6 +10,7 @@ import {
 
 import type { CampaignRecord } from "../src/campaigns/types.js";
 import { draftRefFor } from "../src/campaigns/onchain.js";
+import type { StoredEvent } from "../src/chain/events-repository.js";
 import { InMemoryClaimRepository } from "../src/claims/repository.js";
 import { registerClaimRoutes } from "../src/claims/routes.js";
 import { authorizeClaim } from "../src/claims/service.js";
@@ -73,6 +74,8 @@ function fixture() {
   let halted = false;
   let currentSubmission = submission;
   let currentEligibility = eligibility;
+  /** Indexed CampaignManager events for the campaign (what the indexer stored). */
+  const indexedEvents: StoredEvent[] = [];
   const claims = new InMemoryClaimRepository(
     async () => currentSubmission,
     async () => currentCampaign,
@@ -137,7 +140,12 @@ function fixture() {
     },
     claims,
     signer,
-    chain: { chainId: 84532, contractAddress: CONTRACT, rpc },
+    chain: {
+      chainId: 84532,
+      contractAddress: CONTRACT,
+      rpc,
+      events: { listCampaignEvents: async () => indexedEvents },
+    },
     now: () => current,
     chainHalted: async () => halted,
   };
@@ -153,6 +161,23 @@ function fixture() {
       current = value;
     },
     chainState,
+    /** Records a RewardClaimed event for `nonce` as the indexer would. */
+    indexClaim: (nonce: string, status: StoredEvent["status"]) => {
+      indexedEvents.push({
+        txHash: `0x${"77".repeat(32)}`,
+        logIndex: indexedEvents.length,
+        blockNumber: 100n,
+        blockHash: `0x${"88".repeat(32)}`,
+        status,
+        event: {
+          name: "RewardClaimed",
+          campaignId: "7",
+          claimant: CLAIMANT,
+          amount: "1000000",
+          nonce,
+        },
+      });
+    },
     setRpcSigner: (value: typeof signer.address) => {
       rpcSigner = value;
     },
@@ -361,6 +386,51 @@ describe("EIP-712 claim authorization", () => {
       ok: true,
       created: true,
     });
+  });
+
+  it("frees a slot as soon as its authorization is confirmed paid on-chain", async () => {
+    const f = fixture();
+    f.setCampaign({ ...campaign, maxCompletions: 2 });
+    const first = await authorizeClaim(f.dependencies, f.input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // The first human redeems at once: the contract now counts one paid
+    // completion while the signature is still unexpired.
+    f.chainState.paidCompletions = 1;
+    f.setSubmission({ ...submission!, id: "submission-2" });
+    const second = { ...f.input, submissionId: "submission-2" };
+
+    // Not indexed yet: counted as paid and as outstanding (safe side).
+    expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_CAP_REACHED",
+    });
+
+    // An observed (unconfirmed) payout could still be reorged out while the
+    // signature stays redeemable, so it does not free the slot either.
+    f.indexClaim(first.claim.payload.nonce, "observed");
+    expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
+      ok: false,
+      code: "CAMPAIGN_CAP_REACHED",
+    });
+
+    // Confirmed: the payout is settled, the second human is served now
+    // rather than after the 15 minute TTL.
+    f.indexClaim(first.claim.payload.nonce.toUpperCase(), "confirmed");
+    expect(await authorizeClaim(f.dependencies, second)).toMatchObject({
+      ok: true,
+      created: true,
+    });
+
+    // The cap itself still holds: paid 1 + outstanding 1 = maxCompletions.
+    f.setSubmission({ ...submission!, id: "submission-3" });
+    expect(
+      await authorizeClaim(f.dependencies, {
+        ...f.input,
+        submissionId: "submission-3",
+      }),
+    ).toMatchObject({ ok: false, code: "CAMPAIGN_CAP_REACHED" });
   });
 
   it("enforces the global 24 h payout limit (#23)", async () => {

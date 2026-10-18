@@ -88,7 +88,7 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-Status as of 2026-10-13 (verify against GitHub, which is authoritative):
+Status as of 2026-10-18 (verify against GitHub, which is authoritative):
 
 Done on `main`:
 
@@ -106,6 +106,8 @@ Done on `main`:
 - M2: #21 observability, #22 privacy/retention, #24 moderation, #23 signer custody + payout limits (ADR-0008)
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
+
+- #19 closed 2026-10-15: `CampaignManager` is deployed on Base Sepolia and recorded in `packages/contracts/deployments/84532.json`
 
 Next, in dependency order:
 

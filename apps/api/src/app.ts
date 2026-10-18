@@ -344,6 +344,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
             contractAddress: dependencies.chain.chain
               .contractAddress as `0x${string}`,
             rpc: dependencies.chain.rpc,
+            events: dependencies.chain.events,
           }
         : null,
       now,
