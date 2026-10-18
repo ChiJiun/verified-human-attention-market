@@ -2,1516 +2,226 @@
 
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
-[開發路線圖](#開發路線圖)
+廣告主付費購買**經過驗證的獨立真人**的注意力，這些人以 **USDC** 領取報酬。預算鎖在鏈上託管合約，World ID 證明參與者是獨一無二的真人，鏈下驗證器判斷任務是否真的完成，合約才會發放獎勵。
 
-**新的 developer / AI session：** 請先讀 [AGENTS.md](AGENTS.md)。
+> **這不是「看廣告賺幣」網站。** 目標是建立一個可驗證真人注意力的市場（之後提供 API），讓機器人和刷量農場無法掏空預算。
 
-> 暫定名稱。一個以 **USDC** 結算、讓廣告主／內容方購買「可驗證真人注意力」，並讓真人使用者因完成有效任務而獲得報酬的 Web3 marketplace / protocol。
+> ⚠️ **僅限測試網。** 合約尚未經過外部審計，也還沒通過 production 準備關卡（[#29](https://github.com/ChiJiun/verified-human-attention-market/issues/29)）。請勿使用真實資金。
 
-本 repository 同時作為產品規格、技術設計與 SDLC 主文件，目標是把概念從 POC 推進到可安全營運的 production system。
-
-核心主張：
-
-> **不要只做「看廣告賺幣」網站，而是建立「可驗證真人注意力市場與協議」。**
-
-## SDLC 狀態
-
-**目前階段：** Implementation
-
-**Planning / Requirements / System Design：** 基準版已完成
-
-**Implementation：** 進行中 — monorepo 與 `CampaignManager` baseline 已實作
-
-**Testing：** 進行中 — JavaScript checks + Foundry unit / fuzz / invariant tests
-
-第一批 SDLC artifact 已正式建立：
-
-- [SDLC 執行狀態](docs/SDLC_STATUS.md)
-- [Product Brief／產品簡報](docs/product/PRODUCT_BRIEF.md)
-- [MVP Requirements／需求規格](docs/product/REQUIREMENTS.md)
-- [MVP Architecture／技術架構](docs/architecture/MVP_ARCHITECTURE.md)
-- [ADR-0001：Base 作為 MVP chain 的提案](docs/adr/0001-mvp-chain-base.md)
-- [ADR-0002：Sponsored content + comprehension check](docs/adr/0002-first-use-case-sponsored-content.md)
-- [Threat Model v0／威脅模型](docs/threat-model/THREAT_MODEL.md)
-
-目前 decision 都刻意維持可逆；在 Product Decision Gate 正式接受前，不把 working assumption 當成不可更改的事實。
-
-### 本機開發
-
-**想直接看完整流程？** 請見 [Demo：本機端到端 POC](docs/DEMO.md)。在本機鏈上用真的合約、API 和資料庫，跑完「建立 → 入金 → 驗證 → 領取 → 結算」的完整流程。
-
-需求：Node.js 24+、pnpm 12.4.2；Solidity 開發使用 Foundry v1.8.4。Windows 目前透過 WSL 使用 Foundry。
-
-```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm lint
-pnpm build
-pnpm format:check
-```
-
-同時啟動 web 與 API：
-
-```bash
-pnpm dev
-```
-
-Smart contract 驗證：
-
-```bash
-cd packages/contracts
-forge fmt --check
-forge build --sizes
-forge test -vv
-```
-
-需要環境變數時，將 `.env.example` 複製成自己的 `.env`；不得把真實 private key、API key 或其他 credential commit 進 repository。
-
-### 測試說明
-
-| 層級 | 指令 | 內容 | 需要 |
-| --- | --- | --- | --- |
-| 單元 + API 測試 | `pnpm test` | 驗證器、World ID、SIWE、EIP-712 授權、indexer、鏈上對帳、metrics/告警、審核、API key 與限流、各 API 端點（記憶體版） | 無 |
-| PostgreSQL 整合 | `pnpm test`（設定 `TEST_DATABASE_URL` 後） | 同一組情境改跑真的資料庫：冪等、唯一約束、併發、reorg、授權簽發鎖、資料保存/刪除、審核稽核紀錄 | PostgreSQL 16 |
-| 合約 | `cd packages/contracts && forge test -vv` | 單元、fuzz、stateful invariant（預算守恆、完成上限）、部署腳本、事件 topic | Foundry |
-| ABI 一致性 | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | 共用 ABI 與編譯結果一致 | Foundry |
-| 端到端 demo | `pnpm --filter @vham/api test:e2e` | 本機鏈上跑完整流程：登入 → 建立 → 入金 → 驗證 → 作答 → 簽授權 → 鏈上領取 → 關閉 → 退款，最後核對金額 | anvil + PostgreSQL，見下方 |
-
-**PostgreSQL（給整合測試和 e2e 用）：**
-
-```bash
-docker run --rm --name vham-pg -p 5432:5432 \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham_test \
-  postgres:16-alpine
-export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_test
-pnpm test
-```
-
-沒有設定 `TEST_DATABASE_URL` 時，PostgreSQL 測試會 skip，不會失敗。CI 一定會跑這些測試。
-
-**端到端 demo（三個終端機）：**
-
-```bash
-# 1. 資料庫：同上的 docker run，資料庫名改用 vham_e2e（每次執行都會清空資料表）
-# 2. 本機鏈（Windows 請在 WSL 裡執行）
-anvil
-# 3. 編譯合約並執行
-(cd packages/contracts && forge build)
-export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
-export E2E_RPC_URL=http://127.0.0.1:8545
-pnpm --filter @vham/api test:e2e
-```
-
-Windows PowerShell 請改用 `$env:TEST_DATABASE_URL = "..."` 設定變數。完整步驟、預期輸出和注意事項見 [docs/DEMO.md](docs/DEMO.md)。e2e 只模擬 World ID（需要 World App），其餘都是真的元件。
-
-**只跑部分測試：**
-
-```bash
-pnpm --filter @vham/api exec vitest run auth        # 依檔名過濾
-pnpm --filter @vham/api exec vitest run -t "reorg"  # 依測試名稱過濾
-cd packages/contracts && forge test --match-contract EventTopicsTest -vv
-```
-
-**CI：** 每次 push 都會跑 `javascript`（typecheck、lint、test、build、format）、`e2e`（本機鏈端到端）、`solidity`（fmt、build、ABI 檢查、test）三個 job。失敗原因會寫成 GitHub annotation，在 PR 的 Checks 頁就看得到。
-
-**維運：** `GET /health/ready`（資料庫 + 鏈 RPC、indexer 落後區塊數）、`GET /metrics`（Prometheus，可用 `METRICS_TOKEN` 保護）、indexer worker 在 `INDEXER_METRICS_PORT` 提供 metrics；告警規則與處理步驟見 [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md)。資料保存/刪除由 indexer worker 定期執行，或手動 `pnpm --filter @vham/api retention`（政策見 [docs/privacy/DATA_RETENTION.md](docs/privacy/DATA_RETENTION.md)）。
+**新的開發者或 AI session？** 請先讀 [AGENTS.md](AGENTS.md)。
 
 ---
 
-## 1. 要解決的問題
+## 目前進度
 
-目前數位廣告與 Web3 growth campaign 常見幾個結構性問題：
-
-- 廣告主可能為 bot、click farm 或低品質流量付費；
-- 使用者提供注意力，但通常沒有直接取得其經濟價值；
-- 廣告主很難透過 API 直接購買少量、高品質、可驗證的真人互動；
-- Web3 常用 wallet activity 當作「真人」代理指標，但 wallet 並不等於獨立真人；
-- 「證明這是一個真人」與「證明這個真人真的有有效參與」是不同問題。
-
-本專案將這些問題拆成不同層處理，而不是試圖用單一機制解決全部問題。
-
----
-
-## 2. 產品定位
-
-**Verified Human Attention Marketplace**
-
-平台是一個雙邊市場，加上一層可供第三方整合的 protocol。
-
-| 角色 | 核心需求 | 平台提供的價值 |
-| --- | --- | --- |
-| Advertiser / Creator | 真人注意力、有效互動、可量測成效 | Verified-human targeting、escrow、analytics |
-| User | 以注意力、回饋或任務完成換取收益 | USDC reward、偏好設定、reputation |
-| Publisher | 將既有流量變現 | SDK / widget / API、revenue share |
-| AI Agent | 程式化購買真人服務 | API-first campaign creation、machine payment |
-
-長期目標不是只有一個網站。網站只是 protocol 的其中一個 client。
-
----
-
-## 3. 核心設計原則
-
-1. **Single-chain first。** 在市場需求未證明前，不引入 cross-chain 複雜度。
-2. **Identity 與 Engagement 分離。** World ID 可以作為 unique-human / anti-Sybil 訊號，但不能證明使用者真的有認真互動。
-3. **MVP 使用 USDC 結算。** 先避免設計 speculative native token。
-4. **Smart contract 管資金，off-chain service 管彈性邏輯。**
-5. **x402 放在 machine/API payment layer。** 它不是 click-to-earn 協議。
-6. **AARC 是未來 chain abstraction 候選層。** 不應成為 MVP 必要依賴。
-7. **每次互動都應累積護城河資產。** 包含 reputation、fraud signals、advertiser workflow integration、publisher distribution 與 market liquidity。
-
----
-
-## 4. 系統總覽
-
-```mermaid
-flowchart LR
-    A[Advertiser / Creator] -->|Wallet payment| E[Campaign Escrow]
-    G[AI Agent] -->|x402 / API payment| API[Campaign API]
-    API --> E
-
-    U[User] --> ID[World ID / Proof of Human]
-    ID --> V[Engagement Verifier]
-    U --> V
-
-    V -->|valid completion| R[Reward Distributor]
-    E --> R
-
-    R -->|USDC reward| U
-    R -->|protocol fee| P[Protocol Treasury]
-    R -->|publisher share| PUB[Publisher]
-
-    PUB -->|SDK / Widget| U
-
-    V --> REP[Reputation / Fraud Signals]
-    REP --> API
-```
-
-### 各層責任
-
-| Layer | Responsibility |
+| | |
 | --- | --- |
-| World ID / Proof of Human | 提供 unique-human / anti-Sybil 訊號 |
-| Engagement Verifier | 判斷任務是否有效完成 |
-| Smart Contracts | Budget escrow、accounting、claim、refund、fee |
-| USDC | Settlement asset |
-| x402 | Agent / automated client 的 machine/API payment |
-| AARC | 未來可能的 chain abstraction / cross-chain UX |
-| Backend | Campaign orchestration、analytics、fraud detection、attestation |
-| Frontend | Advertiser dashboard、user mission feed、publisher integration |
+| **里程碑** | M1（概念驗證）：完整流程已於 2026-10-14 在 **Base Sepolia** 執行。實測紀錄正在 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) 審查中，紀錄被接受前 #12、#13、#19 維持開啟 |
+| **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。交易紀錄見 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
+| **合約** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc)，Base Sepolia（chain `84532`） |
+| **下一步** | 完成 M1 收尾，接著決定 [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61)：瀏覽即累積，登入與提領時驗證 World ID |
+
+詳細進度：[docs/SDLC_STATUS.md](docs/SDLC_STATUS.md)。
 
 ---
 
-## 5. x402 的正確定位
-
-x402 應視為 **HTTP / API resource 的 payment mechanism**，尤其適合 payer 本身是 software 或 AI Agent 的情境。
-
-適合：
-
-- AI Agent 自動付費建立或 funding campaign；
-- AI Agent 購買 verified-human response API；
-- partner / publisher 呼叫 metered API；
-- machine-to-machine workflow 自動完成支付。
-
-不應把 x402 當成：
-
-- Proof of Human；
-- engagement validity 判定機制；
-- reward accounting；
-- campaign escrow；
-- 單純「點一下就領錢」的 click-to-earn protocol。
-
-真人 advertiser 仍然可以使用 x402，但若直接 wallet checkout UX 更簡單，就不需要強迫使用者經過 x402。
-
----
-
-## 6. World ID / Proof of Human
-
-World ID 是候選 identity layer，用來提供 unique-human / anti-Sybil 訊號，而不需要本專案自行建立完整 identity network。
-
-目標 claim flow：
+## 運作方式
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant W as World ID
-    participant B as Backend
-    participant C as Reward Contract
+    autonumber
+    actor A as 廣告主
+    actor U as 參與者
+    participant W as 網頁
+    participant API as API + indexer
+    participant ID as World ID
+    participant C as CampaignManager（Base）
 
-    U->>W: Request proof
-    W-->>U: Proof / nullifier-related output
-    U->>B: Submit completion + proof
-    B->>B: Verify unique human + engagement
-    B-->>U: Signed / authorized claim
-    U->>C: claimReward(...)
-    C->>C: Prevent replay / duplicate claim
-    C-->>U: USDC
+    A->>W: 建立 campaign（內容、獎勵、題目）
+    W->>API: 儲存草稿
+    A->>C: createCampaign + 入金（USDC 託管）
+    C-->>API: 事件經 indexer 確認後，campaign 變 active
+
+    U->>W: 打開任務連結、連接錢包
+    W->>API: 取得簽好的 World ID 請求
+    U->>ID: 證明自己是獨一無二的真人（World App）
+    ID-->>API: proof，由後端驗證
+    U->>API: 送出作答
+    API-->>U: EIP-712 領取授權（鏈下簽名）
+    U->>C: claim(授權)
+    C-->>U: 1 USDC
+
+    A->>C: closeCampaign，等待期過後退款
 ```
 
-### 重要區別
+**誰負責判斷什麼**
 
-**Proof of Human ≠ Proof of Engagement**
+| 問題 | 由誰判斷 | 為什麼放在這裡 |
+| --- | --- | --- |
+| 這是獨一無二的真人嗎？ | World ID（零知識證明） | 我們永遠不知道對方是誰，只拿到一個每個 campaign 專屬的識別值，用來擋第二次領取 |
+| 對方真的有參與嗎？ | API（鏈下驗證器） | 規則常改，而且答案必須保密 |
+| 這筆發放有效嗎？ | 合約 | 在鏈上檢查簽名、預算、名額上限、期限與重放 |
+| 實際付了多少錢？ | **鏈** | 資料庫從已確認的鏈上事件對帳，永遠不反過來 |
 
-一個經過真人驗證的人仍然可能：
+**合約內建的安全規則**
 
-- 點開內容後立刻關掉；
-- 隨機回答 quiz；
-- 專門 farming campaign；
-- 與其他真人協同作弊；
-- 提交低品質回饋。
-
-因此 World ID 只能是 anti-Sybil 的一層，不是整個 fraud system。
-
----
-
-## 7. Engagement Verification
-
-產品真正應累積優勢的地方，是「品質驗證」，不是一開始支援更多 chain。
-
-### 可支援的 mission
-
-- 閱讀文章；
-- 觀看內容；
-- 試用 dApp；
-- 完成 survey；
-- 回答 comprehension question；
-- 執行 on-chain action；
-- 參與 beta test；
-- 提供 structured feedback；
-- 比較兩個產品體驗；
-- human evaluation / research task。
-
-### 可使用的品質訊號
-
-- active dwell time；
-- completion percentage；
-- interaction events；
-- comprehension score；
-- task-specific on-chain evidence；
-- advertiser acceptance / rejection；
-- 歷史任務完成品質；
-- suspicious behavior score。
-
-不要只依賴 dwell time 或 click，這類訊號很容易被自動化或人工作弊。
+- **預算守恆：** 發放加退款永遠不會超過入金金額。
+- **防重放：** 每份授權有一次性的 nonce，每個錢包在同一個 campaign 只能領一次。
+- **延後退款：** 要等到最後一份可能被簽發的授權都過期，廣告主才能退款。所以已簽發的授權不會和退款互相搶錢，但參與者仍須在授權到期前（最長 15 分鐘）自己完成領取。
+- **曝險上限：** 每個 campaign 的獎勵、名額與預算在鏈上有上限（POC：1 USDC × 10）。
 
 ---
 
-## 8. Reputation
+## 架構
 
-平台應建立的是 **pseudonymous behavioral reputation**，不必強制公開 real-world identity。
+```mermaid
+flowchart LR
+    subgraph 瀏覽器
+        WEB["apps/web<br/>Next.js<br/>廣告主頁 + 任務頁"]
+        WALLET[錢包]
+        WAPP[World App]
+    end
 
-可包含：
+    subgraph 伺服器
+        API["apps/api<br/>Fastify REST API"]
+        IDX[Indexer worker]
+        DB[(PostgreSQL)]
+    end
 
-- campaign completion rate；
-- accepted completion rate；
-- comprehension score；
-- 任務完成一致性；
-- response quality；
-- dispute frequency；
-- suspicious behavior score；
-- 特定領域經驗。
+    subgraph Base
+        CM[CampaignManager]
+        USDC[USDC]
+    end
 
-概念上：
-
-```
-Verified Human
-    +
-Behavioral Reputation
-    +
-Campaign Context
-    =
-Priced Attention Quality
+    WEB --> API
+    WALLET -->|建立、入金、領取| CM
+    WAPP -->|proof| WEB
+    API -->|驗證 proof| WID[World ID API]
+    API --> DB
+    IDX -->|讀取事件| CM
+    IDX --> DB
+    CM --> USDC
 ```
 
-這會是長期護城河之一，因為競爭者可以複製程式碼，但無法瞬間複製累積的歷史品質資料。
-
----
-
-## 9. Payment 與 Chain Strategy
-
-### MVP 建議
-
-先使用 **單一 EVM-compatible chain**，並使用該鏈上正式支援的 USDC。
-
-目前候選方向可包含：
-
-- **Base**：適合 EVM、USDC、API / Agent payment 類型實驗；
-- **World Chain**：若產品高度依賴 World ecosystem 與 verified-human 場景，可進一步評估。
-
-真正實作前需要重新確認當下的：
-
-- USDC support；
-- World ID integration path；
-- transaction fee；
-- x402 ecosystem support；
-- wallet UX；
-- operational reliability；
-- smart-contract tooling。
-
-### MVP 不做 cross-chain
-
-因為 cross-chain 會增加：
-
-- bridge risk；
-- failure states；
-- liquidity assumption；
-- monitoring burden；
-- support burden；
-- smart-contract attack surface。
-
-使用者不應該只為了領取少額 reward，就必須理解 bridge 或 chain switching。
-
----
-
-## 10. AARC 的角色
-
-AARC 比較適合被視為 **未來的 chain abstraction / cross-chain UX 候選層**，而不是 MVP 核心依賴。
-
-可能導入的情境：
-
-- advertiser 資金位於不同 chain；
-- user 想在不同 chain 收款；
-- campaign 需要覆蓋多條 EVM network；
-- 希望隱藏 bridge / swap / gas 細節；
-- 平台希望做到 chain-agnostic funding。
-
-建議演進：
-
-```
-Phase 1: Single-chain EVM
-Phase 2: Multi-chain demand appears
-Phase 3: Integrate AARC / chain abstraction
-Phase 4: Chain becomes an implementation detail
-```
-
-實作前必須重新驗證 AARC 當時的 SDK、supported networks、security model、fee 與限制。
-
----
-
-## 11. Smart Contract Scope
-
-Smart contract 應刻意維持小而可驗證。
-
-### 候選 contracts
-
-```
-CampaignFactory
-CampaignEscrow
-RewardDistributor
-FeeRouter
-```
-
-最小 campaign model：
-
-```solidity
-struct Campaign {
-    address advertiser;
-    address rewardToken;
-    uint256 budget;
-    uint256 rewardPerCompletion;
-    uint64 startTime;
-    uint64 endTime;
-    uint32 maxParticipants;
-    CampaignStatus status;
-}
-```
-
-可能提供：
-
-```
-createCampaign()
-fundCampaign()
-authorizeClaim()
-claimReward()
-closeCampaign()
-withdrawUnusedBudget()
-```
-
-### 重要 invariants
-
-至少保證：
-
-- rewards + fees + remaining balance 不得超過 funded budget；
-- claim 不得 replay；
-- 同一 eligibility proof 不得重複使用；
-- expired / closed campaign 不應再新增 liability；
-- unused budget 有明確 refund path；
-- protocol fee accounting 可稽核。
-
----
-
-## 12. On-chain / Off-chain Boundary
-
-不是所有邏輯都應該上鏈。
-
-### On-chain
-
-- campaign funding；
-- escrow；
-- payout；
-- fee accounting；
-- immutable settlement events；
-- replay protection；
-- 影響資金的 campaign lifecycle。
-
-### Off-chain
-
-- content delivery；
-- telemetry；
-- anti-fraud model；
-- reputation calculation；
-- advertiser analytics；
-- frequently-changing mission rules；
-- moderation；
-- indexing。
-
-早期版本可以使用 backend-signed attestation 授權 claim，但 production 必須設計成單一 backend signer 被攻破時，不能任意抽乾 escrow。
-
----
-
-## 13. 商業模式
-
-可能收入來源：
-
-1. campaign funded / settled value 抽成；
-2. verified completion fee；
-3. premium targeting；
-4. analytics subscription；
-5. API / Agent access；
-6. publisher revenue-share spread；
-7. enterprise fraud / verified-human API。
-
-在產品需求尚未驗證前，不建議優先設計 tokenomics。
-
----
-
-## 14. Distribution Strategy
-
-最強的產品型態不是要求所有人都進同一個網站。
-
-### Publisher SDK
-
-讓其他網站、app、game、blog、dApp 直接嵌入 mission。
-
-可能介面：
-
-```
-<VerifiedMission campaign="..." />
-```
-
-或：
-
-```
-POST /v1/missions/match
-POST /v1/completions
-GET  /v1/campaigns/:id
-```
-
-若大量第三方 publisher 整合 protocol，會形成比單一 UI 更難複製的 distribution moat。
-
----
-
-## 15. AI Agent Strategy
-
-AI Agent 可以成為獨立 demand-side customer。
-
-例如：
-
-1. Agent 需要 100 份真人判斷；
-2. Agent 呼叫平台 API；
-3. 透過 x402 或其他 machine-payment path 完成付款；
-4. 自動建立 campaign；
-5. verified user 完成任務；
-6. Agent 取得 structured responses。
-
-因此長期產品可以超越「廣告」：
-
-> **Verified Human Attention as an API**
-
-潛在場景：
-
-- market research；
-- AI human evaluation；
-- preference collection；
-- product testing；
-- human-in-the-loop verification；
-- community discovery。
-
----
-
-## 16. 護城河
-
-單靠「使用者用習慣了」是很弱的護城河。大型競爭者可以用補貼快速降低 switching cost。
-
-應累積：
-
-### Reputation Data
-
-長期真人品質與 fraud signals。
-
-### Market Liquidity
-
-足夠的 advertiser 與 user 供需，使 campaign 能快速成交。
-
-### Publisher Distribution
-
-第三方網站與 app 持續嵌入 protocol。
-
-### Workflow Integration
-
-Advertiser 與 Agent 將 API 寫進 production workflow。
-
-### Fraud Intelligence
-
-隨使用量累積 attack pattern 與 detection data。
-
-### Trust
-
-可靠 settlement、privacy、dispute handling、安全紀錄。
-
-大公司可以複製 frontend 與 smart contract，但無法立即複製整個 network state。
-
----
-
-## 17. Threat Model
-
-Production 必須預設 hostile environment。
-
-主要威脅：
-
-- Sybil account；
-- replayed identity proof；
-- duplicate claim；
-- scripted engagement；
-- human farming；
-- malicious advertiser content；
-- publisher attribution fraud；
-- backend signer compromise；
-- oracle / attestation manipulation；
-- smart-contract accounting bug；
-- phishing / fake campaign；
-- identity + behavioral data privacy leakage；
-- wash activity 製造假 reputation。
-
----
-
-## 18. Privacy
-
-Proof of Human 不應演變成 surveillance identity graph。
-
-原則：
-
-- 只收集必要資料；
-- real-world identity 與 campaign behavior 分離；
-- 優先使用 campaign-scoped / privacy-preserving identifier；
-- 不公開完整 user history；
-- 定義 telemetry retention；
-- analytics / research data 取得明確 consent；
-- threat-model 跨 campaign deanonymization。
-
----
-
-# SDLC
-
-本專案每一個 release 都應走完整 **Software Development Life Cycle**：
-
-```
-Planning
-   ↓
-Requirements
-   ↓
-System Design
-   ↓
-Implementation
-   ↓
-Testing
-   ↓
-Deployment
-   ↓
-Operations & Maintenance
-   ↺
-```
-
-產品成熟度則是另一個維度：
-
-```
-POC → MVP → Beta → Production → Protocol / Ecosystem
-```
-
-也就是：
-
-- **SDLC** = 每個版本如何被正確開發；
-- **Roadmap** = 產品目前走到哪個成熟階段。
-
-詳細里程碑請見 [開發路線圖](ROADMAP.zh-TW.md)。
-
----
-
-## 19. Planning
-
-要先回答：
-
-- 第一個付費客戶是誰？
-- 第一個 use case 是廣告、產品研究，還是 AI human evaluation？
-- 什麼條件算 valid completion？
-- reward 大小如何決定？
-- MVP 用哪一條 chain？
-- gas 誰負擔？
-- 哪些資料必須保持 private？
-
-Deliverables：
-
-- product brief；
-- target persona；
-- first mission definition；
-- ADR；
-- legal / compliance 初步檢視；
-- threat model v0。
-
-Exit criteria：
-
-> 開發者可以完整描述第一位 advertiser 到第一位 user 領到 reward 的流程，且沒有未解決的 payment / identity assumption。
-
----
-
-## 20. Requirements
-
-### MVP Functional Requirements
-
-- advertiser connect wallet；
-- advertiser create campaign；
-- advertiser deposit USDC；
-- user 完成 unique-human eligibility 驗證；
-- user 完成一種 mission；
-- backend 驗證 completion；
-- user claim reward；
-- advertiser 查看基本結果；
-- unused budget 可安全回收。
-
-### Non-functional Requirements
-
-- 不允許 duplicate payout；
-- budget accounting 可驗證；
-- mobile-compatible；
-- transaction failure 可觀測；
-- identity data 最小化；
-- contract invariants 可自動測試。
-
-每個 requirement 都應對應 acceptance test。
-
----
-
-## 21. System Design
-
-需要產出：
-
-- contract interfaces；
-- database schema；
-- API spec；
-- identity flow；
-- claim authorization design；
-- sequence diagram；
-- monitoring plan；
-- key management model；
-- failure / retry strategy。
-
-建議 MVP stack：
-
-```
-Frontend:     Next.js / React
-Wallet:       EVM wallet stack
-Identity:     World ID
-Settlement:   USDC
-Chain:        one EVM chain
-Contracts:    Solidity
-Backend:      TypeScript
-Database:     PostgreSQL
-Indexing:     event indexer
-Agent Pay:    x402 after core claim works
-Cross-chain:  none
-```
-
----
-
-## 22. Implementation Order
-
-建議順序：
-
-1. repo / CI skeleton；
-2. local contract environment；
-3. CampaignFactory；
-4. CampaignEscrow；
-5. USDC test funding；
-6. reward claim path；
-7. World ID integration；
-8. one mission type；
-9. backend completion verifier；
-10. advertiser dashboard；
-11. user mission feed；
-12. event indexing；
-13. analytics；
-14. x402 API；
-15. publisher SDK；
-16. reputation prototype；
-17. AARC 僅在 multi-chain demand 被證明後加入。
-
----
-
-## 23. Testing
-
-### Smart Contract
-
-- unit test；
-- fuzz test；
-- invariant test；
-- boundary timestamp；
-- exhausted budget；
-- duplicate claim；
-- signer compromise simulation；
-- pause / emergency behavior。
-
-### Application
-
-- API unit / integration test；
-- World ID failure path；
-- wallet rejection；
-- RPC outage；
-- insufficient fund；
-- USDC transfer failure；
-- stale campaign state；
-- retry / idempotency；
-- multi-device flow。
-
-### Adversarial
-
-- scripted click；
-- automated quiz answering；
-- replayed proof；
-- multiple wallet；
-- publisher spoofing；
-- telemetry forgery。
-
-Mainnet production gate：
-
-- invariants 通過；
-- critical path 有 integration test；
-- key / secret management review；
-- monitoring 與 pause procedure 已建立；
-- 當 TVL / fund exposure 有實質風險時，完成 independent review / audit。
-
----
-
-## 24. Deployment
-
-```
-Local
-  ↓
-Testnet
-  ↓
-Closed Alpha
-  ↓
-Limited Mainnet Beta
-  ↓
-Production
-```
-
-Mainnet 初期建議：
-
-- capped campaign budget；
-- capped daily payout；
-- 必要時 allowlisted advertiser；
-- emergency pause；
-- incident runbook。
-
-Happy-path demo 成功，不代表可以直接移除風險上限。
-
----
-
-## 25. Operations & Maintenance
-
-監控：
-
-- funded value；
-- settled reward value；
-- claim success rate；
-- fraud rejection rate；
-- campaign fill time；
-- RPC / API error；
-- signer activity；
-- abnormal payout pattern；
-- cost per verified engagement。
-
-營運流程：
-
-- incident response；
-- contract upgrade policy；
-- dependency update；
-- fraud-rule iteration；
-- dispute handling；
-- privacy / data deletion；
-- postmortem。
-
----
-
-## 初始 Backlog
-
-### P0 — 必須完成
-
-- [ ] 決定 MVP chain
-- [ ] 確認當下 USDC deployment / support
-- [ ] 確認當下 World ID integration path
-- [ ] 定義 campaign state machine
-- [ ] 實作 escrow contract
-- [ ] 實作 payout / claim contract
-- [ ] duplicate-claim protection
-- [ ] 一種 mission
-- [ ] World ID verification flow
-- [ ] backend completion verifier
-- [ ] advertiser funding UI
-- [ ] user claim UI
-- [ ] contract + integration tests
-
-### P1 — MVP 品質
-
-- [ ] campaign expiration / refund
-- [ ] event indexer
-- [ ] advertiser analytics
-- [ ] basic reputation
-- [ ] basic fraud rules
-- [ ] observability
-- [ ] admin / dispute tooling
-- [ ] privacy / retention policy
-
-### P2 — Growth
-
-- [ ] publisher widget / SDK
-- [ ] API documentation
-- [ ] x402 payment endpoint
-- [ ] Agent campaign API
-- [ ] mission marketplace
-- [ ] advanced reputation
-- [ ] fraud / anomaly detection
-
-### P3 — 有實際需求才做
-
-- [ ] multi-chain settlement
-- [ ] AARC integration
-- [ ] chain abstraction
-- [ ] cross-chain liquidity management
-
----
-
-## 建議 Repository Structure
-
-```text
-verified-human-attention-market/
-├─ README.md
-├─ README.zh-TW.md
-├─ ROADMAP.md
-├─ ROADMAP.zh-TW.md
-├─ docs/
-│  ├─ architecture/
-│  ├─ adr/
-│  ├─ threat-model/
-│  └─ product/
-├─ apps/
-│  ├─ web/
-│  └─ api/
-├─ packages/
-│  ├─ contracts/
-│  ├─ sdk/
-│  └─ shared/
-├─ tests/
-└─ .github/
-   └─ workflows/
-```
-
----
-
-## 核心 Metrics
-
-不要用 raw click 當主要成功指標。
-
-優先觀察：
-
-- cost per **verified valid completion**；
-- fraud-adjusted completion rate；
-- advertiser repeat rate；
-- median campaign fill time；
-- accepted completion rate；
-- user earnings per active hour；
-- publisher-sourced liquidity；
-- API / Agent-generated demand；
-- protocol take rate；
-- gross margin after chain/payment costs。
-
----
-
-## 尚待決策
-
-在 production code 開始前，優先決定：
-
-1. 第一個市場：ads、product research、AI human evaluation？
-2. MVP chain：Base 還是 World Chain，或其他經驗證選項？
-3. Gas UX：user pays、advertiser sponsors、relayer/paymaster？
-4. Claim trust model：backend-signed attestation 還是更 decentralized？
-5. 第一個 mission：article + comprehension quiz、survey、dApp trial 或其他？
-6. Reward model：fixed amount、auction、quality-tiered pricing？
-7. Privacy model：哪些 reputation public / private / selectively disclosed？
-8. Dispute model：什麼條件下 advertiser 可以 reject？
-9. Publisher model：fixed share 還是 market-based？
-10. x402 何時加入：core MVP 後，還是第一個 API release？
-
----
-
-## 目前推薦的 MVP
-
-如果現在開始開發，最窄但可信的 MVP：
-
-```
-Advertiser
-  → connect wallet
-  → create campaign
-  → deposit USDC
-
-Verified User
-  → World ID verification
-  → read content
-  → answer short comprehension check
-  → receive authorized claim
-  → claim USDC
-
-Protocol
-  → prevent duplicate claim
-  → record settlement
-  → expose basic campaign analytics
-```
-
-**先不做 native token、不做 DAO、不做 cross-chain、不把 AARC 放進 critical path，也不急著做複雜 ML fraud model。**
-
-先證明這個 economic loop 有真實需求，再往 x402 Agent buyers、publisher network、reputation、multi-chain / chain abstraction 擴張。
-
----
-
-## 專案狀態
-
-**Stage:** Planning / Requirements  
-**Target:** POC → MVP  
-**Repository:** Product specification + future implementation workspace
-
----
-
-# 開發路線圖
-
-這份 roadmap 追蹤產品從 **POC → MVP → Beta → Production → Protocol / Ecosystem** 的成熟過程。
-
-目前刻意不先寫死日期，因為團隊人力、第一個市場與技術選型尚未完全確定。每個 milestone 都用 deliverables 與 exit criteria 衡量，避免「做很多功能」被誤當成「產品有進展」。
-
----
-
-## Roadmap 原則
-
-- **Single-chain first**
-- **先用 USDC，不先發 native token**
-- **World ID / Proof of Human 只是 anti-Sybil 的一層，不等於 Proof of Engagement**
-- **x402 等核心 economic loop 跑通後，再導入 Agent / API payment**
-- **AARC / chain abstraction 等真的有 multi-chain demand 再做**
-- **financial invariants、monitoring、incident control 未完成前，不擴大 production risk**
-- **核心 KPI 是 verified valid completion，不是 raw click**
-
----
-
-## 目前狀態
-
-| 項目 | 狀態 |
+| 套件 | 內容 |
 | --- | --- |
-| Product thesis | 已定義 |
-| Initial architecture | 已定義 |
-| SDLC | 已定義 |
-| Threat model | 初版 |
-| MVP chain | 待決策 |
-| First customer / use case | 待決策 |
-| Smart contracts | 尚未開始 |
-| Frontend | 尚未開始 |
-| Backend | 尚未開始 |
-| World ID integration | 尚未開始 |
-| USDC settlement | 尚未開始 |
-| x402 integration | 延後 |
-| AARC integration | 延後 |
+| [`apps/web`](apps/web) | Next.js 前端：廣告主後台（`/advertiser`）與參與者任務頁（`/mission?campaign=…`，含 World ID widget） |
+| [`apps/api`](apps/api) | 基於 PostgreSQL（Drizzle）的 Fastify API：campaign、SIWE 登入、World ID 驗證、作答、領取授權簽發、審核、分析。也負責鏈上事件 indexer 與對帳 worker |
+| [`packages/contracts`](packages/contracts) | Solidity + Foundry：`CampaignManager` 託管合約，含單元、fuzz 與不變量測試，以及部署腳本與部署紀錄 |
+| [`packages/shared`](packages/shared) | API 與前端共用的合約 ABI 與鏈設定 |
 
-目前階段：**Planning / Requirements**
+確切版本以各套件的 `package.json` 與 lockfile 為準。
 
 ---
 
-# Milestone 0 — Product Decision Gate
+## 在本機執行
 
-## 目標
+需要：Node.js 24+、pnpm 12.4.2、Foundry v1.8.4（Windows 請裝在 WSL）、用 Docker 跑 PostgreSQL 16。
 
-在寫 production code 前，先鎖定最小但值得驗證的問題。
+**最小啟動**（只有前端 + API；登入、World ID 和鏈上功能在設定前都是關閉的）：
 
-## P0 Deliverables
-
-- [ ] 選定第一個客群：
-  - advertiser / creator；
-  - product research team；
-  - AI human-evaluation buyer。
-- [ ] 定義第一種 mission。
-- [ ] 定義 valid completion。
-- [ ] 重新確認當下支援狀況後，選定 MVP chain。
-- [ ] 確認所選 chain 上 USDC 的正式支援狀態。
-- [ ] 確認當下 World ID integration path。
-- [ ] 決定 gas model。
-- [ ] 決定第一版 reward model。
-- [ ] 定義基本 privacy / data retention 邊界。
-- [ ] 建立主要 architecture decision 的 ADR。
-
-## Dependencies
-
-無。
-
-## Exit Criteria
-
-開發者可以完整描述：
-
-> advertiser funding → unique human 完成 mission → completion 被驗證 → user claim USDC → unused budget 可回收
-
-而且 identity、settlement、campaign validity 沒有重大未決假設。
-
----
-
-# Milestone 1 — POC：End-to-End Economic Loop
-
-## 目標
-
-先證明整個 economic loop 在技術上能跑通。
-
-## Scope
-
-一條 chain、一種 mission、一條 advertiser flow、一條 verified user flow。
-
-## P0 Deliverables
-
-### Contracts
-
-- [ ] Campaign state machine
-- [ ] CampaignFactory
-- [ ] CampaignEscrow
-- [ ] Reward claim mechanism
-- [ ] Refund unused budget
-- [ ] Duplicate / replay protection
-- [ ] Contract events for indexing
-
-### Identity
-
-- [ ] World ID proof flow
-- [ ] Campaign-specific uniqueness strategy
-- [ ] Proof replay handling
-
-### Backend
-
-- [ ] Create / read campaign API
-- [ ] Completion verification endpoint
-- [ ] Claim authorization path
-- [ ] Idempotent completion handling
-
-### Frontend
-
-- [ ] Advertiser wallet connection
-- [ ] Create / fund campaign
-- [ ] User mission page
-- [ ] World ID verification UX
-- [ ] Claim reward UX
-
-### Testing
-
-- [ ] Contract unit tests
-- [ ] Basic invariant tests
-- [ ] End-to-end happy path
-- [ ] Duplicate claim test
-- [ ] Expired campaign test
-- [ ] Failed transfer / rejected wallet test
-
-## 明確不做
-
-- x402
-- AARC
-- multi-chain
-- native token
-- DAO
-- 複雜 reputation
-- ML fraud detection
-- permissionless publisher ecosystem
-
-## Exit Criteria
-
-在 local environment 或 testnet：
-
-1. advertiser 能 funding campaign；
-2. eligible human 能完成 mission；
-3. duplicate claim 會被拒絕；
-4. valid claimant 收到正確 reward；
-5. contract accounting 正確；
-6. unused budget 可安全回收。
-
----
-
-# Milestone 2 — MVP：真實買方驗證
-
-## 目標
-
-確認真實 buyer 是否願意重複為 verified human completion 付費。
-
-## P0 Deliverables
-
-- [ ] 使用正式支援的 USDC settlement
-- [ ] Campaign expiration / refund
-- [ ] Basic advertiser dashboard
-- [ ] User mission feed
-- [ ] Basic campaign analytics
-- [ ] Event indexing
-- [ ] Mission result storage
-- [ ] Basic fraud rules
-- [ ] Basic reputation fields
-- [ ] API / blockchain failure observability
-- [ ] Privacy / data retention policy
-- [ ] Admin / dispute tooling
-
-## P1 Deliverables
-
-- [ ] Multiple campaign templates
-- [ ] User preference filters
-- [ ] Basic publisher attribution
-- [ ] Exportable advertiser results
-
-## 核心 Metrics
-
-- cost per verified valid completion
-- advertiser repeat rate
-- accepted completion rate
-- fraud-adjusted completion rate
-- campaign fill time
-- user earnings per active hour
-
-## Exit Criteria
-
-至少有一個真實 buyer 願意重複 funding campaign，而且平台已能衡量 fraud-adjusted unit economics。
-
----
-
-# Milestone 3 — Closed Beta：Repeatability 與 Quality
-
-## 目標
-
-讓 marketplace 不需要每一個 campaign 都由人工介入才能完成。
-
-## Deliverables
-
-### Mission System
-
-- [ ] Multiple mission types
-- [ ] Mission templates
-- [ ] Configurable eligibility / completion rules
-- [ ] Better comprehension / quality checks
-
-### Reputation
-
-- [ ] Pseudonymous reputation model
-- [ ] Accepted-completion history
-- [ ] Domain / task-specific quality signals
-- [ ] Dispute impact on reputation
-- [ ] Abuse-resistant score update rules
-
-### Fraud
-
-- [ ] Behavioral anomaly rules
-- [ ] Telemetry forgery detection
-- [ ] Human farming heuristics
-- [ ] Rate limits
-- [ ] Risk review tooling
-
-### Publisher
-
-- [ ] First embeddable widget / SDK
-- [ ] Publisher attribution
-- [ ] Revenue-share accounting
-
-### API
-
-- [ ] Stable campaign API
-- [ ] Stable completion / result API
-- [ ] Authentication / rate limits
-- [ ] Versioning policy
-
-## Exit Criteria
-
-- campaign 能在有限人工介入下建立、完成、settle、report；
-- fraud 可以被量化，不再只是未知風險；
-- 至少一個 external publisher / integration end-to-end 運作。
-
----
-
-# Milestone 4 — Agent-Native Demand / x402
-
-## 目標
-
-讓 software 與 AI Agent 可以程式化購買 verified human work。
-
-## Dependencies
-
-- stable campaign API
-- stable settlement
-- reliable fraud controls
-- machine-readable task / result schema
-
-## Deliverables
-
-- [ ] 重新驗證當下 x402 specification / ecosystem 的整合可行性
-- [ ] Machine-readable campaign creation endpoint
-- [ ] Programmatic payment flow
-- [ ] Agent-friendly task schema
-- [ ] Structured result retrieval
-- [ ] Idempotency / payment reconciliation
-- [ ] Per-agent limit / abuse controls
-- [ ] API documentation / examples
-
-## 目標流程
-
-```
-AI Agent
-  → 需要 100 份 verified human judgments
-  → programmatic payment
-  → campaign 建立
-  → human 完成任務
-  → Agent 取得 structured results
+```bash
+pnpm install
+docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+pnpm --filter @vham/api db:migrate
+pnpm dev            # 前端 :3000，API :3001
 ```
 
-## Exit Criteria
+API 和 indexer 只從環境變數讀設定，不會自己讀 `.env` 檔。所有變數列在 [`.env.example`](.env.example)。如果要放在已被 git 忽略的 `.env`，請先載入到 shell：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則每個變數一行 `$env:NAME = "value"`。
 
-外部 software client 不需要人工逐筆 funding，就能購買並取得 verified-human work。
+**完整流程**（本機鏈、合約、indexer、錢包、模擬 World ID）：請照 **[docs/DEMO.md](docs/DEMO.md)**。它在 anvil 上跑真的合約，只有 World ID 是模擬的。
 
----
+每次 commit 前：
 
-# Milestone 5 — Production Readiness
+```bash
+pnpm typecheck && pnpm test && pnpm lint && pnpm build && pnpm format:check
+cd packages/contracts && forge fmt --check && forge build --sizes && forge test -vv
+```
 
-## 目標
+| 測試層級 | 指令 | 需要 |
+| --- | --- | --- |
+| 單元 + API（記憶體） | `pnpm test` | 無 |
+| PostgreSQL 整合 | 設定 `TEST_DATABASE_URL` 後 `pnpm test` | PostgreSQL 16 |
+| 合約 | 在 `packages/contracts` 執行 `forge test -vv` | Foundry |
+| ABI 一致性 | 在 `packages/contracts` 執行 `forge build && node scripts/export-abi.mjs --check` | Foundry |
+| 本機鏈端到端 | `pnpm --filter @vham/api test:e2e` | anvil + PostgreSQL |
 
-可以在真實資金與可預期 incident handling 下運作。
-
-## Smart Contract Security
-
-- [ ] Unit tests
-- [ ] Fuzz tests
-- [ ] Invariant tests
-- [ ] Access-control review
-- [ ] Replay protection review
-- [ ] Budget accounting review
-- [ ] Pause / emergency mechanism
-- [ ] 依 TVL / fund exposure 完成適當的 independent security review / audit
-
-## Infrastructure
-
-- [ ] Production secrets / key management
-- [ ] Monitoring / alerting
-- [ ] RPC/provider failure handling
-- [ ] Database backup / restore
-- [ ] Queue / retry strategy
-- [ ] Financial reconciliation
-- [ ] Structured logging
-- [ ] On-call / incident process
-
-## Risk Controls
-
-- [ ] Campaign funding limits
-- [ ] Daily payout limits
-- [ ] Suspicious-payout alerts
-- [ ] Signer anomaly alerts
-- [ ] Emergency pause runbook
-- [ ] Incident postmortem template
-
-## Privacy / Abuse
-
-- [ ] Data-retention enforcement
-- [ ] User deletion/privacy workflow（適用時）
-- [ ] Malicious campaign / content moderation
-- [ ] Phishing / scam controls
-- [ ] Publisher abuse controls
-
-## Exit Criteria
-
-平台能承受常見 infrastructure failure，並在解除資金上限前，已建立完整 financial/security incident response。
+CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。不要 commit 任何金鑰或填好的 `.env`。部署到測試網：[docs/deployment/TESTNET.md](docs/deployment/TESTNET.md)。
 
 ---
 
-# Milestone 6 — Publisher Network
+## 文件導覽
 
-## 目標
-
-讓 distribution 不再依賴 first-party website。
-
-## Deliverables
-
-- [ ] Public publisher SDK
-- [ ] Embeddable mission component
-- [ ] Revenue-share rules
-- [ ] Attribution system
-- [ ] Publisher analytics
-- [ ] Integration docs
-- [ ] Versioned SDK release
-- [ ] Sandbox environment
-
-## Exit Criteria
-
-多個獨立 third-party property 能無需客製化一次性整合，就導入 mission 並取得可稽核 revenue share。
-
----
-
-# Milestone 7 — Protocol / Ecosystem
-
-## 目標
-
-從 application 演進成 infrastructure。
-
-## Deliverables
-
-- [ ] Stable public API
-- [ ] Stable SDK
-- [ ] Permissionless / semi-permissionless campaign integration model
-- [ ] Third-party mission providers
-- [ ] Agent-native demand
-- [ ] Publisher network
-- [ ] Reputation portability policy
-- [ ] Protocol change 的 governance / security policy
-
-## Exit Criteria
-
-有實質比例的 demand 與 supply 來自 first-party UI 之外。
-
----
-
-# Milestone 8 — Multi-Chain / AARC Decision Gate
-
-## 目標
-
-只有在市場證明 chain fragmentation 是真問題時，才加入 chain abstraction。
-
-## Trigger Conditions
-
-至少出現一項才考慮：
-
-- 重要 advertiser 的資金主要在 unsupported chain；
-- user 明顯偏好其他 chain settlement；
-- publisher / agent partner 明確要求其他 network；
-- bridge friction 可量化地傷害 conversion；
-- 原 chain 的 liquidity / fee 成為實際限制。
-
-## Implementation 前驗證
-
-- [ ] 確認當下 AARC SDK / API capability
-- [ ] 確認 supported networks
-- [ ] Review security / trust assumption
-- [ ] 建模 bridge / swap failure state
-- [ ] 建模額外 fee
-- [ ] 定義 fallback / recovery
-- [ ] 決定 canonical campaign accounting 放在哪一層
-
-## Decision Gate 通過後才做
-
-- [ ] Chain abstraction layer
-- [ ] Cross-chain funding UX
-- [ ] 有必要時的 cross-chain reward UX
-- [ ] Liquidity / reconciliation monitoring
-- [ ] Cross-chain incident runbook
-
-## Exit Criteria
-
-使用者不需要理解 underlying chain，也能操作產品，同時 accounting 仍 deterministic，且 failure recovery 有文件化流程。
-
----
-
-# Cross-Cutting Workstreams
-
-這些工作會跨越多個 milestone。
-
-## Security
-
-- threat model
-- contract invariants
-- key management
-- dependency review
-- incident response
-
-## Privacy
-
-- data minimization
-- pseudonymous reputation
-- campaign-scoped identifiers
-- retention limits
-- deanonymization analysis
-
-## Fraud Intelligence
-
-- Sybil signals
-- behavioral signals
-- publisher fraud
-- campaign abuse
-- anomaly dataset
-
-## Developer Experience
-
-- API docs
-- SDK
-- examples
-- sandbox
-- versioning
-- backward compatibility
-
-## Market Design
-
-- reward pricing
-- platform take rate
-- publisher share
-- reputation effects
-- dispute incentives
-
----
-
-# 優先級定義
-
-| Priority | 定義 |
+| 文件 | 想知道什麼時讀它 |
 | --- | --- |
-| P0 | 當前 milestone 必需，會阻塞核心驗證 |
-| P1 | 提高品質與 repeatability |
-| P2 | 核心 demand 證明後的 growth feature |
-| P3 | 有實際證據需要才做 |
+| [AGENTS.md](AGENTS.md) | 在這個 repo 工作的規則、已完成什麼、下一步是什麼 |
+| [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | 專案現在進行到哪裡 |
+| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | 產品為誰而做、為什麼要做 |
+| [docs/product/REQUIREMENTS.md](docs/product/REQUIREMENTS.md) | MVP 必須做到什麼 |
+| [docs/product/VISION.zh-TW.md](docs/product/VISION.zh-TW.md) | 長期願景、商業模式與完整路線圖（原本的 README） |
+| [docs/architecture/MVP_ARCHITECTURE.md](docs/architecture/MVP_ARCHITECTURE.md) | 各元件怎麼組在一起 |
+| [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | 合約確切做什麼、保證什麼 |
+| [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | 簽名領取授權的運作方式 |
+| [docs/architecture/API_SPEC.md](docs/architecture/API_SPEC.md) | 所有 API 端點與錯誤代碼 |
+| [docs/architecture/DATA_MODEL.md](docs/architecture/DATA_MODEL.md) | 資料表與約束 |
+| [docs/adr/](docs/adr/) | 每個重大決策的理由（見下表） |
+| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | 可能出什麼問題、如何防範 |
+| [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) | 測了什麼、怎麼測 |
+| [docs/privacy/DATA_RETENTION.md](docs/privacy/DATA_RETENTION.md) | 保存哪些資料、保存多久、怎麼刪除 |
+| [docs/operations/](docs/operations/) | 維運手冊、告警、事故處理、備份、審核、production 準備 |
+| [docs/DEMO.md](docs/DEMO.md) | 如何跑完整流程，以及 Base Sepolia 實測紀錄 |
+| [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md) | 如何部署到 Base Sepolia |
 
-目前應集中在：
+### 架構決策紀錄（ADR）
 
-> **Milestone 0 → Milestone 1 的 P0**
+| ADR | 決定 |
+| --- | --- |
+| [0001](docs/adr/0001-mvp-chain-base.md) | MVP 使用 Base；先做單鏈 |
+| [0002](docs/adr/0002-first-use-case-sponsored-content.md) | 第一個任務：贊助內容 + 簡短理解測驗 |
+| [0003](docs/adr/0003-poc-gas-ux.md) | POC 階段由使用者付測試網 gas；上真錢前要重新評估 |
+| [0004](docs/adr/0004-claim-authorization-eip712.md) | 領取由鏈下 EIP-712 簽名授權、鏈上驗證 |
+| [0005](docs/adr/0005-poc-campaign-economics.md) | POC 經濟參數：1 測試 USDC × 最多 10 次，0% 手續費 |
+| [0006](docs/adr/0006-onchain-exposure-limits.md) | 曝險上限由合約強制執行 |
+| [0007](docs/adr/0007-world-id-integration.md) | 透過 IDKit 接 World ID，每個 campaign 一個 action，不儲存原始身份資料 |
+| [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | 領取簽名金鑰的保管、管理權限與發放上限 |
+| [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | 品質訊號只限單一 campaign，暫不做跨 campaign 信譽 |
+| 0010 | *提議中：* 瀏覽即累積，登入與提領時驗證 World ID（[PR #61](https://github.com/ChiJiun/verified-human-attention-market/pull/61)） |
 
 ---
 
-# 現在不該做的東西
+## 路線圖
 
-在 core loop 還沒證明真實需求前，不優先做：
+| 里程碑 | 目標 | 狀態 |
+| --- | --- | --- |
+| M0 | 產品決策：第一個買家、鏈、gas、領取模型、經濟參數 | ✅ 完成 |
+| **M1** | **POC：在測試網跑通完整的金流** | 🟡 已在 Base Sepolia 執行；紀錄與 #12、#13、#19 審查中 |
+| M2 | 給真實買家的 MVP：監控、隱私、審核、簽名金鑰保管 | 🟡 工程基礎已完成；尚無真實買家 |
+| M3 | 封閉測試：品質訊號、公開 API、publisher SDK | 🟡 #25、#26 完成；#27 SDK 未開始 |
+| M4 | AI agent 透過 x402 購買 campaign | ⬜ 未開始（#28） |
+| M5 | 可放真錢的 production 準備：審計、值班 | 🟡 部分完成（#29） |
+| M6–M7 | Publisher 網路、協議生態 | ⬜ 未開始 |
+| M8 | 多鏈，只在有需求證據時才做 | ⬜ 延後（#30） |
 
-- native token
-- DAO
-- speculative tokenomics
-- multi-chain settlement
-- AARC critical path
-- complex ML fraud scoring
-- fully decentralized engagement verification
-- large publisher marketplace
-- advanced auction / dynamic pricing system
-
-這些未來可能有價值，但現在只會增加 execution risk，而不會更快驗證核心 hypothesis。
+含交付項目與完成標準的完整路線圖：[docs/product/VISION.zh-TW.md](docs/product/VISION.zh-TW.md#開發路線圖)。
 
 ---
 
-# 成功定義
+## 名詞解釋
 
-第一個真正重要的 proof point 不是 TVL、token price 或 raw clicks，而是：
-
-> **真實 buyer 願意重複為 fraud-adjusted、verified-human completion 付費，因為這些結果比傳統未驗證流量更有價值。**
-
-Roadmap 中的所有功能，都應該直接支持或驗證這個命題。
+| 名詞 | 意思 |
+| --- | --- |
+| **ADR** | 架構決策紀錄（Architecture Decision Record）：一份短文件，說明一個決定、考慮過的其他方案與後果。狀態從 *Proposed（提議）→ Accepted（採納）* |
+| **M0–M8** | 上方路線圖的里程碑 |
+| **P0–P3** | issue 優先級：P0 必做且會擋住後續工作；P3 只在有需求證據時才做 |
+| **EPIC** | 之後會拆成多個小 issue 的大型任務 |
+| **World ID** | 證明「這是獨一無二的真人」的零知識證明，不會透露對方是誰 |
+| **Nullifier** | World ID 在每個 app 與 action 下回傳的匿名值；同一個人永遠得到同一個值，所以能擋第二次領取 |
+| **RP / RP 簽章** | Relying Party，也就是我們的 app。後端會為每個 World ID 請求簽名，防止別人冒充 |
+| **IDKit** | World 的 SDK；widget 會顯示讓 World App 掃描的 QR code |
+| **EIP-712** | 對結構化資料簽名的標準；後端簽出合約能驗證的領取授權 |
+| **SIWE** | Sign-In with Ethereum：用錢包簽一則訊息來登入 |
+| **Indexer** | 把已確認的合約事件讀進資料庫的 worker，會處理鏈重組（reorg） |
+| **最小單位** | USDC 有 6 位小數，所以 `1000000` 代表 1 USDC。金額永遠不用浮點數儲存 |
+| **Base Sepolia** | Base 的公開測試網（chain ID `84532`） |
+| **anvil** | Foundry 的本機區塊鏈，用於開發與 CI |
