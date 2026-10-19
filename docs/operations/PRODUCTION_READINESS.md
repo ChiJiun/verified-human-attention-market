@@ -1,7 +1,7 @@
 # Production-Readiness Gate
 
 > Issue #29. This is a hard gate: no meaningful real funds (anything beyond
-> test USDC) until every exit criterion is ✅. Status as of 2026-10-13.
+> test USDC) until every exit criterion is ✅. Status as of 2026-10-19.
 
 ## Exit criteria
 
@@ -52,3 +52,10 @@
 - [x] Severity levels, roles, first-hour checklist, communication rules.
 - [x] Incident issue template and postmortem template.
 - [ ] Named owner and on-call rota (project owner).
+
+### Decisions still required before real funds
+
+- [ ] Gas UX: revisit ADR-0003 (wallet-native sponsorship, paymaster or relayer) — the POC makes participants pay gas.
+- [ ] Deployment: multisig owner, KMS signer and signing service, second RPC provider, managed PostgreSQL with PITR (ADR-0008, RUNBOOK).
+- [ ] Web session hardening: CSP and HttpOnly cookies for SIWE sessions (Threat Model T-015).
+- [ ] World ID: wallet-bound `signal` in the proof (ADR-0007 "Not yet covered").
