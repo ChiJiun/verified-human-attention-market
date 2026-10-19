@@ -47,3 +47,9 @@ Evaluate, in order:
 ## Exit Criteria
 
 POC is acceptable if the claim flow succeeds reliably on testnet. MVP design cannot be considered complete until gas sponsorship economics are reviewed.
+
+## Status (2026-10-19)
+
+- Implemented as decided: the participant sends `claim` from their own wallet (`apps/web/app/mission/page.tsx`), the advertiser sends `createCampaign`, `approve` and `fundCampaign`; the API never broadcasts transactions.
+- **Gap:** the web app does not estimate or display the gas requirement itself; it relies on the wallet's confirmation dialog. Acceptable for the testnet POC, to be closed together with the gas-sponsorship decision.
+- The real-money revisit required above is tracked as part of the production-readiness gate (#29): decide between wallet-native sponsorship, a paymaster, or an application relayer before any mainnet deployment.

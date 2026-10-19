@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | Participants | none (World ID proof per campaign) | mission, eligibility, submissions, claim authorization, reports |
 | Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`) | everything an advertiser can do, including key management |
-| Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | only the scoped routes below, acting as the advertiser that created the key |
+| Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | the scoped routes below, acting as the advertiser that created the key; also accepted on public routes (where it grants nothing), never on admin, key-management or session routes |
 | Operators | SIWE session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` |
 
 API keys:
@@ -71,7 +71,9 @@ metrics endpoints are exempt.
   uncatalogued code). `message` is for humans and may change.
 - `retryable: true` — the same request may succeed later (back off
   exponentially; honour `Retry-After`). Examples: `RATE_LIMITED`,
-  `CHAIN_UNAVAILABLE`, `CAMPAIGN_CAP_REACHED`, `TX_PENDING`.
+  `CHAIN_UNAVAILABLE`, `CAMPAIGN_CAP_REACHED`. (`TX_PENDING` and the other
+  `202 reconciling` codes are not error bodies; they carry
+  `retryAfterSeconds` instead.)
 - `retryable: false` — change the request or stop. Examples:
   `IDEMPOTENCY_CONFLICT`, `ALREADY_CLAIMED`, `INSUFFICIENT_SCOPE`.
 - Unknown codes: treat 5xx and 429 as retryable, other 4xx as terminal.
@@ -105,5 +107,6 @@ campaign, submission, claim and PostgreSQL tests.
   semantics, making optional input required) require `/v2`.
 - A deprecated endpoint or field is announced in the changelog and served
   with `Deprecation: true` and `Sunset: <HTTP date>` headers for at least
-  90 days in the sandbox and 180 days in live before removal.
+  90 days in the sandbox and 180 days in live before removal. (Policy only:
+  nothing is deprecated yet and the API emits no such headers today.)
 - Error codes are never reused for a different meaning.

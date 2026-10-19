@@ -3,6 +3,8 @@
 > Scope: POC → MVP  
 > Status: Draft  
 > This is not a security audit.
+>
+> Implementation status reviewed: 2026-10-19
 
 ## Assets
 
@@ -39,6 +41,8 @@
 - campaign/action-specific replay rules；
 - behavioral fraud signals later。
 
+**Implemented (#9, ADR-0007):** one World ID action per campaign, backend verification against the v4 API, `UNIQUE(campaign_id, participant_key)` and `UNIQUE(campaign_id, claimant_address)`, one accepted completion per human (partial unique index), one paid claim per wallet on-chain.
+
 **Residual risk:** 真人帳號出租、多人協同、verification market。
 
 ## T-002 Proof Replay
@@ -52,6 +56,8 @@
 - campaign-specific policy；
 - never issue claim solely from client assertion。
 
+**Implemented:** the IDKit result is forwarded unchanged to World's verify endpoint and only a nullifier that World verified is accepted; replaying the same proof returns the same eligibility (idempotent) and can never bind a second wallet. Not yet covered: binding the wallet as the proof `signal` (ADR-0007 "Not yet covered").
+
 ## T-003 Claim Replay
 
 **Threat:** 同一 reward authorization 多次領取。
@@ -62,6 +68,8 @@
 - on-chain consumed nonce mapping；
 - signed campaign + claimant + amount + expiry；
 - tests for replay。
+
+**Implemented:** `consumedNonces`, `claimedWallet`, EIP-712 domain binding, `issuedAt`/`expiresAt` with `MAX_AUTHORIZATION_TTL`, and `draftRef` (ADR-0011) so an authorization cannot be redeemed against a campaign another draft obtained under the same id after a deep reorg. Tests: `test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`, `test_ClaimRejectsAnotherDraftsAuthorization`, `test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign`.
 
 ## T-004 Backend Signer Compromise
 
@@ -99,6 +107,8 @@
 - simple contract state machine；
 - avoid duplicate source of truth。
 
+**Implemented:** `invariant_BudgetIsConserved`, `invariant_PaidRewardsNeverExceedFunding`, `invariant_CompletionsStayWithinCap` (stateful, 128 runs × 64 calls in CI); refund waits one authorization TTL after the issuance deadline; `checkReconciliation` compares contract state, indexed events and issued authorizations and alerts on any mismatch.
+
 ## T-006 Reentrancy / Token Interaction Bug
 
 **Threat:** malicious or unexpected token behavior around transfers。
@@ -109,6 +119,8 @@
 - Checks-Effects-Interactions；
 - standard audited primitives where appropriate；
 - reentrancy protection if contract flow requires it。
+
+**Implemented:** one immutable `rewardToken`; `claim` and `refundUnusedBudget` update state (nonce, wallet, accounting, status) before the external token call (checks-effects-interactions); transfers use a low-level call that tolerates tokens returning no data but reverts on `false`. There is no reentrancy guard; a reentrant USDC call would find the nonce already consumed and the wallet already marked. Residual: the token is trusted (official USDC only).
 
 ## T-007 Engagement Automation
 
@@ -121,6 +133,8 @@
 - rate limits；
 - behavior signals；
 - advertiser acceptance / fraud analytics。
+
+**Implemented:** two attempts per verified human per campaign, answer key never served, deterministic grading, campaign-scoped quality flags (`FAST_COMPLETION`, `PASSED_ON_RETRY`, `CAMPAIGN_BURST`, ADR-0009) shown only to the advertiser. Residual: a bot driven by a verified human still passes a short quiz; see T-017.
 
 ## T-008 Human Farming
 
@@ -144,6 +158,8 @@
 - server-issued session/challenge；
 - cross-check multiple signals；
 - never authorize payment on dwell time alone。
+
+**Implemented:** the API accepts no client telemetry at all; the only engagement evidence is the server-graded answers plus server-side timestamps (`verifiedAt`, `createdAt`).
 
 ## T-010 Advertiser Malicious Content
 
@@ -211,6 +227,8 @@
 - idempotency；
 - never treat timeout as definitive failure without reconciliation。
 
+**Implemented (#16, #17, ADR-0011):** events are confirmed only `INDEXER_CONFIRMATIONS` deep; the unconfirmed tail is re-read every pass and reorged events are orphaned; logs read across a reorg are never committed; a reorg deeper than the confirmation depth halts the deployment (`indexer_halts`) so no participation or signing continues on stale links, and `reorg:recover` re-verifies every link against the contract before the index is rebuilt; drafts link by `draftRef` so a lost RPC response never leads to a second creation; the API reads the contract live before accepting a completion or signing. Residual: recovery is manual and the API is unavailable to participants during a halt.
+
 ## T-014 Admin Abuse
 
 **Threat:** privileged operator changes campaign or drains funds。
@@ -227,31 +245,6 @@
 
 **Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
-## T-017 Quality-Signal and Reputation Manipulation
-
-**Threat:** farmers learn the quality rules and pace themselves (wait out `FAST_COMPLETION`, never retry, spread across time to avoid `CAMPAIGN_BURST`); wash behaviour builds a good score to be cashed out later; a competitor floods a campaign to make its completions look flagged.
-
-**Mitigation (#25, ADR-0009):**
-
-- Flags are never shown to participants and do not change payout, so there is nothing to win by gaming them in the MVP.
-- Signals are derived from stored facts and are re-derivable; thresholds are configuration, not code.
-- No cross-campaign reputation exists, so there is no score to farm or wash; one requires its own ADR with a manipulation model.
-- A flood still needs a verified human per submission (World ID) and is visible as `CAMPAIGN_BURST` plus rate-limit metrics.
-
-**Residual risk:** careful farmers are not detected; the signals are a baseline, not proof of attention.
-
-## T-016 API Key Abuse / Scraping
-
-**Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
-
-**Mitigation (implemented, #26):**
-
-- Keys are scoped (`campaigns:write`, `analytics:read`), bound to one advertiser and environment, stored as `sha256` only, and can never reach admin, key-management or session endpoints.
-- Owner and operator revocation take effect on the next request; creation and revocation are audit-logged.
-- Per-key, per-IP and stricter per-route (sign-in, eligibility, reports) rate limits with metrics.
-
-**Residual risk:** limits are per instance and per IP; distributed abuse needs an edge/WAF limit in front of the API.
-
 ## T-015 Wallet Impersonation / Session Theft
 
 **Threat:** someone creates campaigns or reads analytics as another advertiser by claiming their address, replays a captured sign-in message, or steals a session token.
@@ -267,6 +260,31 @@
 
 **Residual risk:** the bearer token lives in browser memory and is exposed to XSS. Before beta, keep a strict CSP and consider HttpOnly cookies with CSRF protection. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
 
+## T-016 API Key Abuse / Scraping
+
+**Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
+
+**Mitigation (implemented, #26):**
+
+- Keys are scoped (`campaigns:write`, `analytics:read`), bound to one advertiser and environment, stored as `sha256` only, and can never reach admin, key-management or session endpoints.
+- Owner and operator revocation take effect on the next request; creation and revocation are audit-logged.
+- Per-key, per-IP and stricter per-route (sign-in, eligibility, reports) rate limits with metrics.
+
+**Residual risk:** limits are per instance and per IP; distributed abuse needs an edge/WAF limit in front of the API.
+
+## T-017 Quality-Signal and Reputation Manipulation
+
+**Threat:** farmers learn the quality rules and pace themselves (wait out `FAST_COMPLETION`, never retry, spread across time to avoid `CAMPAIGN_BURST`); wash behaviour builds a good score to be cashed out later; a competitor floods a campaign to make its completions look flagged.
+
+**Mitigation (#25, ADR-0009):**
+
+- Flags are never shown to participants and do not change payout, so there is nothing to win by gaming them in the MVP.
+- Signals are derived from stored facts and are re-derivable; thresholds are configuration, not code.
+- No cross-campaign reputation exists, so there is no score to farm or wash; one requires its own ADR with a manipulation model.
+- A flood still needs a verified human per submission (World ID) and is visible as `CAMPAIGN_BURST` plus rate-limit metrics.
+
+**Residual risk:** careful farmers are not detected; the signals are a baseline, not proof of attention.
+
 # POC Risk Limits
 
 Before production:
@@ -281,12 +299,15 @@ Before production:
 
 # Security Exit Gate for Mainnet Beta
 
-- [ ] Contract unit tests pass.
-- [ ] Invariant/fuzz tests pass.
-- [ ] Replay tests pass.
-- [ ] Access control review complete.
-- [ ] Signer/key handling documented.
-- [ ] Monitoring alerts exist.
-- [ ] Pause and incident runbook tested.
-- [ ] Financial exposure is capped.
+Status 2026-10-19 (details in `docs/operations/PRODUCTION_READINESS.md`, #29):
+
+- [x] Contract unit tests pass (CI job `solidity`).
+- [x] Invariant/fuzz tests pass (CI).
+- [x] Replay tests pass (Foundry + API).
+- [x] Access control review complete for the current contract (owner: pause/unpause, signer rotation, ownership transfer only; ADR-0008). To be repeated by the independent reviewer.
+- [x] Signer/key handling documented (ADR-0008, RUNBOOK).
+- [x] Monitoring alerts exist (`docs/operations/alerts.yml`).
+- [x] Pause and incident runbook tested (Foundry, e2e drill; INCIDENT_RESPONSE.md).
+- [x] Financial exposure is capped (immutable limits, 24 h payout limit; Base mainnet not configurable).
 - [ ] Independent review/audit performed when fund exposure justifies it.
+- [ ] Named operational owner / on-call.

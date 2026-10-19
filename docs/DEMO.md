@@ -132,7 +132,7 @@ pnpm --filter @vham/api indexer    # 鏈上事件索引 + campaign 狀態同步
 - **鏈上設定**（`EVM_RPC_URL`、`USDC_ADDRESS`、`CAMPAIGN_MANAGER_ADDRESS`、`CAMPAIGN_MANAGER_DEPLOY_BLOCK`）：只要填了，就必須填完整，而且 API 啟動時會驗證鏈 ID 和合約程式碼。
 - **`SIWE_DOMAIN`**：沒設定時無法登入，廣告主相關端點一律回 401。
 - **`WORLD_ID_RP_ID` + `PARTICIPANT_KEY_SECRET`**：沒設定時，資格驗證一律回 503。
-- **`CLAIM_SIGNER_PRIVATE_KEY`**：沒設定時不會簽授權。它必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰。
+- **`CLAIM_SIGNER_PRIVATE_KEY`**（或正式環境的 `CLAIM_SIGNER_URL` + `CLAIM_SIGNER_ADDRESS`，ADR-0008）：沒設定時不會簽授權。簽署位址必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰；明文私鑰只允許在 anvil 與 Base Sepolia 使用。
 - **審核（#24）**：預設 `MODERATION_MODE=review`，新 campaign 要由 `OPERATOR_ADDRESSES` 裡的錢包核准（或廣告主在 `ADVERTISER_ALLOWLIST`）才能發佈、作答。`MODERATION_MODE=open` 只能在本機 anvil 使用。詳見 [docs/operations/MODERATION.md](operations/MODERATION.md)。
 
 ### 廣告主前端（#11）
@@ -156,7 +156,7 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 5. 按「Approve & fund」核准並入金。
 6. indexer 確認後，狀態變成 active，頁面會顯示預算與成效。
 
-交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續自動對帳。重新整理頁面後也只會繼續對帳原本那筆交易，不會再送一次。
+交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
 
 ### 完整網頁 demo：本機鏈 + 前端（#11 / #12）
 
@@ -286,8 +286,11 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 | 登入 | `POST /v1/auth/nonce` → 錢包簽 SIWE → `POST /v1/auth/verify` | 廣告主 |
 | 建草稿 | `POST /v1/campaigns`（`Authorization: Bearer …`、`Idempotency-Key`） | 廣告主 |
 | 審核 | `POST /v1/admin/campaigns/:id/moderation { action: "approve", reason }` | 營運者 |
+| 鏈設定 | `GET /v1/chain` | 任何人 |
 | 取得上鏈參數 | `POST /v1/campaigns/:id/publish`（需已核准） | 廣告主 |
-| 回報建立交易 | `POST /v1/campaigns/:id/onchain { txHash }` | 廣告主 |
+| 回報 / 連結建立交易 | `POST /v1/campaigns/:id/onchain { txHash }`，或 `{}` 以 `draftRef` 查鏈上建立 | 廣告主 |
+| 任務內容 | `GET /v1/campaigns/:id/mission` | 使用者 |
+| World ID 請求 | `POST /v1/campaigns/:id/world-id/request` | 使用者 |
 | 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, idkitResponse }` | 使用者 |
 | 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 使用者 |
 | 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 使用者 |
