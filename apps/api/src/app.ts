@@ -212,6 +212,11 @@ export function buildApp(dependencies: AppDependencies = {}) {
   }
 
   registerErrorModel(app);
+  // The web app serves these responses on its own origin (the /api rewrite).
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    return payload;
+  });
   registerApiClientGate(app, {
     clients: apiClientRepository,
     environment: apiEnvironment,
