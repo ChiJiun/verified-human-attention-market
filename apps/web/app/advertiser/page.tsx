@@ -237,7 +237,9 @@ export default function AdvertiserPage() {
    */
   const [awaitingLink, setAwaitingLink] = useState(false);
   const [chainView, setChainView] = useState<ChainView>(UNREAD);
-  const [sent, setSent] = useState<SettlementAction | null>(null);
+  const [awaitingEffect, setAwaitingEffect] = useState<SettlementAction | null>(
+    null,
+  );
   const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
@@ -673,88 +675,110 @@ export default function AdvertiserPage() {
       await refresh();
     });
 
+  async function prepareSettlement(
+    wallet: Wallet,
+    analytics: Analytics,
+    target: SettlementTarget,
+    action: SettlementAction,
+  ): Promise<Address> {
+    const { data: chainInfo } = await api<{
+      chainId: number;
+      campaignManager: Address;
+    }>("/v1/chain");
+    const configured = {
+      chainId: chainInfo.chainId,
+      contractAddress: chainInfo.campaignManager,
+    };
+    if (
+      !isCurrentDeployment(
+        {
+          chainId: analytics.chainId,
+          contractAddress: analytics.onchainContractAddress,
+        },
+        configured,
+      )
+    ) {
+      throw new Error(
+        "This campaign was created on an earlier CampaignManager deployment and cannot be settled here.",
+      );
+    }
+
+    const settlement = await readSettlement(wallet, configured, target);
+    setChainView({ state: "read", onchain: settlement });
+    const verdict =
+      action === "close"
+        ? closeAvailability(settlement.reading)
+        : refundAvailability(settlement.reading);
+    if (verdict.kind !== "available") {
+      throw new Error(
+        "This is no longer available. The page has been updated.",
+      );
+    }
+    return chainInfo.campaignManager;
+  }
+
+  async function sendSettlementOnce(
+    wallet: Wallet,
+    manager: Address,
+    target: SettlementTarget,
+    action: SettlementAction,
+  ) {
+    const { functionName, label, done } = SETTLEMENT_CALLS[action];
+    const call = {
+      account: wallet.address,
+      address: manager,
+      abi: campaignManagerAbi,
+      functionName,
+      args: [BigInt(target.onchainCampaignId)],
+    } as const;
+    try {
+      await wallet.publicClient.simulateContract(call);
+    } catch (caught) {
+      throw new Error(describeSimulationFailure(caught), { cause: caught });
+    }
+
+    let hash: Hash;
+    try {
+      hash = await confirmInWallet(label, () =>
+        wallet.walletClient.writeContract({ ...call, chain }),
+      );
+    } catch (caught) {
+      throw new Error(
+        isUserRejection(caught)
+          ? "You rejected the request in your wallet, so nothing was sent."
+          : describeChainError(caught),
+        { cause: caught },
+      );
+    }
+
+    setAwaitingEffect(action);
+    setTx({ state: "pending", label, hash });
+    const mined = await waitForTx(wallet.publicClient, hash);
+    if (mined.kind === "pending") {
+      setTx({ state: "reconciling", label, hash });
+      return;
+    }
+    if (mined.kind === "reverted") {
+      setAwaitingEffect(null);
+      setTx({ state: "failed", label, message: "The transaction reverted." });
+    } else {
+      setTx({ state: "done", label: done, hash });
+    }
+    await Promise.all([refresh(), readChain()]);
+  }
+
   const settle = (action: SettlementAction) =>
     run(async () => {
       if (!wallet || !session || !analytics) return;
       const target = settlementTarget(analytics);
       if (!target) return;
-      const { functionName, label, done } = SETTLEMENT_CALLS[action];
-
-      const { data: chainInfo } = await api<{
-        chainId: number;
-        campaignManager: Address;
-      }>("/v1/chain");
-      const configured = {
-        chainId: chainInfo.chainId,
-        contractAddress: chainInfo.campaignManager,
-      };
-      if (
-        !isCurrentDeployment(
-          {
-            chainId: analytics.chainId,
-            contractAddress: analytics.onchainContractAddress,
-          },
-          configured,
-        )
-      ) {
-        throw new Error(
-          "This campaign was created on an earlier CampaignManager deployment and cannot be settled here.",
-        );
-      }
-
-      const settlement = await readSettlement(wallet, configured, target);
-      setChainView({ state: "read", onchain: settlement });
-      const verdict =
-        action === "close"
-          ? closeAvailability(settlement.reading)
-          : refundAvailability(settlement.reading);
-      if (verdict.kind !== "available") {
-        throw new Error(
-          "This is no longer available. The page has been updated.",
-        );
-      }
-
-      const call = {
-        account: wallet.address,
-        address: chainInfo.campaignManager,
-        abi: campaignManagerAbi,
-        functionName,
-        args: [BigInt(target.onchainCampaignId)],
-      } as const;
-      try {
-        await wallet.publicClient.simulateContract(call);
-      } catch (caught) {
-        throw new Error(describeSimulationFailure(caught), { cause: caught });
-      }
-
-      let hash: Hash;
-      try {
-        hash = await confirmInWallet(label, () =>
-          wallet.walletClient.writeContract({ ...call, chain }),
-        );
-      } catch (caught) {
-        throw new Error(
-          isUserRejection(caught)
-            ? "You rejected the request in your wallet, so nothing was sent."
-            : describeChainError(caught),
-          { cause: caught },
-        );
-      }
-
-      setSent(action);
-      setTx({ state: "pending", label, hash });
-      const mined = await waitForTx(wallet.publicClient, hash);
-      if (mined.kind === "pending") {
-        setTx({ state: "reconciling", label, hash });
-        return;
-      }
-      if (mined.kind === "reverted") {
-        setSent(null);
-        setTx({ state: "failed", label, message: "The transaction reverted." });
-      } else {
-        setTx({ state: "done", label: done, hash });
-      }
-      await Promise.all([refresh(), readChain()]);
+      const manager = await prepareSettlement(
+        wallet,
+        analytics,
+        target,
+        action,
+      );
+      await sendSettlementOnce(wallet, manager, target, action);
     });
 
   const apiStatus = analytics?.settlement?.pending.status;
@@ -773,9 +797,9 @@ export default function AdvertiserPage() {
       ? refundAvailability(onchain.reading)
       : null;
   const closeOffered =
-    closeVerdict?.kind === "available" && !busy && sent !== "close";
+    closeVerdict?.kind === "available" && !busy && awaitingEffect !== "close";
   const refundOffered =
-    refundVerdict?.kind === "available" && !busy && sent !== "refund";
+    refundVerdict?.kind === "available" && !busy && awaitingEffect !== "refund";
 
   return (
     <main className="container">
