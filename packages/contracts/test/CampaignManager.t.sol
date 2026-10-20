@@ -65,6 +65,7 @@ contract CampaignManagerTest {
 
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
+    uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
     // Cross-language fixture: apps/api/test/claims.test.ts computes the same
     // value from the viem EIP-712 type definition.
@@ -721,6 +722,65 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
+    function test_InvalidSignatureLengthRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("bad-length"));
+        (uint8 v, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
+
+        // Without the length check the 66-byte form would recover, because its trailing byte is never read.
+        bytes[3] memory badSignatures = [bytes(""), abi.encodePacked(r, s), abi.encodePacked(r, s, v, uint8(0))];
+        for (uint256 i; i < badSignatures.length; ++i) {
+            vm.expectRevert(CampaignManager.InvalidSignatureLength.selector);
+            vm.prank(claimant);
+            manager.claim(authorization, badSignatures[i]);
+        }
+
+        vm.prank(claimant);
+        manager.claim(authorization, abi.encodePacked(r, s, v));
+    }
+
+    function test_InvalidSignatureSRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("high-s"));
+        (uint8 v, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
+
+        // (r, n - s, flipped v) is the second valid encoding of the same signature.
+        bytes32 highS = bytes32(SECP256K1_N - uint256(s));
+        uint8 flippedV = v == 27 ? 28 : 27;
+        bytes32 digest = manager.hashClaimAuthorization(authorization);
+        require(ecrecover(digest, flippedV, r, highS) == signer, "malleated signature recovers the signer");
+
+        vm.expectRevert(CampaignManager.InvalidSignatureS.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, abi.encodePacked(r, highS, flippedV));
+
+        vm.prank(claimant);
+        manager.claim(authorization, abi.encodePacked(r, s, v));
+    }
+
+    function test_InvalidSignatureVRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("bad-v"));
+        (, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
+
+        // The contract lifts 0 and 1 to 27 and 28, so the rejected range is 2..26 and 29..255.
+        uint8[4] memory badV = [2, 26, 29, 255];
+        for (uint256 i; i < badV.length; ++i) {
+            vm.expectRevert(CampaignManager.InvalidSignatureV.selector);
+            vm.prank(claimant);
+            manager.claim(authorization, abi.encodePacked(r, s, badV[i]));
+        }
+    }
+
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
@@ -756,12 +816,19 @@ contract CampaignManagerTest {
         });
     }
 
+    function _signComponents(CampaignManager.ClaimAuthorization memory authorization, uint256 privateKey)
+        private
+        returns (uint8 v, bytes32 r, bytes32 s)
+    {
+        bytes32 digest = manager.hashClaimAuthorization(authorization);
+        return vm.sign(privateKey, digest);
+    }
+
     function _sign(CampaignManager.ClaimAuthorization memory authorization, uint256 privateKey)
         private
         returns (bytes memory)
     {
-        bytes32 digest = manager.hashClaimAuthorization(authorization);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
+        (uint8 v, bytes32 r, bytes32 s) = _signComponents(authorization, privateKey);
         return abi.encodePacked(r, s, v);
     }
 }
