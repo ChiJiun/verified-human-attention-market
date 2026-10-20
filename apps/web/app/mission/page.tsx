@@ -46,11 +46,6 @@ interface Authorization {
   contractAddress: Address;
 }
 
-/**
- * What `POST /world-id/request` returns: the action, the signal binding the
- * proof to the wallet named in the request (#71) and, when World ID is
- * live, everything IDKit needs to open.
- */
 interface LiveWorldIdRequest {
   appId: `app_${string}`;
   action: string;
@@ -164,8 +159,6 @@ export default function MissionPage() {
   const verifyHuman = () =>
     run(async () => {
       if (!wallet || !campaignId) return;
-      // The signal is made for this wallet, so the proof cannot be relayed to
-      // another one. A fresh RP signature per attempt; its key stays on the API.
       const { data } = await api<WorldIdRequest>(
         `/v1/campaigns/${campaignId}/world-id/request`,
         { method: "POST", body: { claimant: wallet.address } },

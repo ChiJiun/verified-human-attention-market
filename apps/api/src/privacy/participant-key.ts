@@ -1,7 +1,6 @@
 import { createHmac } from "node:crypto";
 
 const DOMAIN = "vham:participant-key:v1";
-/** Shared with the World ID signal, which is keyed with the same secret. */
 export const MIN_SECRET_LENGTH = 32;
 
 export const PARTICIPANT_KEY_PATTERN = /^[0-9a-f]{64}$/;

@@ -15,8 +15,6 @@ import { signalHash } from "./world-id-signal.js";
  * - Nullifiers are scoped per app + action. Using one action per campaign
  *   gives exactly the campaign-scoped duplicate-human policy we need, without
  *   any cross-campaign identifier.
- * - World checks a proof against the `signal_hash` it carries but does not
- *   know which signal we expect, so the wallet binding (#71) is checked here.
  *
  * Raw proofs are never logged or persisted by this module.
  */
@@ -39,7 +37,6 @@ export type WorldIdResult =
 export interface WorldIdVerifier {
   verify(request: {
     action: string;
-    /** The proof must have been produced for this wallet-bound signal. */
     signal: Hex;
     idkitResponse: unknown;
   }): Promise<WorldIdResult>;
@@ -80,10 +77,6 @@ const verifyResponseSchema = z.looseObject({
     .optional(),
 });
 
-/**
- * Normalizes a hex (0x…) or decimal field element (nullifier, signal hash)
- * to a canonical decimal string.
- */
 export function normalizeFieldElement(value: string): string | null {
   const trimmed = value.trim();
 
@@ -141,8 +134,6 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
       return { ok: false, code: "ENVIRONMENT_MISMATCH" };
     }
 
-    // Every credential in the result must be bound to the claimant's signal;
-    // a result mixing bound and unbound items is not one the page produces.
     const expectedSignalHash = normalizeFieldElement(
       signalHash(request.signal),
     );
@@ -246,12 +237,6 @@ export const LOCAL_DEV_CHAIN_ID = 31337;
 
 /**
  * Local-development stand-in for World ID, for demos on anvil only.
- *
- * The "proof" is `{ action, simulatedHuman, signal }`, with the signal from
- * `POST /world-id/request` as in the live flow. It proves nothing, so the
- * constructor refuses any chain other than the local anvil chain, where no
- * real value exists. The server also refuses to start in this mode
- * elsewhere.
  */
 export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
   constructor(chainId: number) {

@@ -42,8 +42,6 @@ describe("worldIdSignal", () => {
 });
 
 describe("signalHash", () => {
-  // Vectors from `hashSignal` in @worldcoin/idkit-core 4.4.0
-  // (dist/hashing.js), computed on 2026-10-20 with the installed package.
   it("matches IDKit's hashSignal for a 0x hex signal", () => {
     expect(signalHash(`0x${"11".repeat(32)}`)).toBe(
       "0x00b569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf8",

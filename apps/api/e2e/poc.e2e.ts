@@ -146,11 +146,6 @@ describeE2e("POC economic loop on a local chain", () => {
     return hash;
   }
 
-  /**
-   * World ID needs the World App, so the local stand-in is used: the proof
-   * is { action, simulatedHuman, signal } with the wallet-bound signal the
-   * page would fetch for `claimant` (#71).
-   */
   async function simulatedProof(
     campaignId: string,
     claimant: Address,
@@ -574,8 +569,6 @@ describeE2e("POC economic loop on a local chain", () => {
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
 
-    // Alice's proof is bound to her wallet: relayed for Bob's, it is refused
-    // and nothing is written (Bob verifies with his own proof in step 8).
     const relayed = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,

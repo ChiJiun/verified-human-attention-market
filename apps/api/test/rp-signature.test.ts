@@ -193,7 +193,6 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       }),
     ).toBe(true);
 
-    // The signal names the wallet, not the attempt.
     const again = (await request(WALLET_A)).json<{ signal: string }>();
     const other = (await request(WALLET_B)).json<{ signal: string }>();
     expect(again.signal).toBe(body.signal);

@@ -14,7 +14,6 @@ const NULLIFIER_HEX =
   "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8";
 const NULLIFIER_DEC = BigInt(NULLIFIER_HEX).toString(10);
 const SIGNAL: Hex = `0x${"11".repeat(32)}`;
-// hashSignal(SIGNAL) from @worldcoin/idkit-core 4.4.0, see world-id-signal.test.ts.
 const SIGNAL_HASH =
   "0x00b569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf8";
 const EMPTY_SIGNAL_HASH =
@@ -28,7 +27,6 @@ const LEGACY_ITEM = {
   signal_hash: SIGNAL_HASH,
 };
 
-/** One credential item as IDKit returns it for a proof made with SIGNAL. */
 function responseItem(overrides: Record<string, unknown> = {}) {
   return {
     identifier: "proof_of_human",

@@ -43,12 +43,6 @@ export async function registerEligibilityRoutes(
     worldIdRequest?: WorldIdRequestConfig | null;
   },
 ) {
-  /**
-   * Everything IDKit needs to open a World ID request for this campaign and
-   * claimant: the campaign action, the wallet-bound signal (#71) and a fresh
-   * RP signature (rp_context). The signing key never leaves the server
-   * (ADR-0007).
-   */
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/world-id/request",
     async (request, reply) => {
@@ -110,8 +104,6 @@ export async function registerEligibilityRoutes(
         parsed.data.claimant,
       );
 
-      // The local anvil stand-in has no IDKit request to sign; the page sends
-      // the signal back with its simulated proof.
       if (dependencies.worldId instanceof LocalSimulatedWorldIdVerifier) {
         return reply.send({ appId: null, action, signal });
       }

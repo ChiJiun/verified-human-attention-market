@@ -22,7 +22,6 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-/** Fake World ID: the "proof" is just { action, human, signal }. */
 class FakeWorldId implements WorldIdVerifier {
   calls: { action: string; signal: Hex; idkitResponse: unknown }[] = [];
 
@@ -122,7 +121,6 @@ async function setup(
   };
 }
 
-/** The proof `human` produced for `claimant`'s wallet. */
 function proof(campaignId: string, human: string, claimant = WALLET_A) {
   return {
     action: campaignAction(campaignId),
@@ -195,7 +193,6 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
       error: { code: "SIGNAL_MISMATCH" },
     });
 
-    // Wallet B is still free for that human, proving no record was written.
     const own = await verify({
       claimant: WALLET_B,
       idkitResponse: proof(campaignId, "h", WALLET_B),
