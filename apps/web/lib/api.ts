@@ -1,4 +1,8 @@
-/** Thin client for the API, reached same-origin through /api (next.config). */
+/**
+ * Thin client for the API, reached same-origin through /api (next.config).
+ * The browser session is an HttpOnly cookie that travels with these
+ * same-origin requests on its own; the page never handles a token.
+ */
 
 export class ApiError extends Error {
   constructor(
@@ -13,7 +17,6 @@ export class ApiError extends Error {
 export interface ApiOptions {
   method?: "GET" | "POST";
   body?: unknown;
-  token?: string | null;
   idempotencyKey?: string;
 }
 
@@ -25,9 +28,6 @@ export async function api<T>(
 
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
-  }
-  if (options.token) {
-    headers.authorization = `Bearer ${options.token}`;
   }
   if (options.idempotencyKey) {
     headers["idempotency-key"] = options.idempotencyKey;
@@ -59,6 +59,8 @@ export function describeError(error: unknown): string {
 
   const messages: Record<string, string> = {
     UNAUTHENTICATED: "Please sign in with your wallet first.",
+    CSRF_REJECTED:
+      "The request did not come from this site. Reload the page and try again.",
     NOT_CAMPAIGN_ADVERTISER: "This wallet is not the campaign's advertiser.",
     INVALID_CAMPAIGN: "Some campaign fields are invalid.",
     CAMPAIGN_START_IN_PAST: "The start time must be in the future.",

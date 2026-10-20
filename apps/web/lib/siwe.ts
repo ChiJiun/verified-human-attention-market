@@ -1,11 +1,11 @@
 import type { Address, WalletClient } from "viem";
 import { createSiweMessage } from "viem/siwe";
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { chainId } from "./config";
 
+/** A browser session. Its token is an HttpOnly cookie the page never sees. */
 export interface Session {
-  token: string;
   address: string;
   expiresAt: string;
 }
@@ -34,8 +34,26 @@ export async function signInWithEthereum(
   });
   const verified = await api<Session>("/v1/auth/verify", {
     method: "POST",
-    body: { message, signature },
+    body: { message, signature, transport: "cookie" },
   });
 
-  return verified.data;
+  return { address: verified.data.address, expiresAt: verified.data.expiresAt };
+}
+
+/** The session the cookie still holds after a reload, or null. */
+export async function restoreSession(): Promise<Session | null> {
+  try {
+    const { data } = await api<Session>("/v1/auth/session");
+    return { address: data.address, expiresAt: data.expiresAt };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Revokes the session and clears its cookie. */
+export async function signOut(): Promise<void> {
+  await api("/v1/auth/logout", { method: "POST" });
 }

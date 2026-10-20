@@ -28,7 +28,12 @@ import {
   type SettlementAction,
   type SettlementTarget,
 } from "../../lib/settlement";
-import { signInWithEthereum, type Session } from "../../lib/siwe";
+import {
+  restoreSession,
+  signInWithEthereum,
+  signOut,
+  type Session,
+} from "../../lib/siwe";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
 
@@ -243,6 +248,22 @@ export default function AdvertiserPage() {
   const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
+  /**
+   * The cookie session counts only for the connected wallet: another wallet
+   * has to sign in itself, which replaces the cookie.
+   */
+  const activeSession =
+    session !== null &&
+    wallet !== null &&
+    session.address === wallet.address.toLowerCase()
+      ? session
+      : null;
+
+  useEffect(() => {
+    restoreSession()
+      .then(setSession)
+      .catch((caught) => setError(describeError(caught)));
+  }, []);
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("campaign");
@@ -260,18 +281,17 @@ export default function AdvertiserPage() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!campaignId || !session) return;
+    if (!campaignId || !activeSession) return;
     try {
       const { data } = await api<Analytics>(
         `/v1/campaigns/${campaignId}/analytics`,
-        { token: session.token },
       );
       setAnalytics(data);
       if (data.status !== "draft") linked(campaignId);
     } catch (caught) {
       setError(describeError(caught));
     }
-  }, [campaignId, session, linked]);
+  }, [campaignId, activeSession, linked]);
 
   useEffect(() => {
     void api<{ chainId: number; campaignManager: string }>("/v1/chain")
@@ -363,7 +383,13 @@ export default function AdvertiserPage() {
   const connect = () =>
     run(async () => {
       setWallet(await connectWallet());
+    });
+
+  const disconnect = () =>
+    run(async () => {
+      setWallet(null);
       setSession(null);
+      await signOut();
     });
 
   const switchNetwork = () =>
@@ -381,11 +407,10 @@ export default function AdvertiserPage() {
 
   const createDraft = (payload: CampaignPayload) =>
     run(async () => {
-      if (!session) return;
+      if (!activeSession) return;
       const { data } = await api<{ id: string }>("/v1/campaigns", {
         method: "POST",
         body: payload,
-        token: session.token,
         // One key per draft submission: retries cannot create duplicates.
         idempotencyKey: crypto.randomUUID(),
       });
@@ -403,7 +428,6 @@ export default function AdvertiserPage() {
       const { status } = await api(`/v1/campaigns/${id}/onchain`, {
         method: "POST",
         body: hash ? { txHash: hash } : {},
-        token: session?.token ?? null,
       });
       if (status === 200) return true;
       if (attempt + 1 < attempts) {
@@ -422,7 +446,7 @@ export default function AdvertiserPage() {
    */
   const createOnchain = () =>
     run(async () => {
-      if (!wallet || !session || !campaignId) return;
+      if (!wallet || !activeSession || !campaignId) return;
       const label = "Create campaign on-chain";
 
       // Already created (another tab, an earlier attempt, a lost response)?
@@ -435,7 +459,7 @@ export default function AdvertiserPage() {
 
       const { data: intent } = await api<PublishIntent>(
         `/v1/campaigns/${campaignId}/publish`,
-        { method: "POST", token: session.token },
+        { method: "POST" },
       );
       const args = intent.steps[0]!.args;
 
@@ -516,7 +540,7 @@ export default function AdvertiserPage() {
   /** Looks for the creation by draft reference; never sends anything. */
   const checkLink = () =>
     run(async () => {
-      if (!session || !campaignId) return;
+      if (!activeSession || !campaignId) return;
       if (await link(campaignId, null, 1)) {
         linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
@@ -533,7 +557,7 @@ export default function AdvertiserPage() {
 
   const fund = () =>
     run(async () => {
-      if (!wallet || !session || !campaignId) return;
+      if (!wallet || !activeSession || !campaignId) return;
       const current = analytics;
       if (!current?.onchainCampaignId) return;
 
@@ -769,7 +793,7 @@ export default function AdvertiserPage() {
 
   const settle = (action: SettlementAction) =>
     run(async () => {
-      if (!wallet || !session || !analytics) return;
+      if (!wallet || !activeSession || !analytics) return;
       const target = settlementTarget(analytics);
       if (!target) return;
       const manager = await prepareSettlement(
@@ -824,30 +848,25 @@ export default function AdvertiserPage() {
                 Switch to {chain.name}
               </button>
             )}
-            {!wrongNetwork && !session && (
+            {!wrongNetwork && !activeSession && (
               <button onClick={signIn} disabled={busy}>
                 Sign in with Ethereum
               </button>
             )}
-            {session && (
+            {activeSession && (
               <p>
-                Signed in until {new Date(session.expiresAt).toLocaleString()}
+                Signed in until{" "}
+                {new Date(activeSession.expiresAt).toLocaleString()}
               </p>
             )}
-            <button
-              className="secondary"
-              onClick={() => {
-                setWallet(null);
-                setSession(null);
-              }}
-            >
+            <button className="secondary" onClick={disconnect} disabled={busy}>
               Disconnect
             </button>
           </>
         )}
       </section>
 
-      {session && !campaignId && (
+      {activeSession && !campaignId && (
         <CampaignForm
           advertiser={wallet!.address}
           busy={busy}
@@ -855,7 +874,7 @@ export default function AdvertiserPage() {
         />
       )}
 
-      {session && campaignId && (
+      {activeSession && campaignId && (
         <section className="card">
           <h2>Campaign</h2>
           <p>
