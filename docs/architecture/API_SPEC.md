@@ -186,18 +186,21 @@ Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only fr
 
 ## POST /v1/campaigns/:id/world-id/request
 
-Returns what IDKit needs to open a request (ADR-0007, #12):
+Request: `{ "claimant": "0x…" }`, the wallet the proof will be bound to (#71). Returns what IDKit needs to open a request for it (ADR-0007, #12):
 
 ```json
 {
   "appId": "app_…",
   "action": "vham-campaign-<campaignId>",
   "environment": "production",
-  "rpContext": { "rp_id": "rp_…", "nonce": "0x00…", "created_at": 1791194400, "expires_at": 1791194700, "signature": "0x…" }
+  "rpContext": { "rp_id": "rp_…", "nonce": "0x00…", "created_at": 1791194400, "expires_at": 1791194700, "signature": "0x…" },
+  "signal": "0x…"
 }
 ```
 
-`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (needs `WORLD_ID_RP_ID` + `RP_SIGNING_KEY`), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
+`signal` is a 32-byte hex value derived by the API from the campaign and the claimant (ADR-0007, update 2026-10-20); the page passes it as the `proof_of_human` credential's signal, and `eligibility/verify` refuses a result made for any other wallet. It names the wallet, not the attempt, so repeating the request returns the same signal with a fresh `rpContext`. With `WORLD_ID_MODE=simulated` (local anvil only) the response is `{ "appId": null, "action", "signal" }`.
+
+`400 INVALID_ELIGIBILITY_REQUEST` (no or malformed `claimant`), `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (needs `PARTICIPANT_KEY_SECRET`, and `WORLD_ID_RP_ID` + `RP_SIGNING_KEY` when live), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
 
 ## POST /v1/campaigns/:id/eligibility/verify
 
@@ -213,9 +216,10 @@ See ADR-0007. Request:
 Backend:
 
 1. accepts only `idkitResponse.protocol_version == "4.0"` whose `responses` items have the 4.0 shape: `identifier`, `issuer_schema_id`, `nullifier`, `expires_at_min`, and a `proof` array of exactly 5 strings. A legacy 3.0 result, or a 4.0 result that carries a 3.0 item, returns `400 INVALID_PROOF_PAYLOAD` without a call to World. The backend then checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
-2. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
-3. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
-4. returns an opaque eligibility token.
+2. checks that every credential's `signal_hash` is the hash of the signal issued for this `claimant` (`403 SIGNAL_MISMATCH` without a call to World: the proof was made for another wallet, or without a signal);
+3. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
+4. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
+5. returns an opaque eligibility token.
 
 Responses:
 
@@ -223,7 +227,7 @@ Responses:
 | --- | --- |
 | 201 / 200 (replay) | `{ "eligibilityToken", "campaignId", "claimant", "expiresAt" }` |
 | 400 | `INVALID_ELIGIBILITY_REQUEST`, `INVALID_PROOF_PAYLOAD` |
-| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH` |
+| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH`, `SIGNAL_MISMATCH` |
 | 404 | `CAMPAIGN_NOT_FOUND` |
 | 409 | `CAMPAIGN_NOT_OPEN`, `PARTICIPANT_WALLET_MISMATCH`, `WALLET_ALREADY_BOUND` |
 | 503 | `WORLD_ID_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE`, `CHAIN_HALTED` |

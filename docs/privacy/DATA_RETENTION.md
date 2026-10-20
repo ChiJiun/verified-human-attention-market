@@ -24,6 +24,7 @@
 | --- | --- | --- | --- | --- |
 | World ID proof (`idkitResponse`) | request only | Identity proof | Not stored; forwarded to World and dropped | Code (never persisted, logs redact `idkitResponse`/`proof`) |
 | World ID nullifier | memory only | Identity | Not stored | Code (only the HMAC below is stored) |
+| World ID signal (HMAC of campaign + wallet, #71) | request and response only | Pseudonymous, campaign-scoped | Not stored; World sees only its hash inside the proof | Code (derived on each request) |
 | Participant key | `eligibility.participant_key` | Pseudonymous, campaign-scoped | Campaign end + 30 days, then replaced by a value derived from the row id | `applyRetention` |
 | Payout wallet, unpaid (rejected / never accepted) | `eligibility`, `submissions` `claimant_address` | Personal data | Campaign end + 30 days, then replaced by an unlinkable placeholder address | `applyRetention` |
 | Payout wallet, paid (accepted) | same | Personal data, also public on-chain | Life of the campaign record (settlement, disputes) | — |

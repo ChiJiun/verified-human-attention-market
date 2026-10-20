@@ -56,7 +56,7 @@
 - campaign-specific policy；
 - never issue claim solely from client assertion。
 
-**Implemented:** the IDKit result is forwarded unchanged to World's verify endpoint and only a nullifier that World verified is accepted; replaying the same proof returns the same eligibility (idempotent) and can never bind a second wallet. Not yet covered: binding the wallet as the proof `signal` (ADR-0007 "Not yet covered").
+**Implemented:** the IDKit result is forwarded unchanged to World's verify endpoint and only a nullifier that World verified is accepted; replaying the same proof returns the same eligibility (idempotent) and can never bind a second wallet. Since 2026-10-20 (#71) the proof is also bound to the claimant wallet: IDKit is opened with a server-derived salted `signal` for that wallet, and a result whose credentials do not all carry its hash is refused before World is called (`403 SIGNAL_MISMATCH`, ADR-0007 update 2026-10-20). A proof relayed from another wallet, or produced without a signal, therefore cannot create eligibility, provided World's verifier refuses a proof whose `signal_hash` was altered; the official docs do not state this for 4.0 proofs, and the #13 Base Sepolia run must confirm it (ADR-0007). The signal is an HMAC rather than the address so that World cannot match `signal_hash` against public on-chain claimants.
 
 ## T-003 Claim Replay
 
