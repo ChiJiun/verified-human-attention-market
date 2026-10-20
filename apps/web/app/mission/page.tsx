@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
+import { campaignLink, type CampaignLink } from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
@@ -80,7 +81,8 @@ function store<T>(key: string, value?: T | null): T | null {
 }
 
 export default function MissionPage() {
-  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [link, setLink] = useState<CampaignLink>({ kind: "none" });
+  const campaignId = link.kind === "campaign" ? link.id : null;
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [mission, setMission] = useState<Mission | null>(null);
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -96,9 +98,10 @@ export default function MissionPage() {
     `vham:${campaignId}:${wallet?.address.toLowerCase()}:${name}`;
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("campaign");
-    setCampaignId(id);
-    if (!id) return;
+    const resolved = campaignLink(window.location.search);
+    setLink(resolved);
+    if (resolved.kind !== "campaign") return;
+    const { id } = resolved;
     void (async () => {
       try {
         const [loadedCampaign, loadedMission] = await Promise.all([
@@ -268,7 +271,11 @@ export default function MissionPage() {
   if (!campaignId) {
     return (
       <main className="container">
-        <p className="error">Missing ?campaign=&lt;id&gt; in the link.</p>
+        <p className="error">
+          {link.kind === "invalid"
+            ? "This campaign link is not valid. Ask for a fresh link."
+            : "Missing ?campaign=<id> in the link."}
+        </p>
       </main>
     );
   }

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
+import { campaignLink } from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import {
   describeChainError,
@@ -266,11 +267,15 @@ export default function AdvertiserPage() {
   }, []);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("campaign");
-    if (id) {
-      setCampaignId(id);
+    const link = campaignLink(window.location.search);
+    if (link.kind === "campaign") {
+      setCampaignId(link.id);
       // A creation may still be pending from before a reload.
-      setAwaitingLink(recallAttempt(id) !== null);
+      setAwaitingLink(recallAttempt(link.id) !== null);
+    } else if (link.kind === "invalid") {
+      setError(
+        "This campaign link is not valid. Open the campaign from where you created it, or start a new one.",
+      );
     }
   }, []);
 
