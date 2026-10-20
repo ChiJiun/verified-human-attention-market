@@ -996,7 +996,8 @@ contract CampaignManagerTest {
         returns (CampaignManager.ClaimAuthorization memory authorization, bytes32 r, bytes32 s)
     {
         for (uint256 i = 1; i <= 64; ++i) {
-            authorization = _authorization(campaignId, recipient, bytes32(i));
+            // The contract tracks nonces globally, so each wanted v searches its own range.
+            authorization = _authorization(campaignId, recipient, bytes32((uint256(wantedV) << 128) | i));
             uint8 v;
             (v, r, s) = _signComponents(authorization, SIGNER_KEY);
             if (v == wantedV) return (authorization, r, s);
