@@ -10,7 +10,6 @@ export class ApiError extends Error {
   }
 }
 
-/** A fixed route, or a path built from validated ids (campaign-link.ts). */
 export type ApiPath =
   | "/v1/auth/logout"
   | "/v1/auth/nonce"

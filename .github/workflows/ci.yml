@@ -86,7 +86,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # #72: every page needs the per-request CSP nonce on all its scripts.
       - name: CSP smoke
         run: pnpm --filter @vham/web smoke:csp
 

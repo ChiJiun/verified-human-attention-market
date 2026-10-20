@@ -23,11 +23,6 @@ const sameSession = (a: Session | null, b: Session | null) =>
     a.address === b.address &&
     a.expiresAt === b.expiresAt);
 
-/**
- * The browser's session as its cookie holds it. Sign-in, sign-out and a
- * lapsed session each start a new generation, so a restore that began
- * before one of them cannot overwrite it.
- */
 export function createSessionStore(sessionApi: SessionApi) {
   let session: Session | null = null;
   let generation = 0;
@@ -66,14 +61,11 @@ export function createSessionStore(sessionApi: SessionApi) {
       await sessionApi.signOut();
       replace(null);
     },
-    /** Follows what an API error says about the session the cookie holds. */
     async noteError(error: unknown) {
       if (!(error instanceof ApiError)) return;
       if (error.code === "UNAUTHENTICATED") {
         replace(null);
       } else if (error.code === "NOT_CAMPAIGN_ADVERTISER") {
-        // Another tab may have signed in with another wallet. The page shows
-        // the error either way, so a failed re-read changes nothing.
         await restore().catch(() => undefined);
       }
     },

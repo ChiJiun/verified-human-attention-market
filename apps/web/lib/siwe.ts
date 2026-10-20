@@ -10,11 +10,7 @@ export interface Session {
   expiresAt: string;
 }
 
-/**
- * EIP-4361 sign-in; the API verifies domain, chain, nonce and signature. The
- * result is the session the browser's cookie holds afterwards, not the
- * verify response, because a browser can refuse the cookie.
- */
+/** EIP-4361 sign-in; the API verifies domain, chain, nonce and signature. */
 export async function signInWithEthereum(
   walletClient: WalletClient,
   address: Address,

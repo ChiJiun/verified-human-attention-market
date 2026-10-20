@@ -1,6 +1,3 @@
-// Runs the production build with `next start` on a free port and checks that
-// each page gets a nonce-based Content-Security-Policy whose nonce is on
-// every <script> tag and changes with every request. Run after `next build`.
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";

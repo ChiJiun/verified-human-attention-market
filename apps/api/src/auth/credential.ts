@@ -10,14 +10,8 @@ import { hashToken, SESSION_TOKEN, type Authenticate } from "./siwe.js";
 export const SESSION_COOKIE = "__Host-vham_session";
 
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
-/** Key management and operator routes: the web app has no UI for them. */
 const HEADER_ONLY_ROUTE = /^\/v1\/(admin|api-clients)(\/|$)/;
 
-/**
- * What authenticates a request. An Authorization header, when present, is
- * the only thing read; otherwise the session cookie. `token` is null when the
- * presented value is not a session token.
- */
 export type Credential =
   | { kind: "none" }
   | { kind: "api-key"; key: string }
@@ -25,9 +19,7 @@ export type Credential =
 
 export interface PresentedCredentials {
   credential: Credential;
-  /** The request sent the session cookie name, whatever its values. */
   carriesSessionCookie: boolean;
-  /** The values sent under the session cookie name that are session tokens. */
   cookieTokens: string[];
 }
 
@@ -112,7 +104,6 @@ export function provenSameOrigin(
 }
 
 export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
-  // The requesting site is left out: it can name a site the user visited.
   request.log.warn(
     {
       event: "csrf_rejected",

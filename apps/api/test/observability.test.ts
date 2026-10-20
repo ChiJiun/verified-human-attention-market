@@ -209,7 +209,7 @@ describe("log redaction", () => {
     const app = Fastify({
       logger: {
         redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
-        // Serializers that keep headers, as a future log line might.
+        // Fastify's default req/res serializers drop headers before redaction.
         serializers: {
           req: (value: { headers?: unknown }) => value,
           res: (value: { headers?: unknown }) => value,

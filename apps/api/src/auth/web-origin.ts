@@ -1,8 +1,3 @@
-/**
- * WEB_ORIGIN, the web app's origin. A cookie session may change state from
- * it when the browser sends no Fetch Metadata. Unset means Fetch Metadata
- * only.
- */
 export function parseWebOrigin(
   value: string | undefined,
   siweDomain: string | null,
