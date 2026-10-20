@@ -11,10 +11,14 @@
  */
 import { readFileSync } from "node:fs";
 
+import { refundAvailableAt } from "@vham/shared";
+import { campaignManagerAbi } from "@vham/shared/contracts";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { fileURLToPath } from "node:url";
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   createTestClient,
   createWalletClient,
@@ -760,7 +764,6 @@ describeE2e("POC economic loop on a local chain", () => {
     await send(advertiser, managerAddress, manager.abi, "closeCampaign", [
       onchainId,
     ]);
-    const closedAt = clock;
 
     // Bob was accepted before the close, so his authorization still pays.
     await send(
@@ -807,17 +810,53 @@ describeE2e("POC economic loop on a local chain", () => {
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
 
-    await expect(
-      publicClient.simulateContract({
-        account: advertiser,
-        address: managerAddress,
-        abi: manager.abi,
-        functionName: "refundUnusedBudget",
-        args: [onchainId],
-      }),
-    ).rejects.toThrow();
+    // The custom error a refund simulation reverts with, or null if it passes.
+    // eth_call at "latest" runs at the latest block's timestamp.
+    const refundRevert = async () => {
+      try {
+        await publicClient.simulateContract({
+          account: advertiser,
+          address: managerAddress,
+          abi: campaignManagerAbi,
+          functionName: "refundUnusedBudget",
+          args: [onchainId],
+        });
+        return null;
+      } catch (error) {
+        const reverted =
+          error instanceof BaseError
+            ? error.walk(
+                (cause) => cause instanceof ContractFunctionRevertedError,
+              )
+            : null;
+        return reverted instanceof ContractFunctionRevertedError
+          ? (reverted.data?.errorName ?? "unnamed revert")
+          : "not a contract revert";
+      }
+    };
+    expect(await refundRevert()).toBe("RefundNotAvailable");
 
-    await travelTo(new Date(closedAt.getTime() + 15 * 60_000 + 5_000));
+    // The boundary is the formula the advertiser page uses, judged by the
+    // real contract: rejected one second before it, accepted at it.
+    const campaign = await publicClient.readContract({
+      address: managerAddress,
+      abi: campaignManagerAbi,
+      functionName: "campaigns",
+      args: [onchainId],
+    });
+    const refundAt = refundAvailableAt({
+      endTime: campaign[7],
+      closedAt: campaign[8],
+      ttl: await publicClient.readContract({
+        address: managerAddress,
+        abi: campaignManagerAbi,
+        functionName: "MAX_AUTHORIZATION_TTL",
+      }),
+    });
+    await travelTo(new Date(Number(refundAt - 1n) * 1000));
+    expect(await refundRevert()).toBe("RefundNotAvailable");
+    await travelTo(new Date(Number(refundAt) * 1000));
+    expect(await refundRevert()).toBeNull();
     const balanceBefore = (await publicClient.readContract({
       address: usdcAddress,
       abi: mockUsdc.abi,
