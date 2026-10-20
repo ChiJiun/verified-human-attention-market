@@ -37,6 +37,7 @@ import {
   hashSubmissionRequest,
   PostgresSubmissionRepository,
 } from "../src/submissions/repository.js";
+import { defineCampaignLinkContract } from "./support/campaign-link-contract.js";
 import { FakeChain } from "./support/fake-chain.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
@@ -257,6 +258,10 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       createCampaign,
       missionIdFor,
     }));
+  });
+
+  describe("on-chain link (ADR-0011)", () => {
+    defineCampaignLinkContract(() => repository);
   });
 
   it("keeps on-chain ids of different deployments apart (ADR-0011)", async () => {

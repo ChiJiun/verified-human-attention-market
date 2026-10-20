@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
   deriveParticipantKey,
@@ -11,10 +12,15 @@ import {
   hashSubmissionRequest,
   InMemorySubmissionRepository,
 } from "../src/submissions/repository.js";
+import { defineCampaignLinkContract } from "./support/campaign-link-contract.js";
 import {
   definePersistenceContract,
   type PersistenceHarness,
 } from "./support/persistence-contract.js";
+
+describe("in-memory campaign repository", () => {
+  defineCampaignLinkContract(() => new InMemoryCampaignRepository());
+});
 
 describe("in-memory eligibility + submission repositories", () => {
   const eligibility = new InMemoryEligibilityRepository();
