@@ -6,25 +6,23 @@ import { NextResponse, type NextRequest } from "next/server";
  */
 function contentSecurityPolicy(
   nonce: string,
-  hmrOrigin: string | null,
+  mode: { development: false } | { development: true; hmrOrigin: string },
 ): string {
-  const development = hmrOrigin !== null;
-
   return [
     "default-src 'self'",
     // React evals in development to rebuild server stack traces.
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${development ? " 'unsafe-eval'" : ""}`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${mode.development ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' https://world-id-assets.com",
-    `connect-src 'self' https://bridge.worldcoin.org${development ? ` ${hmrOrigin}` : ""}`,
+    `connect-src 'self' https://bridge.worldcoin.org${mode.development ? ` ${mode.hmrOrigin}` : ""}`,
     "frame-src 'none'",
     "worker-src 'none'",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
     "frame-ancestors 'none'",
-    ...(development ? [] : ["upgrade-insecure-requests"]),
+    ...(mode.development ? [] : ["upgrade-insecure-requests"]),
   ].join("; ");
 }
 
@@ -32,11 +30,15 @@ export function proxy(request: NextRequest) {
   const nonce = Buffer.from(
     crypto.getRandomValues(new Uint8Array(16)),
   ).toString("base64");
-  const hmrOrigin =
+  const policy = contentSecurityPolicy(
+    nonce,
     process.env.NODE_ENV === "development"
-      ? `${request.nextUrl.protocol === "https:" ? "wss" : "ws"}://${request.nextUrl.host}`
-      : null;
-  const policy = contentSecurityPolicy(nonce, hmrOrigin);
+      ? {
+          development: true,
+          hmrOrigin: `${request.nextUrl.protocol === "https:" ? "wss" : "ws"}://${request.nextUrl.host}`,
+        }
+      : { development: false },
+  );
 
   const requestHeaders = new Headers(request.headers);
   // Next stamps the nonce it finds in the request's CSP header on every
