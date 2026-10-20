@@ -73,17 +73,17 @@ export function sessionAuthenticator(
   };
 }
 
-export function crossSite(
+export function provenSameOrigin(
   headers: FastifyRequest["headers"],
   webOrigin: string | null,
 ): boolean {
   const site = headers["sec-fetch-site"];
 
   if (site !== undefined) {
-    return site !== "same-origin";
+    return site === "same-origin";
   }
 
-  return webOrigin === null || headers.origin !== webOrigin;
+  return webOrigin !== null && headers.origin === webOrigin;
 }
 
 export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
@@ -127,7 +127,7 @@ export function registerSessionCookieGuard(
       return;
     }
 
-    if (crossSite(request.headers, options.webOrigin)) {
+    if (!provenSameOrigin(request.headers, options.webOrigin)) {
       return csrfRejected(request, reply);
     }
   });
