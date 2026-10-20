@@ -96,7 +96,7 @@ Official references:
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
-| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). Close/refund buttons not built yet |
+| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69) |
 | End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
 | Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
@@ -124,9 +124,8 @@ Official references:
 ## Next SDLC Actions
 
 1. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow; then close M1 (#12, #13).
-2. Add close and refund buttons to the advertiser page (the Base Sepolia run used `cast send`).
-3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
-4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
+2. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
+3. Production readiness for real funds stays gated by #29 (external security review, named on-call).
 
 ---
 
