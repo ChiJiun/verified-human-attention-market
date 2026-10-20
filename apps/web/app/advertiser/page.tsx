@@ -339,12 +339,22 @@ export default function AdvertiserPage() {
     try {
       await action();
     } catch (caught) {
-      setTx((current) =>
-        current.state === "signing" ? { state: "idle" } : current,
-      );
       setError(describeError(caught));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function confirmInWallet<T>(
+    label: string,
+    walletCall: () => Promise<T>,
+  ): Promise<T> {
+    setTx({ state: "signing", label });
+    try {
+      return await walletCall();
+    } catch (caught) {
+      setTx({ state: "idle" });
+      throw caught;
     }
   }
 
@@ -427,27 +437,28 @@ export default function AdvertiserPage() {
       );
       const args = intent.steps[0]!.args;
 
-      setTx({ state: "signing", label });
       // From here on a transaction may exist even if this page never learns
       // its hash (reload, lost response): remember it before asking the wallet.
       rememberAttempt(campaignId, Date.now());
       setAwaitingLink(true);
       let hash: Hash;
       try {
-        hash = await wallet.walletClient.writeContract({
-          account: wallet.address,
-          chain,
-          address: intent.campaignManager,
-          abi: campaignManagerAbi,
-          functionName: "createCampaign",
-          args: [
-            BigInt(args.rewardPerCompletion!),
-            Number(args.maxCompletions),
-            BigInt(args.startTime!),
-            BigInt(args.endTime!),
-            args.draftRef as Hash,
-          ],
-        });
+        hash = await confirmInWallet(label, () =>
+          wallet.walletClient.writeContract({
+            account: wallet.address,
+            chain,
+            address: intent.campaignManager,
+            abi: campaignManagerAbi,
+            functionName: "createCampaign",
+            args: [
+              BigInt(args.rewardPerCompletion!),
+              Number(args.maxCompletions),
+              BigInt(args.startTime!),
+              BigInt(args.endTime!),
+              args.draftRef as Hash,
+            ],
+          }),
+        );
       } catch (caught) {
         // The transaction may have been broadcast before the error. Look for
         // it by draft reference; pressing Create again is safe either way.
@@ -602,15 +613,16 @@ export default function AdvertiserPage() {
       });
 
       if (allowance < amount) {
-        setTx({ state: "signing", label: "Approve USDC" });
-        const approveHash = await wallet.walletClient.writeContract({
-          account: wallet.address,
-          chain,
-          address: usdcAddress,
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [manager, amount],
-        });
+        const approveHash = await confirmInWallet("Approve USDC", () =>
+          wallet.walletClient.writeContract({
+            account: wallet.address,
+            chain,
+            address: usdcAddress,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [manager, amount],
+          }),
+        );
         setTx({ state: "pending", label: "Approve USDC", hash: approveHash });
         const approved = await waitForTx(wallet.publicClient, approveHash);
         if (approved.kind !== "confirmed") {
@@ -631,18 +643,20 @@ export default function AdvertiserPage() {
         }
       }
 
-      setTx({ state: "signing", label: "Fund campaign" });
-      const fundHash = await wallet.walletClient.writeContract({
-        account: wallet.address,
-        chain,
-        address: manager,
-        abi: campaignManagerAbi,
-        functionName: "fundCampaign",
-        // The contract re-checks the draft reference inside the funding
-        // transaction, closing the gap between this page's read and the
-        // moment the money moves (ADR-0011).
-        args: [BigInt(current.onchainCampaignId), amount, current.draftRef],
-      });
+      const onchainCampaignId = BigInt(current.onchainCampaignId);
+      const fundHash = await confirmInWallet("Fund campaign", () =>
+        wallet.walletClient.writeContract({
+          account: wallet.address,
+          chain,
+          address: manager,
+          abi: campaignManagerAbi,
+          functionName: "fundCampaign",
+          // The contract re-checks the draft reference inside the funding
+          // transaction, closing the gap between this page's read and the
+          // moment the money moves (ADR-0011).
+          args: [onchainCampaignId, amount, current.draftRef],
+        }),
+      );
       setTx({ state: "pending", label: "Fund campaign", hash: fundHash });
       const funded = await waitForTx(wallet.publicClient, fundHash);
       setTx(
@@ -713,10 +727,11 @@ export default function AdvertiserPage() {
         throw new Error(describeSimulationFailure(caught), { cause: caught });
       }
 
-      setTx({ state: "signing", label });
       let hash: Hash;
       try {
-        hash = await wallet.walletClient.writeContract({ ...call, chain });
+        hash = await confirmInWallet(label, () =>
+          wallet.walletClient.writeContract({ ...call, chain }),
+        );
       } catch (caught) {
         throw new Error(
           isUserRejection(caught)
