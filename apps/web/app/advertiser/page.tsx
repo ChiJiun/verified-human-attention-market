@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
+import { useAdvertiserSession } from "../../lib/advertiser-session";
 import { api, describeError } from "../../lib/api";
 import {
   campaignLink,
@@ -34,13 +35,6 @@ import {
   type SettlementAction,
   type SettlementTarget,
 } from "../../lib/settlement";
-import {
-  restoreSession,
-  sessionForWallet,
-  signInWithEthereum,
-  signOut,
-  type Session,
-} from "../../lib/siwe";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
 
@@ -234,7 +228,6 @@ function isUserRejection(error: unknown): boolean {
 
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
   const [campaignId, setCampaignId] = useState<CampaignId | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [tx, setTx] = useState<TxStatus>({ state: "idle" });
@@ -253,15 +246,10 @@ export default function AdvertiserPage() {
     null,
   );
   const chainReads = useRef(0);
+  const auth = useAdvertiserSession(wallet, setError);
+  const activeSession = auth.active;
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
-  const activeSession = sessionForWallet(session, wallet);
-
-  useEffect(() => {
-    restoreSession()
-      .then(setSession)
-      .catch((caught) => setError(describeError(caught)));
-  }, []);
 
   useEffect(() => {
     const link = campaignLink(window.location.search);
@@ -390,8 +378,7 @@ export default function AdvertiserPage() {
   const disconnect = () =>
     run(async () => {
       setWallet(null);
-      setSession(null);
-      await signOut();
+      await auth.signOut();
     });
 
   const switchNetwork = () =>
@@ -404,7 +391,7 @@ export default function AdvertiserPage() {
   const signIn = () =>
     run(async () => {
       if (!wallet) return;
-      setSession(await signInWithEthereum(wallet.walletClient, wallet.address));
+      await auth.signIn(wallet);
     });
 
   const createDraft = (payload: CampaignPayload) =>
