@@ -42,14 +42,20 @@ export function campaignAction(campaignId: string): string {
   return `vham-campaign-${campaignId}`;
 }
 
+const responseItemV4Schema = z.looseObject({
+  identifier: z.string(),
+  issuer_schema_id: z.number().int(),
+  nullifier: z.string().min(1),
+  expires_at_min: z.number().int(),
+  proof: z.array(z.string()).length(5),
+  signal_hash: z.string().optional(),
+});
+
 const idkitResponseSchema = z.looseObject({
   protocol_version: z.literal("4.0"),
   action: z.string().min(1),
   environment: z.string().optional(),
-  responses: z
-    .array(z.looseObject({ nullifier: z.string().min(1) }))
-    .min(1)
-    .max(10),
+  responses: z.array(responseItemV4Schema).min(1).max(10),
 });
 
 const verifyResponseSchema = z.looseObject({
