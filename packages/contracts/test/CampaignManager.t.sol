@@ -622,6 +622,105 @@ contract CampaignManagerTest {
         manager.claim(authB, signatureB);
     }
 
+    function test_InvalidClaimAmountRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        uint256[3] memory wrongAmounts = [ONE_USDC + 1, ONE_USDC - 1, 0];
+        for (uint256 i; i < wrongAmounts.length; ++i) {
+            CampaignManager.ClaimAuthorization memory authorization =
+                _authorization(campaignId, claimant, keccak256("wrong-amount"));
+            authorization.amount = wrongAmounts[i];
+            bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+            vm.expectRevert(CampaignManager.InvalidClaimAmount.selector);
+            vm.prank(claimant);
+            manager.claim(authorization, signature);
+        }
+    }
+
+    function test_AuthorizationNotYetValidRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("future"));
+        authorization.issuedAt += 1;
+        authorization.expiresAt += 1;
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationNotYetValid.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+
+        vm.warp(authorization.issuedAt);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
+    function test_AuthorizationLifetimeTooLongRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("overlong"));
+        authorization.expiresAt = authorization.issuedAt + manager.MAX_AUTHORIZATION_TTL() + 1;
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationLifetimeTooLong.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+
+        authorization.expiresAt = authorization.issuedAt + manager.MAX_AUTHORIZATION_TTL();
+        signature = _sign(authorization, SIGNER_KEY);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
+    /// The `expiresAt <= issuedAt` half of the lifetime guard never fires on its own.
+    /// NotYetValid and Expired already reject every authorization that meets it.
+    function test_InvertedAuthorizationWindowRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("inverted"));
+        authorization.expiresAt = authorization.issuedAt;
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationExpired.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+
+        authorization.issuedAt += 10 minutes;
+        authorization.expiresAt = authorization.issuedAt - 5 minutes;
+        signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationNotYetValid.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
+    /// The lower bound of the issuance window reverts with the same error as the upper bound.
+    function test_AuthorizationIssuedBeforeStartRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime - 1);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("early"));
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationIssuedAfterDeadline.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+
+        vm.warp(startTime);
+        authorization = _authorization(campaignId, claimant, keccak256("on-time"));
+        signature = _sign(authorization, SIGNER_KEY);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
