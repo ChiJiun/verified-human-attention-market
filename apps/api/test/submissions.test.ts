@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildApp } from "../src/app.js";
+import { buildApp, type AppDependencies } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import type { CampaignRecord, CampaignStatus } from "../src/campaigns/types.js";
+import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
   campaignAction,
@@ -25,6 +27,7 @@ import {
   submitCompletion,
   type SubmissionServiceDependencies,
 } from "../src/submissions/service.js";
+import { FakeChain } from "./support/fake-chain.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
@@ -96,7 +99,7 @@ const WRONG = [
   { questionId: "q2", choiceId: "b" },
 ];
 
-async function setup() {
+async function setup(chain: AppDependencies["chain"] = null) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const campaigns = new StatusOverrideCampaignRepository();
   const eligibility = new InMemoryEligibilityRepository();
@@ -108,6 +111,7 @@ async function setup() {
     submissionRepository: submissions,
     worldIdVerifier: new FakeWorldId(),
     participantKeySecret: SECRET,
+    chain,
     now: () => now,
   });
   apps.push(app);
@@ -447,6 +451,53 @@ describe("POST /v1/campaigns/:id/submissions", () => {
       claimant: WALLET_A,
       claim: { status: "pending_authorization" },
     });
+  });
+
+  it("accepts with pending_authorization and no code when a chain is configured but no claim signer", async () => {
+    const contractAddress = `0x${"c1".repeat(20)}`;
+    const rpc = new FakeChain(contractAddress);
+    const { campaigns, campaignId, verify, submit } = await setup({
+      rpc,
+      chain: {
+        chainId: 84532,
+        contractAddress,
+        usdcAddress: `0x${"d1".repeat(20)}`,
+      },
+      events: new InMemoryChainEventRepository(),
+      now: () => new Date("2026-10-05T10:30:00.000Z"),
+    });
+    const advertiser = campaignPayload.advertiser.toLowerCase();
+    const reward = BigInt(campaignPayload.rewardPerCompletion);
+    await campaigns.linkOnchain(campaignId, {
+      onchainCampaignId: "1",
+      contractAddress,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    rpc.campaignIdByDraft.set(`${advertiser}:${draftRefFor(campaignId)}`, {
+      id: 1,
+      block: 0n,
+    });
+    rpc.campaignStructs.set("1", {
+      advertiser,
+      fundedBudget: reward * BigInt(campaignPayload.maxCompletions),
+      rewardPerCompletion: reward,
+      maxCompletions: campaignPayload.maxCompletions,
+      startTime: Date.parse(campaignPayload.startAt) / 1000,
+      endTime: Date.parse(campaignPayload.endAt) / 1000,
+    });
+
+    const response = await submit("chain-without-signer", {
+      eligibilityToken: await verify("human-1", WALLET_A),
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = response.json<{ status: string; claim: unknown }>();
+    expect(body.status).toBe("accepted");
+    expect(body.claim).toEqual({ status: "pending_authorization", code: null });
   });
 
   it("replays the original outcome for the same idempotency key", async () => {
