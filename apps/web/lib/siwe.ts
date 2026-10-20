@@ -3,6 +3,7 @@ import { createSiweMessage } from "viem/siwe";
 
 import { api, ApiError } from "./api";
 import { chainId } from "./config";
+import type { Wallet } from "./wallet";
 
 export interface Session {
   address: string;
@@ -53,4 +54,15 @@ export async function restoreSession(): Promise<Session | null> {
 
 export async function signOut(): Promise<void> {
   await api("/v1/auth/logout", { method: "POST" });
+}
+
+export function sessionForWallet(
+  session: Session | null,
+  wallet: Pick<Wallet, "address"> | null,
+): Session | null {
+  return session !== null &&
+    wallet !== null &&
+    session.address === wallet.address.toLowerCase()
+    ? session
+    : null;
 }

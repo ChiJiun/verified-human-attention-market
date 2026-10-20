@@ -31,6 +31,7 @@ import {
 } from "../../lib/settlement";
 import {
   restoreSession,
+  sessionForWallet,
   signInWithEthereum,
   signOut,
   type Session,
@@ -249,12 +250,7 @@ export default function AdvertiserPage() {
   const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
-  const activeSession =
-    session !== null &&
-    wallet !== null &&
-    session.address === wallet.address.toLowerCase()
-      ? session
-      : null;
+  const activeSession = sessionForWallet(session, wallet);
 
   useEffect(() => {
     restoreSession()
