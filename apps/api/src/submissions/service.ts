@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
-import type { ClaimIssuer, ClaimPreparation } from "../claims/service.js";
+import type { ClaimRepository } from "../claims/repository.js";
+import {
+  claimRefusal,
+  type ClaimPreparation,
+  type ClaimTerms,
+} from "../claims/service.js";
 import type { SignedClaim } from "../claims/signer.js";
+import type { PersistenceScope } from "../db/client.js";
 import type { Deployment } from "@vham/shared/deployment";
 
 import {
@@ -45,6 +51,9 @@ export interface SubmissionServiceDependencies {
   chainHalted: () => Promise<boolean>;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
+  claims: {
+    within(scope: PersistenceScope): Pick<ClaimRepository, "issueOnce">;
+  };
   prepareClaim:
     | ((
         campaign: CampaignRecord,
@@ -54,14 +63,6 @@ export interface SubmissionServiceDependencies {
   now: () => Date;
   maxAttempts?: number;
   quality?: QualityConfig;
-}
-
-/** The authorization could not be issued: the acceptance is rolled back. */
-class AuthorizationRefusedError extends Error {
-  constructor(readonly outcome: { status: number; code: string }) {
-    super(`Claim authorization refused: ${outcome.code}`);
-    this.name = "AuthorizationRefusedError";
-  }
 }
 
 export type SubmissionFailureCode =
@@ -210,7 +211,7 @@ export async function submitCompletion(
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
-  let issue: ClaimIssuer | null = null;
+  let terms: ClaimTerms | null = null;
   if (dependencies.prepareClaim) {
     const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
     if (!prepared.ok) {
@@ -223,7 +224,7 @@ export async function submitCompletion(
     if (!prepared.payable) {
       return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
     }
-    issue = prepared.issue;
+    terms = prepared.terms;
   }
 
   const evaluation = evaluateSubmission(mission, input.answers, {
@@ -275,16 +276,15 @@ export async function submitCompletion(
       answers: evaluation.answers,
       qualityFlags,
       createdAt: now,
-      ...(evaluation.result === "accepted" && issue
+      ...(evaluation.result === "accepted" && terms
         ? {
             // Acceptance means payable: sign in the same transaction and
             // roll the acceptance back if no authorization can be issued.
             beforeCommit: async (submission, scope) => {
-              const outcome = await issue(submission.id, scope);
-              if (!outcome.ok) {
-                throw new AuthorizationRefusedError(outcome);
-              }
-              signed = outcome.claim;
+              const issued = await dependencies.claims
+                .within(scope)
+                .issueOnce({ ...terms, submissionId: submission.id });
+              signed = issued.claim;
             },
           }
         : {}),
@@ -292,11 +292,12 @@ export async function submitCompletion(
 
     return { ok: true, ...result, claim: signed };
   } catch (error) {
-    if (error instanceof AuthorizationRefusedError) {
+    const refusal = claimRefusal(error);
+    if (refusal) {
       return {
         ok: false,
-        status: error.outcome.status,
-        code: error.outcome.code as SubmissionFailureCode,
+        status: refusal.status,
+        code: refusal.code as SubmissionFailureCode,
       };
     }
 

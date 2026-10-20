@@ -362,6 +362,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       chainHalted,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
+      claims: claimRepository,
       now,
       prepareClaim: claimDependencies.chain
         ? (campaign, claimant) =>

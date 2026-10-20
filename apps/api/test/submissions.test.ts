@@ -10,7 +10,16 @@ import {
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
-import type { SignedClaim } from "../src/claims/signer.js";
+import {
+  ClaimIssueError,
+  type ClaimIssueInput,
+  type ClaimRepository,
+} from "../src/claims/repository.js";
+import type { ClaimPreparation, ClaimTerms } from "../src/claims/service.js";
+import {
+  SignerUnavailableError,
+  type SignedClaim,
+} from "../src/claims/signer.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
 import {
   submitCompletion,
@@ -167,9 +176,22 @@ function signedFor(claimant: string): SignedClaim {
   };
 }
 
+const TERMS: ClaimTerms = {
+  campaignId: "prepared-campaign",
+  now: new Date("2026-10-05T10:30:00.000Z"),
+  canIssue: true,
+  alreadyClaimed: false,
+  onchainPaidCompletions: 0,
+  sign: async () => signedFor(WALLET_A),
+};
+const SIGNABLE: ClaimPreparation = { ok: true, payable: true, terms: TERMS };
+
 function serviceDependencies(
   s: Awaited<ReturnType<typeof setup>>,
   prepareClaim: SubmissionServiceDependencies["prepareClaim"],
+  issueOnce: ClaimRepository["issueOnce"] = async () => {
+    throw new Error("no authorization is issued here");
+  },
 ): SubmissionServiceDependencies {
   return {
     campaigns: s.campaigns,
@@ -177,6 +199,7 @@ function serviceDependencies(
     chainHalted: async () => false,
     eligibility: s.eligibility,
     submissions: s.submissions,
+    claims: { within: () => ({ issueOnce }) },
     now: () => new Date("2026-10-05T10:30:00.000Z"),
     prepareClaim,
   };
@@ -184,29 +207,48 @@ function serviceDependencies(
 
 describe("acceptance and authorization are one persisted result (ADR-0011)", () => {
   it.each([
-    ["the campaign closed since the live check", 409, "CAMPAIGN_NOT_ACTIVE"],
-    ["the signing service is down", 503, "SIGNER_UNAVAILABLE"],
-    ["the campaign cap was reached meanwhile", 409, "CAMPAIGN_CAP_REACHED"],
-    ["the daily payout limit is reached", 503, "DAILY_LIMIT_REACHED"],
+    [
+      "the campaign closed since the live check",
+      new ClaimIssueError("CAMPAIGN_NOT_ACTIVE"),
+      409,
+      "CAMPAIGN_NOT_ACTIVE",
+    ],
+    [
+      "the signing service is down",
+      new SignerUnavailableError("signing service unreachable"),
+      503,
+      "SIGNER_UNAVAILABLE",
+    ],
+    [
+      "the campaign cap was reached meanwhile",
+      new ClaimIssueError("CAMPAIGN_CAP_REACHED"),
+      409,
+      "CAMPAIGN_CAP_REACHED",
+    ],
+    [
+      "the daily payout limit is reached",
+      new ClaimIssueError("DAILY_LIMIT_REACHED"),
+      503,
+      "DAILY_LIMIT_REACHED",
+    ],
   ])(
     "records nothing when %s, and accepts the same request once signing works",
-    async (_reason, status, code) => {
+    async (_reason, refusal, status, code) => {
       const s = await setup();
       const token = await s.verify("human-1", WALLET_A);
       let refuse = true;
-      const authorizations: string[] = [];
+      const issued: ClaimIssueInput[] = [];
+      const claim = signedFor(WALLET_A);
       const dependencies = serviceDependencies(
         s,
-        async (_campaign, claimant) => ({
-          ok: true,
-          payable: true,
-          issue: async (submissionId) => {
-            authorizations.push(submissionId);
-            return refuse
-              ? { ok: false, status, code }
-              : { ok: true, created: true, claim: signedFor(claimant) };
-          },
-        }),
+        async () => SIGNABLE,
+        async (input) => {
+          issued.push(input);
+          if (refuse) {
+            throw refusal;
+          }
+          return { created: true, claim };
+        },
       );
       const input = {
         campaignId: s.campaignId,
@@ -223,7 +265,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
         status,
         code,
       });
-      expect(authorizations).toHaveLength(1);
+      expect(issued).toHaveLength(1);
       expect(await s.submissions.findAcceptedByEligibility(token)).toBeNull();
       expect(await s.submissions.countByEligibility(token)).toBe(0);
       expect(
@@ -240,10 +282,10 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
         submission: { result: "accepted" },
       });
       if (!accepted.ok) return;
-      expect(accepted.claim?.payload.claimant).toBe(WALLET_A);
-      expect(authorizations).toEqual([
-        authorizations[0],
-        accepted.submission.id,
+      expect(accepted.claim).toBe(claim);
+      expect(issued).toEqual([
+        { ...TERMS, submissionId: issued[0]?.submissionId },
+        { ...TERMS, submissionId: accepted.submission.id },
       ]);
 
       // A replay returns the stored acceptance without signing again.
@@ -252,7 +294,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
         created: false,
         claim: null,
       });
-      expect(authorizations).toHaveLength(2);
+      expect(issued).toHaveLength(2);
     },
   );
 
@@ -261,14 +303,14 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     const token = await s.verify("human-2", WALLET_B);
     let calls = 0;
     const outcome = await submitCompletion(
-      serviceDependencies(s, async () => ({
-        ok: true,
-        payable: true,
-        issue: async () => {
+      serviceDependencies(
+        s,
+        async () => SIGNABLE,
+        async () => {
           calls += 1;
-          return { ok: false, status: 503, code: "SIGNER_UNAVAILABLE" };
+          throw new SignerUnavailableError("signing service unreachable");
         },
-      })),
+      ),
       {
         campaignId: s.campaignId,
         eligibilityToken: token,
@@ -293,7 +335,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     ],
     [
       "the contract would not pay the campaign",
-      { ok: true as const, payable: false, issue: null },
+      { ok: true as const, payable: false, terms: null },
     ],
   ])(
     "records no attempt when %s, before the answers are evaluated",
@@ -324,7 +366,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
         serviceDependencies(s, async () => ({
           ok: true,
           payable: true,
-          issue: null,
+          terms: null,
         })),
         { ...request, idempotencyKey: "pre-2" },
       );

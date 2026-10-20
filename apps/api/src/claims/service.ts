@@ -9,11 +9,14 @@ import {
 } from "../campaigns/types.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
-import type { PersistenceScope } from "../db/client.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import { readClaimedWallet } from "./chain-state.js";
-import { ClaimIssueError, type ClaimRepository } from "./repository.js";
+import {
+  ClaimIssueError,
+  type ClaimIssueInput,
+  type ClaimRepository,
+} from "./repository.js";
 import {
   SignerUnavailableError,
   type ClaimSigner,
@@ -47,22 +50,29 @@ export interface ClaimDependencies {
   chainHalted: () => Promise<boolean>;
 }
 
-export type ClaimOutcome =
-  | { ok: true; claim: SignedClaim; created: boolean }
-  | { ok: false; status: number; code: string };
+export type ClaimRefusal = { ok: false; status: number; code: string };
 
-export type ClaimIssuer = (
-  submissionId: string,
-  scope: PersistenceScope,
-) => Promise<ClaimOutcome>;
+export type ClaimOutcome =
+  { ok: true; claim: SignedClaim; created: boolean } | ClaimRefusal;
+
+export type ClaimTerms = Omit<ClaimIssueInput, "submissionId">;
 
 export type ClaimPreparation =
-  | { ok: false; status: number; code: string }
-  | {
-      ok: true;
-      payable: boolean;
-      issue: ClaimIssuer | null;
+  ClaimRefusal | { ok: true; payable: boolean; terms: ClaimTerms | null };
+
+export function claimRefusal(error: unknown): ClaimRefusal | null {
+  if (error instanceof ClaimIssueError) {
+    return {
+      ok: false,
+      status: error.code === "DAILY_LIMIT_REACHED" ? 503 : 409,
+      code: error.code,
     };
+  }
+  if (error instanceof SignerUnavailableError) {
+    return { ok: false, status: 503, code: "SIGNER_UNAVAILABLE" };
+  }
+  return null;
+}
 
 // Canonical ABI (#19): same interface as the contract and the web app.
 const SIGNER_SELECTOR = encodeFunctionData({
@@ -109,7 +119,7 @@ export async function prepareClaim(
   const payable = live.state === "payable";
 
   if (!signer) {
-    return { ok: true, payable, issue: null };
+    return { ok: true, payable, terms: null };
   }
 
   let onchainSigner: string;
@@ -168,58 +178,41 @@ export async function prepareClaim(
   const onchainCampaignId = campaign.onchainCampaignId;
   const nowSeconds = Math.floor(now.getTime() / 1000);
 
-  const issue: ClaimIssuer = async (submissionId, scope) => {
-    try {
-      const result = await dependencies.claims.within(scope).issueOnce({
-        submissionId,
-        campaignId: campaign.id,
-        now,
-        canIssue:
-          campaign.status === "active" &&
-          now >= campaign.startAt &&
-          now < campaign.endAt &&
-          // The contract rejects authorizations issued after close/end.
-          onchain.closedAt === 0 &&
-          nowSeconds < onchain.endTime,
-        alreadyClaimed,
-        dailyLimit:
-          dependencies.dailyPayoutLimitAtomic == null
-            ? null
-            : {
-                limitAtomic: dependencies.dailyPayoutLimitAtomic,
-                rewardAtomic: BigInt(campaign.rewardAtomic),
-              },
-        onchainPaidCompletions: onchain.paidCompletions,
-        redeemedNonces,
-        sign: () =>
-          signer.sign({
-            campaignId: BigInt(onchainCampaignId),
-            draftRef: draftRefFor(campaign.id),
-            claimant: claimant as Address,
-            amount: BigInt(campaign.rewardAtomic),
-            chainId: chain.chainId,
-            contractAddress: chain.contractAddress,
-            issuedAt: BigInt(nowSeconds),
-          }),
-      });
-
-      return { ok: true, ...result };
-    } catch (error) {
-      if (error instanceof ClaimIssueError) {
-        return {
-          ok: false,
-          status: error.code === "DAILY_LIMIT_REACHED" ? 503 : 409,
-          code: error.code,
-        };
-      }
-      if (error instanceof SignerUnavailableError) {
-        return { ok: false, status: 503, code: "SIGNER_UNAVAILABLE" };
-      }
-      throw error;
-    }
+  return {
+    ok: true,
+    payable,
+    terms: {
+      campaignId: campaign.id,
+      now,
+      canIssue:
+        campaign.status === "active" &&
+        now >= campaign.startAt &&
+        now < campaign.endAt &&
+        // The contract rejects authorizations issued after close/end.
+        onchain.closedAt === 0 &&
+        nowSeconds < onchain.endTime,
+      alreadyClaimed,
+      dailyLimit:
+        dependencies.dailyPayoutLimitAtomic == null
+          ? null
+          : {
+              limitAtomic: dependencies.dailyPayoutLimitAtomic,
+              rewardAtomic: BigInt(campaign.rewardAtomic),
+            },
+      onchainPaidCompletions: onchain.paidCompletions,
+      redeemedNonces,
+      sign: () =>
+        signer.sign({
+          campaignId: BigInt(onchainCampaignId),
+          draftRef: draftRefFor(campaign.id),
+          claimant: claimant as Address,
+          amount: BigInt(campaign.rewardAtomic),
+          chainId: chain.chainId,
+          contractAddress: chain.contractAddress,
+          issuedAt: BigInt(nowSeconds),
+        }),
+    },
   };
-
-  return { ok: true, payable, issue };
 }
 
 export async function authorizeClaim(
@@ -271,8 +264,21 @@ export async function authorizeClaim(
   if (!prepared.ok) {
     return prepared;
   }
+  if (!prepared.terms) {
+    return { ok: false, status: 503, code: "AUTHORIZATION_UNAVAILABLE" };
+  }
 
-  return prepared.issue
-    ? prepared.issue(submission.id, null)
-    : { ok: false, status: 503, code: "AUTHORIZATION_UNAVAILABLE" };
+  try {
+    const issued = await dependencies.claims.issueOnce({
+      ...prepared.terms,
+      submissionId: submission.id,
+    });
+    return { ok: true, ...issued };
+  } catch (error) {
+    const refusal = claimRefusal(error);
+    if (refusal) {
+      return refusal;
+    }
+    throw error;
+  }
 }
