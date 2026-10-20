@@ -50,7 +50,7 @@ async function waitForServer() {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (server.exitCode !== null) break;
     try {
-      await fetch(origin);
+      await fetch(origin, { signal: AbortSignal.timeout(2_000) });
       return;
     } catch {
       await sleep(500);
@@ -60,7 +60,9 @@ async function waitForServer() {
 }
 
 async function load(path) {
-  const response = await fetch(`${origin}${path}`);
+  const response = await fetch(`${origin}${path}`, {
+    signal: AbortSignal.timeout(30_000),
+  });
   const policy = response.headers.get("content-security-policy") ?? "";
   const html = await response.text();
   return {
