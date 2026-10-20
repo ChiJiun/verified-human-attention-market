@@ -10,6 +10,16 @@ export class ApiError extends Error {
   }
 }
 
+/** A fixed route, or a path built from validated ids (campaign-link.ts). */
+export type ApiPath =
+  | "/v1/auth/logout"
+  | "/v1/auth/nonce"
+  | "/v1/auth/session"
+  | "/v1/auth/verify"
+  | "/v1/campaigns"
+  | "/v1/chain"
+  | (string & { readonly __brand: "ApiPath" });
+
 export interface ApiOptions {
   method?: "GET" | "POST";
   body?: unknown;
@@ -17,7 +27,7 @@ export interface ApiOptions {
 }
 
 export async function api<T>(
-  path: string,
+  path: ApiPath,
   options: ApiOptions = {},
 ): Promise<{ status: number; data: T }> {
   const headers: Record<string, string> = {};

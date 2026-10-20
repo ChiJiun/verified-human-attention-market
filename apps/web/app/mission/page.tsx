@@ -14,7 +14,10 @@ import { api, describeError } from "../../lib/api";
 import {
   campaignLink,
   campaignPath,
+  claimAuthorizationPath,
+  parseSubmissionId,
   type CampaignLink,
+  type SubmissionId,
 } from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
@@ -63,7 +66,7 @@ type Step =
   | { kind: "verify" }
   | { kind: "answer" }
   | { kind: "rejected"; code: string }
-  | { kind: "claim"; submissionId: string }
+  | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash | null };
 
@@ -138,7 +141,9 @@ export default function MissionPage() {
       setWallet(connected);
       const prefix = `vham:${campaignId}:${connected.address.toLowerCase()}:`;
       const token = store<string>(`${prefix}eligibility`);
-      const submissionId = store<string>(`${prefix}submission`);
+      const submissionId = parseSubmissionId(
+        store<string>(`${prefix}submission`),
+      );
       if (token) setEligibilityToken(token);
       if (submissionId) setStep({ kind: "claim", submissionId });
       else if (token) setStep({ kind: "answer" });
@@ -217,8 +222,12 @@ export default function MissionPage() {
       });
       store(key("attempt"), null);
       if (data.status === "accepted") {
-        store(key("submission"), data.submissionId);
-        setStep({ kind: "claim", submissionId: data.submissionId });
+        const submissionId = parseSubmissionId(data.submissionId);
+        if (!submissionId) {
+          throw new Error("The API returned an invalid submission id.");
+        }
+        store(key("submission"), submissionId);
+        setStep({ kind: "claim", submissionId });
       } else {
         setStep({ kind: "rejected", code: data.rejectionCode ?? "REJECTED" });
       }
@@ -236,10 +245,7 @@ export default function MissionPage() {
       }
       // Re-requesting after expiry returns a fresh authorization.
       const { data: auth } = await api<Authorization>(
-        campaignPath(
-          campaignId,
-          `/submissions/${step.submissionId}/authorization`,
-        ),
+        claimAuthorizationPath(campaignId, step.submissionId),
         { method: "POST", body: { eligibilityToken } },
       );
       const hash = await wallet.walletClient.writeContract({

@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   campaignLink,
   campaignPath,
+  claimAuthorizationPath,
   parseCampaignId,
+  parseSubmissionId,
 } from "../lib/campaign-link";
 
 const ID = "3f2b8c1e-9d4a-4e6b-8f1a-2c3d4e5f6a7b";
+const SUBMISSION = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 
 describe("campaign links", () => {
   it.each([
@@ -42,5 +45,15 @@ describe("campaign links", () => {
     expect(campaignPath(id, "/analytics")).toBe(
       `/v1/campaigns/${ID}/analytics`,
     );
+    expect(
+      claimAuthorizationPath(id, parseSubmissionId(SUBMISSION.toUpperCase())!),
+    ).toBe(`/v1/campaigns/${ID}/submissions/${SUBMISSION}/authorization`);
+  });
+
+  it("accepts only a UUID as a submission id", () => {
+    expect(parseSubmissionId(SUBMISSION)).toBe(SUBMISSION);
+    expect(parseSubmissionId("../../auth/logout")).toBeNull();
+    expect(parseSubmissionId(42)).toBeNull();
+    expect(parseSubmissionId(null)).toBeNull();
   });
 });
