@@ -3,8 +3,7 @@ import { z } from "zod";
 
 import {
   CLEARED_SESSION_COOKIE,
-  csrfRejected,
-  provenSameOrigin,
+  refuseCrossSiteCookieSignIn,
   sessionCookie,
   sessionCredential,
 } from "./credential.js";
@@ -52,9 +51,9 @@ export async function registerAuthRoutes(
 
     if (
       transport === "cookie" &&
-      !provenSameOrigin(request.headers, dependencies.webOrigin)
+      refuseCrossSiteCookieSignIn(request, reply, dependencies.webOrigin)
     ) {
-      return csrfRejected(request, reply);
+      return reply;
     }
 
     const outcome = await signIn(dependencies, {

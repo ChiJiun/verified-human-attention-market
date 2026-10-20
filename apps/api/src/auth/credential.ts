@@ -73,7 +73,7 @@ export function sessionAuthenticator(
   };
 }
 
-export function provenSameOrigin(
+function provenSameOrigin(
   headers: FastifyRequest["headers"],
   webOrigin: string | null,
 ): boolean {
@@ -86,7 +86,7 @@ export function provenSameOrigin(
   return webOrigin !== null && headers.origin === webOrigin;
 }
 
-export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
+function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
   return reply.status(403).send({
     error: {
       code: "CSRF_REJECTED",
@@ -142,4 +142,17 @@ export function registerSessionCookieGuard(
 
     return payload;
   });
+}
+
+export function refuseCrossSiteCookieSignIn(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  webOrigin: string | null,
+): boolean {
+  if (provenSameOrigin(request.headers, webOrigin)) {
+    return false;
+  }
+
+  csrfRejected(request, reply);
+  return true;
 }
