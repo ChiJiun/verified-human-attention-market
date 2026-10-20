@@ -10,6 +10,8 @@ import { hashToken, SESSION_TOKEN, type Authenticate } from "./siwe.js";
 export const SESSION_COOKIE = "__Host-vham_session";
 
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
+/** Key management and operator routes: the web app has no UI for them. */
+const HEADER_ONLY_ROUTE = /^\/v1\/(admin|api-clients)(\/|$)/;
 const BEARER = /^Bearer ([A-Za-z0-9_-]{20,200})$/;
 
 /**
@@ -142,12 +144,31 @@ export function registerSessionCookieGuard(
   options: { webOrigin: string | null },
 ) {
   app.addHook("onRequest", async (request, reply) => {
+    const { credential, carriesSessionCookie } = presentedCredentials(
+      request.headers,
+    );
+
     if (
       !SAFE_METHOD.test(request.method) &&
-      presentedCredentials(request.headers).carriesSessionCookie &&
+      carriesSessionCookie &&
       !provenSameOrigin(request.headers, options.webOrigin)
     ) {
       return csrfRejected(request, reply);
+    }
+
+    if (
+      credential.kind === "session" &&
+      credential.source === "cookie" &&
+      HEADER_ONLY_ROUTE.test(request.routeOptions.url ?? "")
+    ) {
+      return reply.status(403).send({
+        error: {
+          code: "COOKIE_SESSION_NOT_ALLOWED",
+          message:
+            "Browser sessions cannot call this endpoint; send an Authorization header",
+          requestId: request.id,
+        },
+      });
     }
   });
 
