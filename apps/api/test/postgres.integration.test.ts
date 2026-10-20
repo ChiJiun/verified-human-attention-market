@@ -1,5 +1,5 @@
 import { draftRefFor } from "../src/campaigns/onchain.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { eq, sql } from "drizzle-orm";
@@ -490,15 +490,15 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     );
   });
 
-  /** A verified participant of `campaignId`; `digit` must be unique per test. */
-  async function participantOf(campaignId: string, digit: string) {
-    const claimantAddress = `0x${digit.repeat(40)}`;
+  /** A verified participant of `campaignId` whose wallet no other test uses. */
+  async function participantOf(campaignId: string) {
+    const claimantAddress = `0x${randomBytes(20).toString("hex")}`;
     const { eligibility: record } = await new PostgresEligibilityRepository(
       database.db,
     ).recordIdempotent({
       id: randomUUID(),
       campaignId,
-      participantKey: digit.repeat(64),
+      participantKey: randomBytes(32).toString("hex"),
       claimantAddress,
       provider: "world_id",
       verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
@@ -533,10 +533,8 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       status: "active",
       updatedAt: new Date("2026-10-05T10:20:00.000Z"),
     });
-    const { eligibilityId, claimantAddress, accepted } = await participantOf(
-      campaignId,
-      "c",
-    );
+    const { eligibilityId, claimantAddress, accepted } =
+      await participantOf(campaignId);
     const submissionRepository = new PostgresSubmissionRepository(database.db);
     const claims = new PostgresClaimRepository(database.db);
     const signer = createClaimSigner(`0x${"11".repeat(32)}`);
@@ -615,7 +613,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       status: "active",
       updatedAt: new Date("2026-10-05T10:20:00.000Z"),
     });
-    const { claimantAddress, accepted } = await participantOf(campaignId, "d");
+    const { claimantAddress, accepted } = await participantOf(campaignId);
     const { submission } = await new PostgresSubmissionRepository(
       database.db,
     ).recordIdempotent({ ...accepted, id: randomUUID() });
@@ -693,25 +691,8 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       endTime: Date.parse("2026-10-05T11:15:00.000Z") / 1000,
     });
 
-    const eligibilityRepository = new PostgresEligibilityRepository(
-      database.db,
-    );
     const participants = await Promise.all(
-      [1, 2, 3].map(async (index) => {
-        const suffix = (0x5000 + index).toString(16);
-        const claimantAddress = `0x${"e".repeat(36)}${suffix}`;
-        const { eligibility: record } =
-          await eligibilityRepository.recordIdempotent({
-            id: randomUUID(),
-            campaignId,
-            participantKey: `${"e".repeat(60)}${suffix}`,
-            claimantAddress,
-            provider: "world_id",
-            verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
-            expiresAt: new Date("2026-10-05T11:15:00.000Z"),
-          });
-        return { eligibilityToken: record.id, claimantAddress };
-      }),
+      Array.from({ length: 3 }, () => participantOf(campaignId)),
     );
 
     const app = buildApp({
@@ -740,7 +721,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
         url: `/v1/campaigns/${campaignId}/submissions`,
         headers: { "idempotency-key": `pool-${participant.claimantAddress}` },
         payload: {
-          eligibilityToken: participant.eligibilityToken,
+          eligibilityToken: participant.eligibilityId,
           claimant: participant.claimantAddress,
           answers: [{ questionId: "q1", choiceId: "a" }],
         },

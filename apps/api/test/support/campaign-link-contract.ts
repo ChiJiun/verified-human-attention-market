@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import { getAddress } from "viem";
 import { expect, it } from "vitest";
@@ -10,6 +10,13 @@ import {
 } from "../../src/missions/schemas.js";
 
 const NOW = new Date("2026-10-05T10:00:00.000Z");
+
+/** Links are unique per chain, contract and on-chain id; ids restart at 1. */
+function freshContract(): { stored: string; checksummed: string } {
+  const stored = `0x${randomBytes(20).toString("hex")}`;
+  const checksummed = getAddress(stored);
+  return checksummed === stored ? freshContract() : { stored, checksummed };
+}
 
 async function createDraft(campaigns: CampaignRepository): Promise<string> {
   const id = randomUUID();
@@ -56,9 +63,7 @@ export function defineCampaignLinkContract(
 ) {
   it("stores and matches the contract address whatever its casing", async () => {
     const campaigns = repository();
-    const lower = `0x${"ab".repeat(20)}`;
-    const checksummed = getAddress(lower);
-    expect(checksummed).not.toBe(lower);
+    const contract = freshContract();
     const link = {
       onchainCampaignId: "1",
       publishTxHash: null,
@@ -69,24 +74,33 @@ export function defineCampaignLinkContract(
 
     const linked = await campaigns.linkOnchain(id, {
       ...link,
-      contractAddress: checksummed,
+      contractAddress: contract.checksummed,
     });
-    expect(linked.onchainContractAddress).toBe(lower);
-    expect((await campaigns.getById(id))?.onchainContractAddress).toBe(lower);
+    expect(linked.onchainContractAddress).toBe(contract.stored);
+    expect((await campaigns.getById(id))?.onchainContractAddress).toBe(
+      contract.stored,
+    );
 
     expect(
-      (await campaigns.linkOnchain(id, { ...link, contractAddress: lower })).id,
+      (
+        await campaigns.linkOnchain(id, {
+          ...link,
+          contractAddress: contract.stored,
+        })
+      ).id,
     ).toBe(id);
-    expect((await campaigns.findByOnchainId(84532, checksummed, "1"))?.id).toBe(
-      id,
-    );
     expect(
-      (await campaigns.listLinked(84532, checksummed)).map((c) => c.id),
-    ).toContain(id);
+      (await campaigns.findByOnchainId(84532, contract.checksummed, "1"))?.id,
+    ).toBe(id);
+    expect(
+      (await campaigns.listLinked(84532, contract.checksummed)).map(
+        (c) => c.id,
+      ),
+    ).toEqual([id]);
     expect(
       await campaigns.unlinkOnchain(
         id,
-        { onchainCampaignId: "1", contractAddress: checksummed },
+        { onchainCampaignId: "1", contractAddress: contract.checksummed },
         NOW,
       ),
     ).toBe(true);
