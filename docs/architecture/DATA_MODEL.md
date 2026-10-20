@@ -82,7 +82,7 @@ Replaying the same participant + wallet is idempotent. The same participant with
 | claim_signature | text nullable | EIP-712 signature; never private key |
 | claim_chain_id | bigint nullable | domain chain ID |
 | claim_contract_address | text nullable | domain verifying contract |
-| claim_onchain_campaign_id | numeric(78,0) nullable | on-chain id the signature was issued for; a replay requires it, the chain and the contract to equal the campaign's current link, otherwise the authorization is reissued (ADR-0011, migration 0013) |
+| claim_onchain_campaign_id | numeric(78,0) nullable | on-chain id the signature was issued for; a replay requires it, the chain and the contract to equal the campaign's current link, otherwise the authorization is reissued (ADR-0011, migration 0013). Authorizations issued before migration 0013 keep NULL: its backfill joins on the campaign's contract address, which migration 0011 had already replaced with `pre-adr-0011` for every earlier link, so no row matches. Harmless, because those campaigns are retired (never current): their authorizations are neither replayed nor counted as outstanding, and the submission and claim endpoints refuse them |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 
