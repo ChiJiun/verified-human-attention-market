@@ -363,7 +363,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
-      authorize: claimDependencies.chain
+      prepareClaim: claimDependencies.chain
         ? (campaign, claimant) =>
             prepareClaim(claimDependencies, campaign, claimant)
         : null,

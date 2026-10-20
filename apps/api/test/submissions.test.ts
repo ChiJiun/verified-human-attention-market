@@ -169,7 +169,7 @@ function signedFor(claimant: string): SignedClaim {
 
 function serviceDependencies(
   s: Awaited<ReturnType<typeof setup>>,
-  authorize: SubmissionServiceDependencies["authorize"],
+  prepareClaim: SubmissionServiceDependencies["prepareClaim"],
 ): SubmissionServiceDependencies {
   return {
     campaigns: s.campaigns,
@@ -178,7 +178,7 @@ function serviceDependencies(
     eligibility: s.eligibility,
     submissions: s.submissions,
     now: () => new Date("2026-10-05T10:30:00.000Z"),
-    authorize,
+    prepareClaim,
   };
 }
 

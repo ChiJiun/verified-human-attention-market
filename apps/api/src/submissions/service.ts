@@ -45,7 +45,7 @@ export interface SubmissionServiceDependencies {
   chainHalted: () => Promise<boolean>;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
-  authorize:
+  prepareClaim:
     | ((
         campaign: CampaignRecord,
         claimantAddress: string,
@@ -211,8 +211,8 @@ export async function submitCompletion(
   }
 
   let issue: ClaimIssuer | null = null;
-  if (dependencies.authorize) {
-    const prepared = await dependencies.authorize(campaign, claimantAddress);
+  if (dependencies.prepareClaim) {
+    const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
     if (!prepared.ok) {
       return {
         ok: false,
