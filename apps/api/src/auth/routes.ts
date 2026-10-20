@@ -30,6 +30,15 @@ export async function registerAuthRoutes(
     webOrigin: string | null;
   },
 ) {
+  async function revokeSessions(tokens: string[]) {
+    const now = dependencies.now();
+    await Promise.all(
+      tokens.map((token) =>
+        dependencies.repository.revokeSession(hashToken(token), now),
+      ),
+    );
+  }
+
   app.post("/v1/auth/nonce", async (_request, reply) => {
     const { nonce, expiresAt } = await issueNonce(dependencies);
     return reply.send({ nonce, expiresAt: expiresAt.toISOString() });
@@ -80,6 +89,7 @@ export async function registerAuthRoutes(
     };
 
     if (transport === "cookie") {
+      await revokeSessions(presentedCredentials(request.headers).cookieTokens);
       const maxAge = Math.max(
         1,
         Math.ceil(
@@ -118,13 +128,7 @@ export async function registerAuthRoutes(
       credential.token !== null
         ? [credential.token, ...cookieTokens]
         : cookieTokens;
-    const now = dependencies.now();
-
-    await Promise.all(
-      tokens.map((token) =>
-        dependencies.repository.revokeSession(hashToken(token), now),
-      ),
-    );
+    await revokeSessions(tokens);
 
     if (carriesSessionCookie) {
       reply.header("set-cookie", CLEARED_SESSION_COOKIE);
