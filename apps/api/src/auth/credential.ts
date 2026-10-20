@@ -1,7 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuthRepository } from "./repository.js";
-import { bearerToken, hashToken, type Authenticate } from "./siwe.js";
+import {
+  bearerToken,
+  hashToken,
+  SESSION_TOKEN,
+  type Authenticate,
+} from "./siwe.js";
 
 /**
  * The `__Host-` prefix makes the browser refuse the cookie unless it is
@@ -9,7 +14,6 @@ import { bearerToken, hashToken, type Authenticate } from "./siwe.js";
  */
 export const SESSION_COOKIE = "__Host-vham_session";
 
-const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
 
 export interface SessionCredential {
