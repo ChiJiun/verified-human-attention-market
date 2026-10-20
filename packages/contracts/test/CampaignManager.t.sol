@@ -698,7 +698,7 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
-    function test_InvertedAuthorizationWindowRejected() public {
+    function test_InvertedWindowFailsTimeChecksBeforeLifetimeCheck() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);
 
@@ -720,7 +720,7 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
-    function test_AuthorizationIssuedBeforeStartRejected() public {
+    function test_IssuedBeforeStartFailsTheIssuanceWindow() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime - 1);
 

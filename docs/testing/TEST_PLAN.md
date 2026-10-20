@@ -19,7 +19,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - valid claim [`test_CreateFundAndClaim`];
 - invalid signer [`test_InvalidSignerRejected`, `test_SignerRotationRevokesOldSignatures`];
 - expired authorization [`test_ExpiredAuthorizationRejected`];
-- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_AuthorizationIssuedBeforeStartRejected`, `test_InvertedAuthorizationWindowRejected`];
+- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_IssuedBeforeStartFailsTheIssuanceWindow`, `test_InvertedWindowFailsTimeChecksBeforeLifetimeCheck`];
 - wrong claimant [`test_WrongClaimantRejected`];
 - wrong reward amount [`test_InvalidClaimAmountRejected`];
 - consumed nonce [`test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`];
