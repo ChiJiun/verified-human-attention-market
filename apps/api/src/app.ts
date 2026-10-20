@@ -279,6 +279,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     await registerAuthRoutes(instance, {
       repository: authRepository,
       config: dependencies.siwe ?? null,
+      webOrigin,
       verifySignature: dependencies.verifySignature ?? verifyEoaSignature,
       authenticate,
       now,

@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import {
+  CLEARED_SESSION_COOKIE,
+  crossSite,
+  csrfRejected,
+  sessionCookie,
+  sessionCredential,
+} from "./credential.js";
 import type { AuthSession } from "./repository.js";
 import {
-  bearerToken,
   hashToken,
   issueNonce,
   signIn,
@@ -14,11 +20,16 @@ import {
 const verifySchema = z.object({
   message: z.string().min(1).max(4_000),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+  /** "cookie" is for the browser: the token is set as a cookie, never returned. */
+  transport: z.enum(["bearer", "cookie"]).default("bearer"),
 });
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  dependencies: SiweDependencies & { authenticate: Authenticate },
+  dependencies: SiweDependencies & {
+    authenticate: Authenticate;
+    webOrigin: string | null;
+  },
 ) {
   app.post("/v1/auth/nonce", async (_request, reply) => {
     const { nonce, expiresAt } = await issueNonce(dependencies);
@@ -38,9 +49,20 @@ export async function registerAuthRoutes(
       });
     }
 
+    const { message, signature, transport } = parsed.data;
+
+    // Login CSRF: a cross-site page must not sign this browser into a
+    // session of the attacker's wallet. Checked before the nonce is consumed.
+    if (
+      transport === "cookie" &&
+      crossSite(request.headers, dependencies.webOrigin)
+    ) {
+      return csrfRejected(request, reply);
+    }
+
     const outcome = await signIn(dependencies, {
-      message: parsed.data.message,
-      signature: parsed.data.signature as `0x${string}`,
+      message,
+      signature: signature as `0x${string}`,
     });
 
     if (!outcome.ok) {
@@ -53,13 +75,27 @@ export async function registerAuthRoutes(
       });
     }
 
-    return reply.send({
-      token: outcome.token,
-      tokenType: "Bearer",
-      address: outcome.session.address,
-      chainId: outcome.session.chainId,
-      expiresAt: outcome.session.expiresAt.toISOString(),
-    });
+    const { session } = outcome;
+    const body = {
+      address: session.address,
+      chainId: session.chainId,
+      expiresAt: session.expiresAt.toISOString(),
+    };
+
+    if (transport === "cookie") {
+      const maxAge = Math.max(
+        1,
+        Math.ceil(
+          (session.expiresAt.getTime() - dependencies.now().getTime()) / 1000,
+        ),
+      );
+      return reply
+        .header("set-cookie", sessionCookie(outcome.token, maxAge))
+        .header("cache-control", "no-store")
+        .send({ transport: "cookie", ...body });
+    }
+
+    return reply.send({ token: outcome.token, tokenType: "Bearer", ...body });
   });
 
   app.get("/v1/auth/session", async (request, reply) => {
@@ -77,16 +113,21 @@ export async function registerAuthRoutes(
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {
-    const token = bearerToken(request);
+    const credential = sessionCredential(request);
 
-    if (token) {
+    if (credential) {
       await dependencies.repository.revokeSession(
-        hashToken(token),
+        hashToken(credential.token),
         dependencies.now(),
       );
     }
 
-    return reply.status(204).send();
+    // Cleared whichever transport was used, so a browser whose session was
+    // already revoked or expired still ends up without the cookie.
+    return reply
+      .status(204)
+      .header("set-cookie", CLEARED_SESSION_COOKIE)
+      .send();
   });
 }
 

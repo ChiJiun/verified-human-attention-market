@@ -63,11 +63,23 @@ function setup(
     });
   }
 
-  function verify(text: string, signature: string) {
+  function verify(
+    text: string,
+    signature: string,
+    options: {
+      transport?: "bearer" | "cookie";
+      headers?: Record<string, string>;
+    } = {},
+  ) {
     return app.inject({
       method: "POST",
       url: "/v1/auth/verify",
-      payload: { message: text, signature },
+      headers: options.headers ?? {},
+      payload: {
+        message: text,
+        signature,
+        ...(options.transport ? { transport: options.transport } : {}),
+      },
     });
   }
 
@@ -78,6 +90,20 @@ function setup(
       await account.signMessage({ message: text }),
     );
     return response.json<{ token: string }>().token;
+  }
+
+  /** Browser sign-in: a same-origin cookie-transport verify. */
+  async function signInWithCookie(account: typeof advertiser) {
+    const text = await message(account);
+    const response = await verify(
+      text,
+      await account.signMessage({ message: text }),
+      { transport: "cookie", headers: { "sec-fetch-site": "same-origin" } },
+    );
+    const token = /^__Host-vham_session=([^;]*)/.exec(
+      String(response.headers["set-cookie"]),
+    )?.[1];
+    return { response, token: token ?? "" };
   }
 
   const campaignPayload = (owner: string) => ({
@@ -124,6 +150,7 @@ function setup(
     message,
     verify,
     signIn,
+    signInWithCookie,
     createCampaign,
     session,
     setNow: (value: Date) => {
@@ -447,5 +474,87 @@ describe("session cookie credential", () => {
     ["https://app.vham.test", null, null],
   ])("WEB_ORIGIN %s with SIWE domain %s", (value, domain, expected) => {
     expect(webOriginFrom(value, domain)).toBe(expected);
+  });
+});
+
+describe("cookie transport", () => {
+  it("sets the session cookie and keeps the token out of the body", async () => {
+    const { signInWithCookie, session, createCampaign } = setup();
+
+    const { response, token } = await signInWithCookie(browserAdvertiser);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toMatch(
+      /^__Host-vham_session=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict$/,
+    );
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      transport: "cookie",
+      address: browserAdvertiser.address.toLowerCase(),
+      chainId: CHAIN_ID,
+      expiresAt: "2026-10-05T11:00:00.000Z",
+    });
+
+    expect((await session(cookie(token))).statusCode).toBe(200);
+    const created = await createCampaign(
+      { ...cookie(token), "sec-fetch-site": "same-origin" },
+      browserAdvertiser.address,
+    );
+    expect(created.statusCode).toBe(201);
+  });
+
+  it("keeps the bearer transport as the default", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+
+    const response = await verify(
+      text,
+      await browserAdvertiser.signMessage({ message: text }),
+    );
+
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.json()).toMatchObject({
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      tokenType: "Bearer",
+    });
+  });
+
+  it("refuses a cross-site cookie sign-in and leaves the nonce usable", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+    const signature = await browserAdvertiser.signMessage({ message: text });
+
+    const crossSite = await verify(text, signature, {
+      transport: "cookie",
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(crossSite.json()).toMatchObject({
+      error: { code: "CSRF_REJECTED" },
+    });
+    expect(crossSite.headers["set-cookie"]).toBeUndefined();
+
+    const sameOrigin = await verify(text, signature, {
+      transport: "cookie",
+      headers: { "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOrigin.statusCode).toBe(200);
+  });
+
+  it("logs out by clearing the cookie and revoking the session", async () => {
+    const { app, signInWithCookie, session } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      headers: { ...cookie(token), "sec-fetch-site": "same-origin" },
+    });
+
+    expect(logout.statusCode).toBe(204);
+    expect(logout.headers["set-cookie"]).toBe(
+      "__Host-vham_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
+    );
+    expect((await session(cookie(token))).statusCode).toBe(401);
   });
 });
