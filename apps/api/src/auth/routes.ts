@@ -110,19 +110,27 @@ export async function registerAuthRoutes(
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {
-    const { credential } = presentedCredentials(request.headers);
+    const { credential, carriesSessionCookie, cookieTokens } =
+      presentedCredentials(request.headers);
+    const tokens =
+      credential.kind === "session" &&
+      credential.source === "header" &&
+      credential.token !== null
+        ? [credential.token, ...cookieTokens]
+        : cookieTokens;
+    const now = dependencies.now();
 
-    if (credential.kind === "session" && credential.token !== null) {
-      await dependencies.repository.revokeSession(
-        hashToken(credential.token),
-        dependencies.now(),
-      );
+    await Promise.all(
+      tokens.map((token) =>
+        dependencies.repository.revokeSession(hashToken(token), now),
+      ),
+    );
+
+    if (carriesSessionCookie) {
+      reply.header("set-cookie", CLEARED_SESSION_COOKIE);
     }
 
-    return reply
-      .status(204)
-      .header("set-cookie", CLEARED_SESSION_COOKIE)
-      .send();
+    return reply.status(204).send();
   });
 }
 

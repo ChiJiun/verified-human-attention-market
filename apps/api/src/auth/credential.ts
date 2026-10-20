@@ -24,8 +24,10 @@ export type Credential =
 
 export interface PresentedCredentials {
   credential: Credential;
-  /** Every value sent under the session cookie name. */
-  sessionCookies: string[];
+  /** The request sent the session cookie name, whatever its values. */
+  carriesSessionCookie: boolean;
+  /** The values sent under the session cookie name that are session tokens. */
+  cookieTokens: string[];
 }
 
 export function presentedCredentials(
@@ -34,7 +36,8 @@ export function presentedCredentials(
   const sessionCookies = sessionCookieValues(headers.cookie);
   return {
     credential: credentialFrom(headers.authorization, sessionCookies),
-    sessionCookies,
+    carriesSessionCookie: sessionCookies.length > 0,
+    cookieTokens: sessionCookies.filter((value) => SESSION_TOKEN.test(value)),
   };
 }
 
@@ -73,11 +76,6 @@ function sessionCookieValues(header: string | undefined): string[] {
       : [];
   });
 }
-
-const authenticatesWithCookie = (credential: Credential) =>
-  credential.kind === "session" &&
-  credential.source === "cookie" &&
-  credential.token !== null;
 
 export function sessionCookie(token: string, maxAgeSeconds: number): string {
   return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
@@ -145,22 +143,17 @@ export function registerSessionCookieGuard(
 ) {
   app.addHook("onRequest", async (request, reply) => {
     if (
-      SAFE_METHOD.test(request.method) ||
-      !authenticatesWithCookie(presentedCredentials(request.headers).credential)
+      !SAFE_METHOD.test(request.method) &&
+      presentedCredentials(request.headers).carriesSessionCookie &&
+      !provenSameOrigin(request.headers, options.webOrigin)
     ) {
-      return;
-    }
-
-    if (!provenSameOrigin(request.headers, options.webOrigin)) {
       return csrfRejected(request, reply);
     }
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
     if (
-      authenticatesWithCookie(
-        presentedCredentials(request.headers).credential,
-      ) &&
+      presentedCredentials(request.headers).carriesSessionCookie &&
       !reply.hasHeader("cache-control")
     ) {
       reply.header("cache-control", "no-store");
