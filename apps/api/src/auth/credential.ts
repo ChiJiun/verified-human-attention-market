@@ -12,7 +12,6 @@ export const SESSION_COOKIE = "__Host-vham_session";
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
 /** Key management and operator routes: the web app has no UI for them. */
 const HEADER_ONLY_ROUTE = /^\/v1\/(admin|api-clients)(\/|$)/;
-const BEARER = /^Bearer ([A-Za-z0-9_-]{20,200})$/;
 
 /**
  * What authenticates a request. An Authorization header, when present, is
@@ -48,7 +47,9 @@ function credentialFrom(
   sessionCookies: string[],
 ): Credential {
   if (authorization !== undefined) {
-    const value = BEARER.exec(authorization)?.[1];
+    const value = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length)
+      : undefined;
     return value?.startsWith("vhamk_")
       ? { kind: "api-key", key: value }
       : { kind: "session", source: "header", token: sessionToken(value) };
