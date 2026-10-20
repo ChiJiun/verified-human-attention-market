@@ -256,7 +256,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 | --- | --- |
 | `CampaignManager` | `0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`（v1，紀錄已封存：`packages/contracts/deployments/archive/84532-2026-10-14-pre-adr-0011.json`） |
 | Campaign | on-chain ID `1`；1 USDC × 最多 3 筆；入金 3 USDC |
-| World ID | `production`，action `vham-campaign-<campaignId>`，`proofOfHuman()` |
+| World ID | `production`，action `vham-campaign-<campaignId>`，`proofOfHuman()`（#74 修正前的設定，該 preset 仍允許 3.0 proof，已由 `CredentialRequest("proof_of_human")` 取代，見 ADR-0007） |
 
 | 步驟 | 結果 | 交易 / 區塊 |
 | --- | --- | --- |
