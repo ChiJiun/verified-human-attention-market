@@ -106,6 +106,8 @@ export async function registerAuthRoutes(
   });
 
   app.get("/v1/auth/session", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+
     if (presentedCredentials(request.headers).credential.kind === "none") {
       return reply.status(204).send();
     }

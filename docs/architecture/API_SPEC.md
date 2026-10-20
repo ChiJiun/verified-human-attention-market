@@ -75,8 +75,8 @@ idempotency and versioning rules: [API_CONTRACT.md](./API_CONTRACT.md) (#26).
    bearer transport.
 7. `GET /v1/auth/session` → `{ address, chainId, expiresAt }`, `204` when the
    request presents no credential, and `401 UNAUTHENTICATED` when it presents
-   one that is not a live session. The web app restores a cookie session with
-   it after a reload. A `401 UNAUTHENTICATED` from this route or from an
+   one that is not a live session, always with `Cache-Control: no-store`. The
+   web app restores a cookie session with it after a reload. A `401 UNAUTHENTICATED` from this route or from an
    advertiser-only route clears the cookie (`Max-Age=0`) when the cookie was
    the credential: expired, revoked or malformed.
 8. `POST /v1/auth/logout` → `204`. It revokes the session of a session token
