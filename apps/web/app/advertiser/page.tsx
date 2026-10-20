@@ -1,16 +1,32 @@
 "use client";
 
+import {
+  closeAvailability,
+  refundAvailability,
+  type CloseAvailability,
+  type RefundAvailability,
+} from "@vham/shared";
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   isCurrentDeployment,
   isFundingTarget,
   type Deployment,
 } from "@vham/shared/deployment";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
+import {
+  describeChainError,
+  describeSimulationFailure,
+  formatRemaining,
+  readSettlement,
+  SETTLEMENT_CALLS,
+  type ChainSettlement,
+  type SettlementAction,
+  type SettlementTarget,
+} from "../../lib/settlement";
 import { signInWithEthereum, type Session } from "../../lib/siwe";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
@@ -56,7 +72,11 @@ interface Analytics {
       remaining: string;
       paidCompletions: number;
     };
-    pending: { funded: string };
+    pending: {
+      funded: string;
+      status:
+        "not_found" | "created" | "active" | "closed" | "settled" | "cancelled";
+    };
     hasUnconfirmedEvents: boolean;
   } | null;
 }
@@ -71,6 +91,83 @@ type TxStatus =
 
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
+
+/** The campaign as the connected wallet reads it from the chain. */
+type ChainView =
+  | { state: "unread" }
+  | { state: "read"; onchain: ChainSettlement }
+  | { state: "failed"; message: string };
+
+const UNREAD: ChainView = { state: "unread" };
+
+function settlementTarget(analytics: Analytics): SettlementTarget | null {
+  return analytics.onchainCampaignId === null
+    ? null
+    : {
+        onchainCampaignId: analytics.onchainCampaignId,
+        rewardPerCompletion: analytics.rewardPerCompletion,
+        maxCompletions: analytics.maxCompletions,
+        startAt: analytics.startAt,
+        endAt: analytics.endAt,
+        draftRef: analytics.draftRef,
+      };
+}
+
+/** Counts down from the last chain read, so it needs no extra RPC calls. */
+function Countdown({
+  availableAt,
+  onchain,
+}: {
+  availableAt: bigint;
+  onchain: ChainSettlement;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const elapsed = Math.max(0, Math.floor((nowMs - onchain.readAtMs) / 1_000));
+  const remaining = Number(availableAt - onchain.reading.now) - elapsed;
+  return remaining > 0 ? `in ${formatRemaining(remaining)}` : "any moment now";
+}
+
+function SettlementNotes({
+  onchain,
+  close,
+  refund,
+}: {
+  onchain: ChainSettlement;
+  close: CloseAvailability | null;
+  refund: RefundAvailability | null;
+}) {
+  return (
+    <>
+      {close?.kind === "unavailable" && close.reason === "ending-soon" && (
+        <p className="note">
+          A close sent in the last minute before the end would probably be mined
+          too late, so it is not offered.
+        </p>
+      )}
+      {refund?.kind === "waiting" && (
+        <p className="note">
+          Refund opens at{" "}
+          {new Date(Number(refund.availableAt) * 1_000).toLocaleString()} (
+          <Countdown availableAt={refund.availableAt} onchain={onchain} />
+          ). A claim authorization issued right before the close or end time
+          stays valid for {Number(onchain.reading.ttl / 60n)} minutes, so the
+          contract holds the unused budget until every one has expired.
+        </p>
+      )}
+      {refund?.kind === "unavailable" && refund.reason === "paused" && (
+        <p className="note">
+          Refunds are paused by the contract owner and resume after the contract
+          is unpaused.
+        </p>
+      )}
+    </>
+  );
+}
 
 /**
  * Per-draft marker that a createCampaign transaction may have been broadcast
@@ -133,6 +230,14 @@ export default function AdvertiserPage() {
    * gas.
    */
   const [awaitingLink, setAwaitingLink] = useState(false);
+  const [chainView, setChainView] = useState<ChainView>(UNREAD);
+  /**
+   * A close or refund this page broadcast whose effect is not visible yet. Its
+   * button stays hidden: sending it again would only revert and cost gas.
+   */
+  const [sent, setSent] = useState<SettlementAction | null>(null);
+  /** Lets only the most recently started chain read apply its result. */
+  const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
@@ -197,12 +302,52 @@ export default function AdvertiserPage() {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  /**
+   * Close and refund depend on block time and the contract's own state, so the
+   * wallet reads them from the chain on every analytics refresh. Only funded
+   * campaigns on the current deployment have anything to read.
+   */
+  const readChain = useCallback(async () => {
+    const read = ++chainReads.current;
+    const target = analytics ? settlementTarget(analytics) : null;
+    if (
+      !wallet ||
+      !deployment ||
+      !analytics ||
+      !target ||
+      !onCurrentDeployment ||
+      (analytics.status !== "active" && analytics.status !== "closed")
+    ) {
+      setChainView(UNREAD);
+      return;
+    }
+    try {
+      const settlement = await readSettlement(wallet, deployment, target);
+      if (read === chainReads.current) {
+        setChainView({ state: "read", onchain: settlement });
+      }
+    } catch (caught) {
+      if (read === chainReads.current) {
+        setChainView({ state: "failed", message: describeChainError(caught) });
+      }
+    }
+  }, [wallet, deployment, analytics, onCurrentDeployment]);
+
+  useEffect(() => {
+    void readChain();
+  }, [readChain]);
+
   async function run(action: () => Promise<void>) {
     setError(null);
     setBusy(true);
     try {
       await action();
     } catch (caught) {
+      // A throw while the card still asks for a signature means the wallet
+      // call itself failed, so nothing is waiting any more.
+      setTx((current) =>
+        current.state === "signing" ? { state: "idle" } : current,
+      );
       setError(describeError(caught));
     } finally {
       setBusy(false);
@@ -520,6 +665,115 @@ export default function AdvertiserPage() {
       await refresh();
     });
 
+  /**
+   * Close and refund carry only the campaign id, so the id is re-read and
+   * matched to this draft right before sending (readSettlement). The
+   * simulation then names whatever the contract would reject. Nothing is
+   * retried: a wallet rejection, a revert or an unknown outcome is shown as is.
+   */
+  const settle = (action: SettlementAction) =>
+    run(async () => {
+      if (!wallet || !session || !analytics) return;
+      const target = settlementTarget(analytics);
+      if (!target) return;
+      const { functionName, label, done } = SETTLEMENT_CALLS[action];
+
+      const { data: chainInfo } = await api<{
+        chainId: number;
+        campaignManager: Address;
+      }>("/v1/chain");
+      const configured = {
+        chainId: chainInfo.chainId,
+        contractAddress: chainInfo.campaignManager,
+      };
+      if (
+        !isCurrentDeployment(
+          {
+            chainId: analytics.chainId,
+            contractAddress: analytics.onchainContractAddress,
+          },
+          configured,
+        )
+      ) {
+        throw new Error(
+          "This campaign was created on an earlier CampaignManager deployment and cannot be settled here.",
+        );
+      }
+
+      const settlement = await readSettlement(wallet, configured, target);
+      setChainView({ state: "read", onchain: settlement });
+      const verdict =
+        action === "close"
+          ? closeAvailability(settlement.reading)
+          : refundAvailability(settlement.reading);
+      if (verdict.kind !== "available") {
+        throw new Error(
+          "This is no longer available. The page has been updated.",
+        );
+      }
+
+      const call = {
+        account: wallet.address,
+        address: chainInfo.campaignManager,
+        abi: campaignManagerAbi,
+        functionName,
+        args: [BigInt(target.onchainCampaignId)],
+      } as const;
+      try {
+        await wallet.publicClient.simulateContract(call);
+      } catch (caught) {
+        throw new Error(describeSimulationFailure(caught), { cause: caught });
+      }
+
+      setTx({ state: "signing", label });
+      let hash: Hash;
+      try {
+        hash = await wallet.walletClient.writeContract({ ...call, chain });
+      } catch (caught) {
+        throw new Error(
+          isUserRejection(caught)
+            ? "You rejected the request in your wallet, so nothing was sent."
+            : describeChainError(caught),
+          { cause: caught },
+        );
+      }
+
+      setSent(action);
+      setTx({ state: "pending", label, hash });
+      const mined = await waitForTx(wallet.publicClient, hash);
+      if (mined.kind === "pending") {
+        setTx({ state: "reconciling", label, hash });
+        return;
+      }
+      if (mined.kind === "reverted") {
+        setSent(null);
+        setTx({ state: "failed", label, message: "The transaction reverted." });
+      } else {
+        setTx({ state: "done", label: done, hash });
+      }
+      await Promise.all([refresh(), readChain()]);
+    });
+
+  const apiStatus = analytics?.settlement?.pending.status;
+  const onchain = chainView.state === "read" ? chainView.onchain : null;
+  const closeVerdict =
+    onchain &&
+    analytics?.status === "active" &&
+    apiStatus !== "closed" &&
+    apiStatus !== "settled"
+      ? closeAvailability(onchain.reading)
+      : null;
+  const refundVerdict =
+    onchain &&
+    (analytics?.status === "active" || analytics?.status === "closed") &&
+    apiStatus !== "settled"
+      ? refundAvailability(onchain.reading)
+      : null;
+  const closeOffered =
+    closeVerdict?.kind === "available" && !busy && sent !== "close";
+  const refundOffered =
+    refundVerdict?.kind === "available" && !busy && sent !== "refund";
+
   return (
     <main className="container">
       <h1>Advertiser</h1>
@@ -639,6 +893,19 @@ export default function AdvertiserPage() {
               Some on-chain activity is still being confirmed.
             </p>
           )}
+          {chainView.state === "failed" && (
+            <p className="note">
+              Could not read the campaign from the chain ({chainView.message}).
+              Close and refund stay hidden until it works.
+            </p>
+          )}
+          {onchain && (
+            <SettlementNotes
+              onchain={onchain}
+              close={closeVerdict}
+              refund={refundVerdict}
+            />
+          )}
           <div className="actions">
             {analytics?.status === "draft" && !awaitingLink && (
               <button onClick={createOnchain} disabled={busy || wrongNetwork}>
@@ -673,6 +940,21 @@ export default function AdvertiserPage() {
                   Approve &amp; fund
                 </button>
               )}
+            {closeOffered && (
+              <button
+                className="secondary"
+                onClick={() => settle("close")}
+                disabled={wrongNetwork}
+                title="Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+              >
+                Close campaign
+              </button>
+            )}
+            {refundOffered && (
+              <button onClick={() => settle("refund")} disabled={wrongNetwork}>
+                Refund unused budget
+              </button>
+            )}
             <button className="secondary" onClick={() => void refresh()}>
               Refresh
             </button>
