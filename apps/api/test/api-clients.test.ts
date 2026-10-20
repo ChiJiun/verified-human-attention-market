@@ -229,6 +229,24 @@ describe("API clients (#26)", () => {
     expect((await createCampaign(withKey(key))).statusCode).toBe(401);
   });
 
+  it.each([["vhamk_x"], ["vhamk_test_with a space"]])(
+    "rejects the malformed key %s on a public route",
+    async (key) => {
+      const { app } = setup();
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/campaigns/${UNKNOWN_CAMPAIGN}`,
+        headers: withKey(key),
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toMatchObject({
+        error: { code: "INVALID_API_KEY" },
+      });
+    },
+  );
+
   it("lets operators revoke any key with a reason (abuse path)", async () => {
     const { app, createKey, createCampaign } = setup();
     const { key, id } = await createKey();
