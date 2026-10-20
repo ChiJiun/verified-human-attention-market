@@ -46,13 +46,21 @@ interface Authorization {
   contractAddress: Address;
 }
 
-/** What `POST /world-id/request` returns: everything IDKit needs to open. */
-interface WorldIdRequest {
-  appId: `app_${string}` | null;
+/**
+ * What `POST /world-id/request` returns: the action, the signal binding the
+ * proof to the wallet named in the request (#71) and, when World ID is
+ * live, everything IDKit needs to open.
+ */
+interface LiveWorldIdRequest {
+  appId: `app_${string}`;
   action: string;
   environment: "production" | "staging";
   rpContext: RpContext;
+  signal: Hex;
 }
+
+type WorldIdRequest =
+  LiveWorldIdRequest | { appId: null; action: string; signal: Hex };
 
 type Step =
   | { kind: "verify" }
@@ -89,7 +97,9 @@ export default function MissionPage() {
   const [step, setStep] = useState<Step>({ kind: "verify" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [worldRequest, setWorldRequest] = useState<WorldIdRequest | null>(null);
+  const [worldRequest, setWorldRequest] = useState<LiveWorldIdRequest | null>(
+    null,
+  );
   const [widgetOpen, setWidgetOpen] = useState(false);
 
   const key = (name: string) =>
@@ -154,20 +164,22 @@ export default function MissionPage() {
   const verifyHuman = () =>
     run(async () => {
       if (!wallet || !campaignId) return;
+      // The signal is made for this wallet, so the proof cannot be relayed to
+      // another one. A fresh RP signature per attempt; its key stays on the API.
+      const { data } = await api<WorldIdRequest>(
+        `/v1/campaigns/${campaignId}/world-id/request`,
+        { method: "POST", body: { claimant: wallet.address } },
+      );
       if (WORLD_ID_MODE === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
         await verifyEligibility(wallet.address, {
-          action: `vham-campaign-${campaignId}`,
+          action: data.action,
           simulatedHuman: wallet.address.toLowerCase(),
+          signal: data.signal,
         });
         setStep({ kind: "answer" });
         return;
       }
-      // A fresh RP signature per attempt; the signing key stays on the API.
-      const { data } = await api<WorldIdRequest>(
-        `/v1/campaigns/${campaignId}/world-id/request`,
-        { method: "POST" },
-      );
       if (!data.appId) throw new Error("World ID is not configured.");
       setWorldRequest(data);
       setWidgetOpen(true);
@@ -327,7 +339,7 @@ export default function MissionPage() {
         </section>
       )}
 
-      {worldRequest?.appId && (
+      {worldRequest && (
         <IDKitRequestWidget
           open={widgetOpen}
           onOpenChange={setWidgetOpen}
@@ -336,7 +348,9 @@ export default function MissionPage() {
           rp_context={worldRequest.rpContext}
           environment={worldRequest.environment}
           allow_legacy_proofs={false}
-          constraints={CredentialRequest("proof_of_human")}
+          constraints={CredentialRequest("proof_of_human", {
+            signal: worldRequest.signal,
+          })}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
             setError(null);
