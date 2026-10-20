@@ -21,6 +21,14 @@ describe("campaign links", () => {
     expect(campaignLink(search)).toEqual(expected);
   });
 
+  it("canonicalizes a campaign id to the API's lowercase form", () => {
+    expect(parseCampaignId(ID.toUpperCase())).toBe(ID);
+    expect(campaignLink(`?campaign=${ID.toUpperCase()}`)).toEqual({
+      kind: "campaign",
+      id: ID,
+    });
+  });
+
   it("refuses anything that is not a UUID", () => {
     expect(parseCampaignId("")).toBeNull();
     expect(parseCampaignId(`${ID} `)).toBeNull();
