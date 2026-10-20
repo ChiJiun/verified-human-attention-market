@@ -956,6 +956,19 @@ describe("session check", () => {
     expect(response.body).toBe("");
   });
 
+  it("is never cached, whatever the credential", async () => {
+    const { signIn, session } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    for (const response of [
+      await session({}),
+      await session(bearer(token)),
+      await session(bearer("not-a-real-token-xxxxxxxx")),
+    ]) {
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+  });
+
   it("answers 401 to an Authorization header that is not a session", async () => {
     const { session } = setup();
 
