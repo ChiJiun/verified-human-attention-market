@@ -110,7 +110,6 @@ describe("HttpWorldIdVerifier", () => {
 
   it("refuses a legacy World ID 3.0 result without calling World", async () => {
     const legacyNullifier = "0x0123456789abcdef";
-    // World still verifies 3.0 proofs during its migration window.
     const fetchMock = vi.fn(async () =>
       jsonResponse(200, {
         success: true,
