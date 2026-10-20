@@ -19,6 +19,10 @@
     "./deployment": {
       "types": "./dist/deployment.d.ts",
       "default": "./dist/deployment.js"
+    },
+    "./settlement": {
+      "types": "./dist/settlement.d.ts",
+      "default": "./dist/settlement.js"
     }
   },
   "scripts": {

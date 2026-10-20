@@ -1,13 +1,13 @@
-import {
-  parseContractCampaignStatus,
-  type SettlementReading,
-} from "@vham/shared";
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   isFundingTarget,
   type Deployment,
   type FundingTargetExpectation,
 } from "@vham/shared/deployment";
+import {
+  parseContractCampaignStatus,
+  type SettlementReading,
+} from "@vham/shared/settlement";
 import {
   BaseError,
   ContractFunctionRevertedError,

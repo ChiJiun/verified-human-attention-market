@@ -1,17 +1,17 @@
 "use client";
 
-import {
-  closeAvailability,
-  refundAvailability,
-  type CloseAvailability,
-  type RefundAvailability,
-} from "@vham/shared";
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   isCurrentDeployment,
   isFundingTarget,
   type Deployment,
 } from "@vham/shared/deployment";
+import {
+  closeAvailability,
+  refundAvailability,
+  type CloseAvailability,
+  type RefundAvailability,
+} from "@vham/shared/settlement";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
