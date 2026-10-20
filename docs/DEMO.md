@@ -235,10 +235,10 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
    | `WORLD_ID_RP_ID` | `rp_…`，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
    | `RP_SIGNING_KEY` | RP 簽章私鑰（32 bytes hex），只在伺服器簽 `rp_context`，是秘密 |
    | `WORLD_ID_ENVIRONMENT` | `production`（預設）或 `staging`（配合 simulator）。同一個值會回傳給 widget，後端也據此拒絕其他環境的 proof |
-   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
+   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；也用來推導綁定錢包的 signal（#71）。沒設定時 `world-id/request` 與資格驗證都回 503 |
 
-   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。
-3. 前端不要設 `NEXT_PUBLIC_WORLD_ID_MODE=simulated`。參與者按 **Verify with World ID** 後，前端會先向 API 取得 `rp_context`，再開 IDKit widget；IDKit 的結果原封不動送到 `eligibility/verify`。
+   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `appId: null` 與 signal，沒有 `rp_context`。
+3. 前端不要設 `NEXT_PUBLIC_WORLD_ID_MODE=simulated`。參與者按 **Verify with World ID** 後，前端會用已連線的錢包向 API 取得 `rp_context` 與綁定這個錢包的 signal，再開 IDKit widget；IDKit 的結果原封不動送到 `eligibility/verify`，換一個錢包送出會得到 `403 SIGNAL_MISMATCH`。
 4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
 5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
 
