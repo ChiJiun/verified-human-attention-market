@@ -31,7 +31,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - backend/contract agreement [`test_ClaimAuthorizationTypehashMatchesBackend`, `test_EventTopicsMatchIndexer`, `test_FunctionSelectorsMatchIndexer`];
 - deployment script [`DeployCampaignManager.t.sol`: configured limits, wrong chain, missing addresses, token without code, out-of-range limit, deployment JSON fields];
 - exposure limits [`test_InvalidExposureLimitsRejected`, `test_ExposureLimitBoundariesAccepted`], creation event [`test_CampaignCreatedCarriesDraftRef`];
-- signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature, which `ecrecover` alone accepts), `test_InvalidSignatureVRejected`];
+- signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature, which `ecrecover` alone accepts), `test_InvalidSignatureVRejected`, `test_SignatureVZeroOrOneAccepted` (a recovery id of 0 or 1 counts as 27 or 28)];
 - guards no public sequence reaches [`test_AlreadyFundedRejected`, `test_InsufficientCampaignBudgetRejected`; both set storage with `vm.store`. Funding writes `fundedBudget` and leaves Draft in one transaction, and each claim adds exactly one reward and one completion to a budget of `rewardPerCompletion * maxCompletions`, so `InvalidCampaignStatus` and `CompletionLimitReached` always fire first. The guards matter only if that accounting breaks, and then they stop a campaign from paying out of the escrow shared by all campaigns].
 
 ## Fuzz

@@ -807,6 +807,22 @@ contract CampaignManagerTest {
         }
     }
 
+    /// The recovery id may be sent as 0 or 1 instead of 27 or 28.
+    function test_SignatureVZeroOrOneAccepted() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        for (uint8 v = 27; v <= 28; ++v) {
+            address recipient = vm.addr(0xC1A100 + uint256(v));
+            (CampaignManager.ClaimAuthorization memory authorization, bytes32 r, bytes32 s) =
+                _authorizationSignedWithV(campaignId, recipient, v);
+
+            vm.prank(recipient);
+            manager.claim(authorization, abi.encodePacked(r, s, v - 27));
+            require(token.balanceOf(recipient) == ONE_USDC, "recovery id sent as 0 or 1 pays");
+        }
+    }
+
     function test_InvalidFundingAmountRejected() public {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
@@ -976,6 +992,20 @@ contract CampaignManagerTest {
             issuedAt: issuedAt,
             expiresAt: issuedAt + 10 minutes
         });
+    }
+
+    /// @dev A digest fixes the recovery id its signature carries, so the nonce is varied until it matches.
+    function _authorizationSignedWithV(uint256 campaignId, address recipient, uint8 wantedV)
+        private
+        returns (CampaignManager.ClaimAuthorization memory authorization, bytes32 r, bytes32 s)
+    {
+        for (uint256 i = 1; i <= 64; ++i) {
+            authorization = _authorization(campaignId, recipient, bytes32(i));
+            uint8 v;
+            (v, r, s) = _signComponents(authorization, SIGNER_KEY);
+            if (v == wantedV) return (authorization, r, s);
+        }
+        revert("no digest with the wanted recovery id");
     }
 
     function _signComponents(CampaignManager.ClaimAuthorization memory authorization, uint256 privateKey)
