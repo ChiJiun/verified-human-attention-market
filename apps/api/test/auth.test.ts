@@ -777,3 +777,67 @@ describe("routes that take header credentials only", () => {
     });
   });
 });
+
+describe("session check", () => {
+  const cleared =
+    "__Host-vham_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict";
+
+  it("answers 204 when the request presents no credential", async () => {
+    const { session } = setup();
+
+    const response = await session({});
+
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+  });
+
+  it("answers 401 to an Authorization header that is not a session", async () => {
+    const { session } = setup();
+
+    const response = await session(bearer("not-a-real-token-xxxxxxxx"));
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("clears an expired session cookie", async () => {
+    const { signInWithCookie, session, createCampaign, setNow } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+    setNow(new Date("2026-10-05T11:00:01.000Z"));
+
+    const check = await session(cookie(token));
+    const mutation = await createCampaign(
+      { ...cookie(token), "sec-fetch-site": "same-origin" },
+      browserAdvertiser.address,
+    );
+
+    expect(check.statusCode).toBe(401);
+    expect(check.headers["set-cookie"]).toBe(cleared);
+    expect(mutation.statusCode).toBe(401);
+    expect(mutation.headers["set-cookie"]).toBe(cleared);
+  });
+
+  it("clears a session cookie that holds no session token", async () => {
+    const { session } = setup();
+
+    const response = await session({
+      cookie: `${SESSION_COOKIE}=not-a-session-token`,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBe(cleared);
+  });
+
+  it("keeps the cookie when the 401 is about the Authorization header", async () => {
+    const { signInWithCookie, session } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const response = await session({
+      authorization: "Basic dXNlcjpwYXNz",
+      ...cookie(token),
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+});
