@@ -2,7 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
-import { campaignAction } from "../identity/world-id.js";
+import {
+  campaignAction,
+  type WorldIdEnvironment,
+} from "../identity/world-id.js";
 import { worldIdSignal } from "../identity/world-id-signal.js";
 import type { RpSigner } from "../identity/rp-signature.js";
 import {
@@ -25,18 +28,20 @@ const verifyEligibilitySchema = z.object({
   idkitResponse: z.unknown(),
 });
 
-export interface WorldIdRequestConfig {
-  signer: RpSigner;
-  rpId: string;
-  appId: string | null;
-  /** Must match what the verifier expects; defaults to production. */
-  environment?: "production" | "staging";
-}
+/** How IDKit requests open; null = World ID is not configured (#12). */
+export type WorldIdRequestConfig =
+  | {
+      mode: "live";
+      signer: RpSigner;
+      rpId: string;
+      appId: string;
+      environment: WorldIdEnvironment;
+    }
+  | { mode: "simulated" };
 
 export async function registerEligibilityRoutes(
   app: FastifyInstance,
   dependencies: EligibilityServiceDependencies & {
-    /** RP signing for IDKit requests; null = not configured (#12). */
     worldIdRequest?: WorldIdRequestConfig | null;
   },
 ) {
@@ -86,7 +91,9 @@ export async function registerEligibilityRoutes(
         );
       }
 
-      if (!dependencies.participantKeySecret) {
+      const config = dependencies.worldIdRequest;
+
+      if (!config || !dependencies.participantKeySecret) {
         return fail(
           503,
           "WORLD_ID_NOT_CONFIGURED",
@@ -101,18 +108,8 @@ export async function registerEligibilityRoutes(
         parsed.data.claimant,
       );
 
-      if (dependencies.worldId.mode === "simulated") {
+      if (config.mode === "simulated") {
         return reply.send({ mode: "simulated", action, signal });
-      }
-
-      const config = dependencies.worldIdRequest;
-
-      if (!config?.appId) {
-        return fail(
-          503,
-          "WORLD_ID_NOT_CONFIGURED",
-          "World ID requests are not configured",
-        );
       }
 
       const signature = await config.signer.sign({ action, now });
@@ -121,7 +118,7 @@ export async function registerEligibilityRoutes(
         mode: "live",
         appId: config.appId,
         action,
-        environment: config.environment ?? "production",
+        environment: config.environment,
         rpContext: {
           rp_id: config.rpId,
           nonce: signature.nonce,

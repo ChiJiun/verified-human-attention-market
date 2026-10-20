@@ -2,6 +2,7 @@ import { bytesToHex, hexToBytes, stringToBytes, verifyMessage } from "viem";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import type { WorldIdRequestConfig } from "../src/eligibility/routes.js";
 import {
   createRpSigner,
   hashToField,
@@ -94,26 +95,26 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   const WALLET_A = `0x${"a".repeat(40)}`;
   const WALLET_B = `0x${"b".repeat(40)}`;
 
+  const signer = createRpSigner(KEY);
+  const LIVE: WorldIdRequestConfig = {
+    mode: "live",
+    signer,
+    rpId: "rp_test123",
+    appId: "app_test123",
+    environment: "staging",
+  };
+
   async function setup(
-    configured: boolean,
+    worldIdRequest: WorldIdRequestConfig | null,
     options: {
       secret?: string | null;
-      appId?: string | null;
       worldIdVerifier?: WorldIdVerifier;
     } = {},
   ) {
-    const signer = createRpSigner(KEY);
     const now = new Date("2026-10-05T10:00:00.000Z");
     const app = buildApp({
       authenticate: signedInAs(),
-      worldIdRequest: configured
-        ? {
-            signer,
-            rpId: "rp_test123",
-            appId: options.appId === undefined ? "app_test123" : options.appId,
-            environment: "staging",
-          }
-        : null,
+      worldIdRequest,
       participantKeySecret:
         options.secret === undefined ? SECRET : options.secret,
       ...(options.worldIdVerifier
@@ -147,11 +148,11 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         },
       },
     });
-    return { app, signer, id: created.json<{ id: string }>().id };
+    return { app, id: created.json<{ id: string }>().id };
   }
 
   it("returns the campaign action, a wallet-bound signal and a verifiable rp_context", async () => {
-    const { app, signer, id } = await setup(true);
+    const { app, id } = await setup(LIVE);
     const request = (claimant: string) =>
       app.inject({
         method: "POST",
@@ -207,7 +208,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   });
 
   it("requires the claimant wallet", async () => {
-    const { app, id } = await setup(true);
+    const { app, id } = await setup(LIVE);
 
     for (const payload of [undefined, {}, { claimant: "nope" }]) {
       const response = await app.inject({
@@ -224,9 +225,10 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   });
 
   it("serves the local simulation the signal its proof must carry", async () => {
-    const { app, id } = await setup(false, {
-      worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337),
-    });
+    const { app, id } = await setup(
+      { mode: "simulated" },
+      { worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337) },
+    );
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
@@ -260,9 +262,9 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     await app.close();
   });
 
-  it("fails closed when RP signing, the app id or the signal secret is not configured", async () => {
+  it("fails closed when the request config or the signal secret is missing, whatever the verifier", async () => {
     const payload = { claimant: WALLET_A };
-    const unsigned = await setup(false);
+    const unsigned = await setup(null);
     const response = await unsigned.app.inject({
       method: "POST",
       url: `/v1/campaigns/${unsigned.id}/world-id/request`,
@@ -280,19 +282,21 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     expect(missing.statusCode).toBe(404);
     await unsigned.app.close();
 
-    const unnamed = await setup(true, { appId: null });
-    const noAppId = await unnamed.app.inject({
+    const simulatedVerifierOnly = await setup(null, {
+      worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337),
+    });
+    const noConfig = await simulatedVerifierOnly.app.inject({
       method: "POST",
-      url: `/v1/campaigns/${unnamed.id}/world-id/request`,
+      url: `/v1/campaigns/${simulatedVerifierOnly.id}/world-id/request`,
       payload,
     });
-    expect(noAppId.statusCode).toBe(503);
-    expect(noAppId.json()).toMatchObject({
+    expect(noConfig.statusCode).toBe(503);
+    expect(noConfig.json()).toMatchObject({
       error: { code: "WORLD_ID_NOT_CONFIGURED" },
     });
-    await unnamed.app.close();
+    await simulatedVerifierOnly.app.close();
 
-    const unsalted = await setup(true, { secret: null });
+    const unsalted = await setup(LIVE, { secret: null });
     const noSecret = await unsalted.app.inject({
       method: "POST",
       url: `/v1/campaigns/${unsalted.id}/world-id/request`,

@@ -21,6 +21,7 @@ import { PostgresChainEventRepository } from "./chain/events-repository.postgres
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
+import type { WorldIdRequestConfig } from "./eligibility/routes.js";
 import { PostgresModerationRepository } from "./moderation/repository.js";
 import type { ModerationMode } from "./moderation/routes.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
@@ -65,7 +66,7 @@ if (!["production", "staging"].includes(worldIdEnvironment)) {
   throw new Error("WORLD_ID_ENVIRONMENT must be production or staging");
 }
 
-const worldIdRpId = process.env.WORLD_ID_RP_ID;
+const worldIdRpId = process.env.WORLD_ID_RP_ID || null;
 const worldIdMode = process.env.WORLD_ID_MODE ?? "live";
 
 if (!["live", "simulated"].includes(worldIdMode)) {
@@ -158,17 +159,22 @@ if (!Number.isSafeInteger(trustProxy) || trustProxy < 0) {
   throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
 }
 
-// IDKit RP signing (#12). Needs both the RP id and the server-only key.
+// IDKit requests (#12): live needs the RP id, the server-only signing key
+// and the app id together; anything less is "not configured".
 const rpSigningKey = process.env.RP_SIGNING_KEY || null;
-const worldIdRequest =
-  worldIdMode === "live" && worldIdRpId && rpSigningKey
-    ? {
-        signer: createRpSigner(rpSigningKey),
-        rpId: worldIdRpId,
-        appId: process.env.WORLD_ID_APP_ID || null,
-        environment: worldIdEnvironment,
-      }
-    : null;
+const worldIdAppId = process.env.WORLD_ID_APP_ID || null;
+const worldIdRequest: WorldIdRequestConfig | null =
+  worldIdMode === "simulated"
+    ? { mode: "simulated" }
+    : worldIdRpId && rpSigningKey && worldIdAppId
+      ? {
+          mode: "live",
+          signer: createRpSigner(rpSigningKey),
+          rpId: worldIdRpId,
+          appId: worldIdAppId,
+          environment: worldIdEnvironment,
+        }
+      : null;
 
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
@@ -267,10 +273,20 @@ if (!siweDomain) {
 
 if (worldIdMode === "simulated") {
   app.log.warn("WORLD_ID_MODE=simulated: local anvil demo only");
-} else if (!worldIdRpId || !participantKeySecret) {
-  app.log.warn(
-    "World ID eligibility is disabled: set WORLD_ID_RP_ID and PARTICIPANT_KEY_SECRET",
-  );
+} else {
+  for (const [name, value] of [
+    ["WORLD_ID_RP_ID", worldIdRpId],
+    ["RP_SIGNING_KEY", rpSigningKey],
+    ["WORLD_ID_APP_ID", worldIdAppId],
+  ]) {
+    if (!value) {
+      app.log.warn(`World ID is disabled: set ${name}`);
+    }
+  }
+}
+
+if (!participantKeySecret) {
+  app.log.warn("World ID eligibility is disabled: set PARTICIPANT_KEY_SECRET");
 }
 
 const port = Number(process.env.API_PORT ?? 3001);

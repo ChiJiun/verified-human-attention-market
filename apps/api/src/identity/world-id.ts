@@ -35,7 +35,6 @@ export type WorldIdResult =
   | { ok: false; code: WorldIdFailureCode };
 
 export interface WorldIdVerifier {
-  readonly mode: "live" | "simulated";
   verify(request: {
     action: string;
     signal: Hex;
@@ -97,7 +96,6 @@ export interface HttpWorldIdVerifierOptions {
 }
 
 export class HttpWorldIdVerifier implements WorldIdVerifier {
-  readonly mode = "live";
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -229,8 +227,6 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
 /** Used when World ID is not configured: eligibility is always refused. */
 export class UnconfiguredWorldIdVerifier implements WorldIdVerifier {
-  readonly mode = "live";
-
   async verify(): Promise<WorldIdResult> {
     return { ok: false, code: "WORLD_ID_NOT_CONFIGURED" };
   }
@@ -243,8 +239,6 @@ export const LOCAL_DEV_CHAIN_ID = 31337;
  * Local-development stand-in for World ID, for demos on anvil only.
  */
 export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
-  readonly mode = "simulated";
-
   constructor(chainId: number) {
     if (chainId !== LOCAL_DEV_CHAIN_ID) {
       throw new Error(

@@ -30,8 +30,6 @@ import type {
 
 /** Accepts a proof whose action matches; the nullifier is `human`. */
 class FakeWorldId implements WorldIdVerifier {
-  readonly mode = "live";
-
   async verify(request: {
     action: string;
     idkitResponse: unknown;
