@@ -549,6 +549,42 @@ describe("cookie transport", () => {
     expect(sameOrigin.statusCode).toBe(200);
   });
 
+  it("revokes the cookie session that a new cookie sign-in replaces", async () => {
+    const { message, verify, signInWithCookie, session } = setup();
+    const { token: previous } = await signInWithCookie(browserAdvertiser);
+    const text = await message(otherBrowser);
+
+    const response = await verify(
+      text,
+      await otherBrowser.signMessage({ message: text }),
+      {
+        transport: "cookie",
+        headers: { ...cookie(previous), "sec-fetch-site": "same-origin" },
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect((await session(cookie(previous))).statusCode).toBe(401);
+  });
+
+  it("keeps the cookie session when a new sign-in fails", async () => {
+    const { message, verify, signInWithCookie, session } = setup();
+    const { token: previous } = await signInWithCookie(browserAdvertiser);
+    const text = await message(otherBrowser);
+
+    const response = await verify(
+      text,
+      await stranger.signMessage({ message: text }),
+      {
+        transport: "cookie",
+        headers: { ...cookie(previous), "sec-fetch-site": "same-origin" },
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect((await session(cookie(previous))).statusCode).toBe(200);
+  });
+
   it("logs out by clearing the cookie and revoking the session", async () => {
     const { app, signInWithCookie, session } = setup();
     const { token } = await signInWithCookie(browserAdvertiser);
