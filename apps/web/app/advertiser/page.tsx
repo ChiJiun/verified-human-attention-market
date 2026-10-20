@@ -249,10 +249,6 @@ export default function AdvertiserPage() {
   const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
-  /**
-   * The cookie session counts only for the connected wallet: another wallet
-   * has to sign in itself, which replaces the cookie.
-   */
   const activeSession =
     session !== null &&
     wallet !== null &&

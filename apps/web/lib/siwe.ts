@@ -4,7 +4,6 @@ import { createSiweMessage } from "viem/siwe";
 import { api, ApiError } from "./api";
 import { chainId } from "./config";
 
-/** A browser session. Its token is an HttpOnly cookie the page never sees. */
 export interface Session {
   address: string;
   expiresAt: string;
@@ -40,7 +39,6 @@ export async function signInWithEthereum(
   return { address: verified.data.address, expiresAt: verified.data.expiresAt };
 }
 
-/** The session the cookie still holds after a reload, or null. */
 export async function restoreSession(): Promise<Session | null> {
   try {
     const { data } = await api<Session>("/v1/auth/session");
@@ -53,7 +51,6 @@ export async function restoreSession(): Promise<Session | null> {
   }
 }
 
-/** Revokes the session and clears its cookie. */
 export async function signOut(): Promise<void> {
   await api("/v1/auth/logout", { method: "POST" });
 }

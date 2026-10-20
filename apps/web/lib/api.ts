@@ -1,8 +1,4 @@
-/**
- * Thin client for the API, reached same-origin through /api (next.config).
- * The browser session is an HttpOnly cookie that travels with these
- * same-origin requests on its own; the page never handles a token.
- */
+/** Thin client for the API, reached same-origin through /api (next.config). */
 
 export class ApiError extends Error {
   constructor(

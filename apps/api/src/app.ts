@@ -93,7 +93,7 @@ export interface AppDependencies {
   siwe?: SiweConfig | null;
   /**
    * Origin a cookie-authenticated mutation may come from when the browser
-   * sends no Fetch Metadata (#72); null or absent = Fetch Metadata only.
+   * sends no Fetch Metadata; null or absent = Fetch Metadata only.
    */
   webOrigin?: string | null;
   verifySignature?: SignatureVerifier;

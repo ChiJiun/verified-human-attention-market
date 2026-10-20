@@ -12,7 +12,6 @@ const WEB_ORIGIN = `https://${DOMAIN}`;
 const CHAIN_ID = 84532;
 const advertiser = privateKeyToAccount(`0x${"a1".repeat(32)}`);
 const stranger = privateKeyToAccount(`0x${"b2".repeat(32)}`);
-/** Wallets of the cookie-session tests only. */
 const browserAdvertiser = privateKeyToAccount(`0x${"c3".repeat(32)}`);
 const otherBrowser = privateKeyToAccount(`0x${"d4".repeat(32)}`);
 
@@ -92,7 +91,6 @@ function setup(
     return response.json<{ token: string }>().token;
   }
 
-  /** Browser sign-in: a same-origin cookie-transport verify. */
   async function signInWithCookie(account: typeof advertiser) {
     const text = await message(account);
     const response = await verify(

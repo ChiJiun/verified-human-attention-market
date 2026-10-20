@@ -207,8 +207,6 @@ if (!/^[1-9][0-9]{0,30}$/.test(dailyPayoutLimit)) {
 // Sign-In with Ethereum (#37). Without SIWE_DOMAIN, sign-in is disabled and
 // every advertiser-only endpoint returns 401 (fail closed).
 const siweDomain = process.env.SIWE_DOMAIN || null;
-// Browser sessions (#72): a cookie-authenticated mutation without Fetch
-// Metadata is accepted only from this Origin. Unset = Fetch Metadata only.
 const webOriginValue = process.env.WEB_ORIGIN || null;
 const webOrigin =
   webOriginValue === null ? null : webOriginFrom(webOriginValue, siweDomain);

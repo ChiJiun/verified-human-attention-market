@@ -4,13 +4,11 @@ import type { AuthRepository } from "./repository.js";
 import { bearerToken, hashToken, type Authenticate } from "./siwe.js";
 
 /**
- * Browser sessions travel in this cookie (#72). Scripts keep the bearer
- * header; API keys are header-only. The `__Host-` prefix makes the browser
- * refuse the cookie unless it is Secure, has Path=/ and carries no Domain.
+ * The `__Host-` prefix makes the browser refuse the cookie unless it is
+ * Secure, has Path=/ and carries no Domain.
  */
 export const SESSION_COOKIE = "__Host-vham_session";
 
-/** randomBytes(32) in base64url (siwe.ts) is exactly 43 characters. */
 const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
 
@@ -19,11 +17,6 @@ export interface SessionCredential {
   token: string;
 }
 
-/**
- * The session token a request carries. An Authorization header, valid or
- * not, is the whole answer: a malformed header never falls back to the
- * cookie. Without one, exactly one well-formed session cookie counts.
- */
 export function sessionCredential(
   request: FastifyRequest,
 ): SessionCredential | null {
@@ -64,7 +57,6 @@ export function sessionCookie(token: string, maxAgeSeconds: number): string {
 
 export const CLEARED_SESSION_COOKIE = sessionCookie("", 0);
 
-/** Default authenticator: the request's credential → stored, unexpired session. */
 export function sessionAuthenticator(
   repository: AuthRepository,
   now: () => Date,
@@ -77,11 +69,6 @@ export function sessionAuthenticator(
   };
 }
 
-/**
- * Whether a cookie-authenticated mutation must be refused. Fetch Metadata
- * decides whenever the browser sends it; otherwise only an Origin equal to
- * the configured web origin passes, and without one nothing does.
- */
 export function crossSite(
   headers: FastifyRequest["headers"],
   webOrigin: string | null,
@@ -105,10 +92,6 @@ export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
   });
 }
 
-/**
- * WEB_ORIGIN as a browser serializes `Origin`, or null when the value is not
- * an http(s) origin whose host is the SIWE domain.
- */
 export function webOriginFrom(
   value: string,
   siweDomain: string | null,
@@ -128,10 +111,6 @@ export function webOriginFrom(
     : null;
 }
 
-/**
- * Cookie-authenticated requests get CSRF protection on every unsafe method
- * and are never cacheable. Header credentials are untouched.
- */
 export function registerSessionCookieGuard(
   app: FastifyInstance,
   options: { webOrigin: string | null },

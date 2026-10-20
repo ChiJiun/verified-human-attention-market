@@ -20,7 +20,6 @@ import {
 const verifySchema = z.object({
   message: z.string().min(1).max(4_000),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
-  /** "cookie" is for the browser: the token is set as a cookie, never returned. */
   transport: z.enum(["bearer", "cookie"]).default("bearer"),
 });
 
@@ -51,8 +50,6 @@ export async function registerAuthRoutes(
 
     const { message, signature, transport } = parsed.data;
 
-    // Login CSRF: a cross-site page must not sign this browser into a
-    // session of the attacker's wallet. Checked before the nonce is consumed.
     if (
       transport === "cookie" &&
       crossSite(request.headers, dependencies.webOrigin)
@@ -122,8 +119,6 @@ export async function registerAuthRoutes(
       );
     }
 
-    // Cleared whichever transport was used, so a browser whose session was
-    // already revoked or expired still ends up without the cookie.
     return reply
       .status(204)
       .header("set-cookie", CLEARED_SESSION_COOKIE)
