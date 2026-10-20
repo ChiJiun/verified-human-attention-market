@@ -107,6 +107,40 @@ describe("HttpWorldIdVerifier", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("refuses a legacy World ID 3.0 result without calling World", async () => {
+    const legacyNullifier = "0x0123456789abcdef";
+    // World still verifies 3.0 proofs during its migration window.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        success: true,
+        environment: "production",
+        results: [
+          { identifier: "orb", success: true, nullifier: legacyNullifier },
+        ],
+      }),
+    );
+
+    const result = await verifierWith(
+      fetchMock as unknown as typeof fetch,
+    ).verify({
+      action: ACTION,
+      idkitResponse: idkitResponse({
+        protocol_version: "3.0",
+        responses: [
+          {
+            identifier: "orb",
+            proof: "0xproof",
+            merkle_root: "0xroot",
+            nullifier: legacyNullifier,
+          },
+        ],
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["not an object", "proof"],
     ["missing responses", { protocol_version: "3.0", action: ACTION }],
