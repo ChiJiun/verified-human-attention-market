@@ -91,8 +91,11 @@ This closes an important refund race: after the issuance deadline plus the maxim
 The authorization is signed in the same request that accepts the completion
 and returned with it (ADR-0011): the contract pays an authorization issued up
 to `closedAt`, so a close after acceptance cannot strand the participant. If
-signing fails there, the response says `pending_authorization` with a reason
-code and `POST .../authorization` can be called again.
+no authorization can be issued there, nothing is recorded and the request
+fails with the reason (`409` or `503`), so the same request can be sent again.
+The response says `pending_authorization` only without a configured signer
+(code `null`) and on a replay whose authorization cannot be reissued (with the
+reason code). `POST .../authorization` can then be called again.
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
@@ -109,6 +112,9 @@ before the transaction that records an acceptance opens, and the same
 the cap and payout-limit counts, the signature and the update run, so an
 acceptance holds its pool connection for the database round trips plus at
 most one signer call (bounded by the signer's timeout), never for an RPC.
+The row lock is `FOR NO KEY UPDATE`, because every acceptance in flight already
+holds `KEY SHARE` on the campaign row through its submission's foreign key and
+`FOR UPDATE` would make concurrent acceptances deadlock.
 
 - **Cap:** under the campaign row lock, a new authorization is issued only if
   `onchain paidCompletions + unexpired authorizations of other submissions <
