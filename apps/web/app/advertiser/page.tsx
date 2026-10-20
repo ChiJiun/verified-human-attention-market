@@ -280,8 +280,9 @@ export default function AdvertiserPage() {
       if (data.status !== "draft") linked(campaignId);
     } catch (caught) {
       setError(describeError(caught));
+      void auth.noteError(caught);
     }
-  }, [campaignId, activeSession, linked]);
+  }, [campaignId, activeSession, linked, auth.noteError]);
 
   useEffect(() => {
     void api<{ chainId: number; campaignManager: string }>("/v1/chain")
@@ -352,6 +353,7 @@ export default function AdvertiserPage() {
       await action();
     } catch (caught) {
       setError(describeError(caught));
+      void auth.noteError(caught);
     } finally {
       setBusy(false);
     }
@@ -377,9 +379,11 @@ export default function AdvertiserPage() {
 
   const disconnect = () =>
     run(async () => {
-      setWallet(null);
       await auth.signOut();
+      setWallet(null);
     });
+
+  const signOut = () => run(auth.signOut);
 
   const switchNetwork = () =>
     run(async () => {
@@ -823,9 +827,23 @@ export default function AdvertiserPage() {
       <section className="card">
         <h2>Wallet</h2>
         {!wallet ? (
-          <button onClick={connect} disabled={busy}>
-            Connect wallet
-          </button>
+          <>
+            {auth.session && (
+              <p>
+                Signed in as <code>{auth.session.address}</code> until{" "}
+                {new Date(auth.session.expiresAt).toLocaleString()}. Connect
+                that wallet to manage its campaigns.
+              </p>
+            )}
+            <button onClick={connect} disabled={busy}>
+              Connect wallet
+            </button>
+            {auth.session && (
+              <button className="secondary" onClick={signOut} disabled={busy}>
+                Sign out
+              </button>
+            )}
+          </>
         ) : (
           <>
             <p>
@@ -844,11 +862,19 @@ export default function AdvertiserPage() {
                 Sign in with Ethereum
               </button>
             )}
-            {activeSession && (
+            {activeSession ? (
               <p>
                 Signed in until{" "}
                 {new Date(activeSession.expiresAt).toLocaleString()}
               </p>
+            ) : (
+              auth.session && (
+                <p className="note">
+                  This browser is signed in as{" "}
+                  <code>{auth.session.address}</code>, not this wallet. Sign in
+                  again to manage this wallet&apos;s campaigns.
+                </p>
+              )
             )}
             <button className="secondary" onClick={disconnect} disabled={busy}>
               Disconnect

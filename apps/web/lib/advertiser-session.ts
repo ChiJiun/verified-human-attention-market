@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { describeError } from "./api";
+import { ApiError, describeError } from "./api";
 import {
   restoreSession,
   sessionForWallet,
@@ -16,15 +16,38 @@ export interface SessionApi {
   signOut(): Promise<void>;
 }
 
-export type SessionStore = ReturnType<typeof createSessionStore>;
+const sameSession = (a: Session | null, b: Session | null) =>
+  a === b ||
+  (a !== null &&
+    b !== null &&
+    a.address === b.address &&
+    a.expiresAt === b.expiresAt);
 
+/**
+ * The browser's session as its cookie holds it. Sign-in, sign-out and a
+ * lapsed session each start a new generation, so a restore that began
+ * before one of them cannot overwrite it.
+ */
 export function createSessionStore(sessionApi: SessionApi) {
   let session: Session | null = null;
+  let generation = 0;
   const listeners = new Set<() => void>();
 
   function set(next: Session | null) {
+    if (sameSession(session, next)) return;
     session = next;
     for (const listener of listeners) listener();
+  }
+
+  function replace(next: Session | null) {
+    generation += 1;
+    set(next);
+  }
+
+  async function restore() {
+    const started = generation;
+    const restored = await sessionApi.restore();
+    if (started === generation) set(restored);
   }
 
   return {
@@ -35,15 +58,24 @@ export function createSessionStore(sessionApi: SessionApi) {
       };
     },
     current: () => session,
-    async restore() {
-      set(await sessionApi.restore());
-    },
+    restore,
     async signIn(wallet: Wallet) {
-      set(await sessionApi.signIn(wallet));
+      replace(await sessionApi.signIn(wallet));
     },
     async signOut() {
-      set(null);
       await sessionApi.signOut();
+      replace(null);
+    },
+    /** Follows what an API error says about the session the cookie holds. */
+    async noteError(error: unknown) {
+      if (!(error instanceof ApiError)) return;
+      if (error.code === "UNAUTHENTICATED") {
+        replace(null);
+      } else if (error.code === "NOT_CAMPAIGN_ADVERTISER") {
+        // Another tab may have signed in with another wallet. The page shows
+        // the error either way, so a failed re-read changes nothing.
+        await restore().catch(() => undefined);
+      }
     },
   };
 }
@@ -74,5 +106,6 @@ export function useAdvertiserSession(
     active: sessionForWallet(session, wallet),
     signIn: store.signIn,
     signOut: store.signOut,
+    noteError: store.noteError,
   };
 }
