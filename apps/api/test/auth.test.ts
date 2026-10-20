@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 
 import { buildApp } from "../src/app.js";
-import { SESSION_COOKIE } from "../src/auth/credential.js";
+import {
+  registerSessionCookieGuard,
+  SESSION_COOKIE,
+} from "../src/auth/credential.js";
 import { parseWebOrigin } from "../src/auth/web-origin.js";
 
 const DOMAIN = "app.vham.test";
@@ -532,6 +536,39 @@ describe("session cookie credential", () => {
       });
     },
   );
+
+  it("logs a refused cookie request without the requesting origin", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const app = Fastify({
+      logger: {
+        level: "warn",
+        stream: { write: (line: string) => lines.push(JSON.parse(line)) },
+      },
+    });
+    registerSessionCookieGuard(app, { webOrigin: WEB_ORIGIN });
+    app.post("/v1/probe", async () => ({ ok: true }));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/probe",
+      headers: {
+        cookie: `${SESSION_COOKIE}=x`,
+        "sec-fetch-site": "cross-site",
+        origin: "https://evil.example",
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(403);
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        event: "csrf_rejected",
+        secFetchSite: "cross-site",
+        hasOrigin: true,
+      }),
+    );
+    expect(JSON.stringify(lines)).not.toContain("evil.example");
+  });
 
   it("refuses the Origin fallback without WEB_ORIGIN", async () => {
     const { signIn, createCampaign } = setup({ webOrigin: null });
