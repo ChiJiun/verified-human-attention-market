@@ -17,7 +17,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
-import { campaignLink } from "../../lib/campaign-link";
+import {
+  campaignLink,
+  campaignPath,
+  parseCampaignId,
+  type CampaignId,
+} from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import {
   describeChainError,
@@ -230,7 +235,7 @@ function isUserRejection(error: unknown): boolean {
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<CampaignId | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [tx, setTx] = useState<TxStatus>({ state: "idle" });
   const [error, setError] = useState<string | null>(null);
@@ -281,7 +286,7 @@ export default function AdvertiserPage() {
     if (!campaignId || !activeSession) return;
     try {
       const { data } = await api<Analytics>(
-        `/v1/campaigns/${campaignId}/analytics`,
+        campaignPath(campaignId, "/analytics"),
       );
       setAnalytics(data);
       if (data.status !== "draft") linked(campaignId);
@@ -411,8 +416,10 @@ export default function AdvertiserPage() {
         // One key per draft submission: retries cannot create duplicates.
         idempotencyKey: crypto.randomUUID(),
       });
-      setCampaignId(data.id);
-      window.history.replaceState(null, "", `?campaign=${data.id}`);
+      const id = parseCampaignId(data.id);
+      if (!id) throw new Error("The API returned an invalid campaign id.");
+      setCampaignId(id);
+      window.history.replaceState(null, "", `?campaign=${id}`);
     });
 
   /**
@@ -420,9 +427,9 @@ export default function AdvertiserPage() {
    * otherwise by draft reference (ADR-0011). Retries while the API is still
    * reconciling. `attempts: 1` only checks.
    */
-  async function link(id: string, hash: Hash | null, attempts = 24) {
+  async function link(id: CampaignId, hash: Hash | null, attempts = 24) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const { status } = await api(`/v1/campaigns/${id}/onchain`, {
+      const { status } = await api(campaignPath(id, "/onchain"), {
         method: "POST",
         body: hash ? { txHash: hash } : {},
       });
@@ -455,7 +462,7 @@ export default function AdvertiserPage() {
       }
 
       const { data: intent } = await api<PublishIntent>(
-        `/v1/campaigns/${campaignId}/publish`,
+        campaignPath(campaignId, "/publish"),
         { method: "POST" },
       );
       const args = intent.steps[0]!.args;

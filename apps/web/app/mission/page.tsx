@@ -11,7 +11,11 @@ import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
-import { campaignLink, type CampaignLink } from "../../lib/campaign-link";
+import {
+  campaignLink,
+  campaignPath,
+  type CampaignLink,
+} from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
@@ -105,8 +109,8 @@ export default function MissionPage() {
     void (async () => {
       try {
         const [loadedCampaign, loadedMission] = await Promise.all([
-          api<Campaign>(`/v1/campaigns/${id}`),
-          api<Mission>(`/v1/campaigns/${id}/mission`),
+          api<Campaign>(campaignPath(id)),
+          api<Mission>(campaignPath(id, "/mission")),
         ]);
         setCampaign(loadedCampaign.data);
         setMission(loadedMission.data);
@@ -147,7 +151,7 @@ export default function MissionPage() {
   ): Promise<void> {
     if (!campaignId) return;
     const { data } = await api<{ eligibilityToken: string }>(
-      `/v1/campaigns/${campaignId}/eligibility/verify`,
+      campaignPath(campaignId, "/eligibility/verify"),
       { method: "POST", body: { claimant, idkitResponse } },
     );
     store(key("eligibility"), data.eligibilityToken);
@@ -168,7 +172,7 @@ export default function MissionPage() {
       }
       // A fresh RP signature per attempt; the signing key stays on the API.
       const { data } = await api<WorldIdRequest>(
-        `/v1/campaigns/${campaignId}/world-id/request`,
+        campaignPath(campaignId, "/world-id/request"),
         { method: "POST" },
       );
       if (!data.appId) throw new Error("World ID is not configured.");
@@ -199,7 +203,7 @@ export default function MissionPage() {
         submissionId: string;
         status: "accepted" | "rejected";
         rejectionCode: string | null;
-      }>(`/v1/campaigns/${campaignId}/submissions`, {
+      }>(campaignPath(campaignId, "/submissions"), {
         method: "POST",
         idempotencyKey: attemptKey,
         body: {
@@ -232,7 +236,10 @@ export default function MissionPage() {
       }
       // Re-requesting after expiry returns a fresh authorization.
       const { data: auth } = await api<Authorization>(
-        `/v1/campaigns/${campaignId}/submissions/${step.submissionId}/authorization`,
+        campaignPath(
+          campaignId,
+          `/submissions/${step.submissionId}/authorization`,
+        ),
         { method: "POST", body: { eligibilityToken } },
       );
       const hash = await wallet.walletClient.writeContract({
