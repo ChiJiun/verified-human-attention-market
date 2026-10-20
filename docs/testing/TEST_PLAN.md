@@ -25,7 +25,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - consumed nonce [`test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`];
 - max completions reached [`test_CompletionLimitReached`];
 - wrong draft [`test_ClaimRejectsAnotherDraftsAuthorization`, `test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign`];
-- close/expiry [`test_PostCloseAuthorizationRejected`; expiry window via the invariant handler];
+- close/expiry [`test_PostCloseAuthorizationRejected`, `test_AuthorizationIssuedAfterEndRejected` (a campaign that was never closed accepts an authorization issued at its end and refuses one issued a second later); expiry window via the invariant handler];
 - refund [`test_OnlyAdvertiserCanRefund`, `test_RefundWaitsForAuthorizationGracePeriod`];
 - pause and ownership [`test_PauseBlocksClaims`, `test_OnlyOwnerCanPauseAndPauseBlocksRefunds`];
 - backend/contract agreement [`test_ClaimAuthorizationTypehashMatchesBackend`, `test_EventTopicsMatchIndexer`, `test_FunctionSelectorsMatchIndexer`];

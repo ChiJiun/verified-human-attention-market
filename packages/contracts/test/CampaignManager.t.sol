@@ -725,6 +725,29 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
+    /// A campaign that was never closed accepts no authorization issued after its end. Refund opens once the
+    /// end plus MAX_AUTHORIZATION_TTL has passed, and a later authorization could outlive that wait.
+    function test_AuthorizationIssuedAfterEndRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+
+        vm.warp(endTime);
+        CampaignManager.ClaimAuthorization memory onTime =
+            _authorization(campaignId, claimant, keccak256("last-second"));
+        bytes memory onTimeSignature = _sign(onTime, SIGNER_KEY);
+
+        vm.warp(endTime + 1);
+        CampaignManager.ClaimAuthorization memory late = _authorization(campaignId, claimant, keccak256("after-end"));
+        bytes memory lateSignature = _sign(late, SIGNER_KEY);
+
+        vm.expectRevert(CampaignManager.AuthorizationIssuedAfterDeadline.selector);
+        vm.prank(claimant);
+        manager.claim(late, lateSignature);
+
+        vm.prank(claimant);
+        manager.claim(onTime, onTimeSignature);
+        require(token.balanceOf(claimant) == ONE_USDC, "last-second authorization pays after the end");
+    }
+
     function test_InvalidSignatureLengthRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);

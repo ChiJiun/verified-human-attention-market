@@ -500,7 +500,7 @@ Current contract tests cover:
 - cancel of an unfunded draft, no cancel once funded, no funding after end;
 - signer rotation revokes old signatures; typehash pinned against the backend;
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
-- claim authorization edges: wrong amount, not yet valid, over-long lifetime, inverted window, issued before the campaign start;
+- claim authorization edges: wrong amount, not yet valid, over-long lifetime, inverted window, issued before the campaign start, issued after the end of a campaign that was never closed;
 - signature encoding: wrong length, high-s twin of a valid signature, invalid `v`;
 - funding: wrong amount, funding twice; `AlreadyFunded` and `InsufficientCampaignBudget`, which no public sequence reaches, on storage set with `vm.store`;
 - campaign window: fuzzed duration bounds (one second below, at and above the minimum and maximum), start in the past, start on the current second, end before start;
