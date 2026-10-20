@@ -1,13 +1,23 @@
+import { randomUUID } from "node:crypto";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 
 import { buildApp } from "../src/app.js";
+import { SESSION_COOKIE, webOriginFrom } from "../src/auth/credential.js";
 
 const DOMAIN = "app.vham.test";
+const WEB_ORIGIN = `https://${DOMAIN}`;
 const CHAIN_ID = 84532;
 const advertiser = privateKeyToAccount(`0x${"a1".repeat(32)}`);
 const stranger = privateKeyToAccount(`0x${"b2".repeat(32)}`);
+/** Wallets of the cookie-session tests only. */
+const browserAdvertiser = privateKeyToAccount(`0x${"c3".repeat(32)}`);
+const otherBrowser = privateKeyToAccount(`0x${"d4".repeat(32)}`);
+
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+const cookie = (token: string) => ({ cookie: `${SESSION_COOKIE}=${token}` });
 
 const apps: ReturnType<typeof buildApp>[] = [];
 
@@ -15,13 +25,16 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-function setup(options: { configured?: boolean } = {}) {
+function setup(
+  options: { configured?: boolean; webOrigin?: string | null } = {},
+) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const app = buildApp({
     siwe:
       options.configured === false
         ? null
         : { domain: DOMAIN, chainId: CHAIN_ID, sessionTtlMs: 60 * 60_000 },
+    webOrigin: options.webOrigin === undefined ? WEB_ORIGIN : options.webOrigin,
     now: () => now,
   });
   apps.push(app);
@@ -89,16 +102,20 @@ function setup(options: { configured?: boolean } = {}) {
     },
   });
 
-  function createCampaign(token: string | null, owner = advertiser.address) {
+  function createCampaign(
+    headers: Record<string, string>,
+    owner = advertiser.address,
+  ) {
     return app.inject({
       method: "POST",
       url: "/v1/campaigns",
-      headers: {
-        "idempotency-key": `key-${owner}-${token ?? "none"}`.slice(0, 200),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "idempotency-key": randomUUID(), ...headers },
       payload: campaignPayload(owner),
     });
+  }
+
+  function session(headers: Record<string, string>) {
+    return app.inject({ method: "GET", url: "/v1/auth/session", headers });
   }
 
   return {
@@ -108,6 +125,7 @@ function setup(options: { configured?: boolean } = {}) {
     verify,
     signIn,
     createCampaign,
+    session,
     setNow: (value: Date) => {
       now = value;
     },
@@ -262,7 +280,7 @@ describe("Sign-In with Ethereum", () => {
         await verify(text, await advertiser.signMessage({ message: text }))
       ).json(),
     ).toMatchObject({ error: { code: "AUTH_NOT_CONFIGURED" } });
-    expect((await createCampaign(null)).statusCode).toBe(401);
+    expect((await createCampaign({})).statusCode).toBe(401);
   });
 });
 
@@ -271,25 +289,26 @@ describe("advertiser-only endpoints", () => {
     const { signIn, createCampaign } = setup();
     const token = await signIn(advertiser);
 
-    expect((await createCampaign(null)).statusCode).toBe(401);
-    expect((await createCampaign("not-a-real-token-xxxxxxxx")).statusCode).toBe(
-      401,
-    );
+    expect((await createCampaign({})).statusCode).toBe(401);
+    expect(
+      (await createCampaign(bearer("not-a-real-token-xxxxxxxx"))).statusCode,
+    ).toBe(401);
 
-    const impersonation = await createCampaign(token, stranger.address);
+    const impersonation = await createCampaign(bearer(token), stranger.address);
     expect(impersonation.statusCode).toBe(403);
     expect(impersonation.json()).toMatchObject({
       error: { code: "NOT_CAMPAIGN_ADVERTISER" },
     });
 
-    expect((await createCampaign(token)).statusCode).toBe(201);
+    expect((await createCampaign(bearer(token))).statusCode).toBe(201);
   });
 
   it("restricts analytics, publish and linking to the campaign advertiser", async () => {
     const { app, signIn, createCampaign } = setup();
     const ownerToken = await signIn(advertiser);
     const strangerToken = await signIn(stranger);
-    const id = (await createCampaign(ownerToken)).json<{ id: string }>().id;
+    const id = (await createCampaign(bearer(ownerToken))).json<{ id: string }>()
+      .id;
 
     for (const [method, url] of [
       ["GET", `/v1/campaigns/${id}/analytics`],
@@ -315,5 +334,118 @@ describe("advertiser-only endpoints", () => {
       headers: { authorization: `Bearer ${ownerToken}` },
     });
     expect(own.statusCode).toBe(200);
+  });
+});
+
+describe("session cookie credential", () => {
+  it("authenticates GET requests from the cookie and never caches them", async () => {
+    const { signIn, session } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await session(cookie(token));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      address: browserAdvertiser.address.toLowerCase(),
+    });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("reads only the Authorization header when one is present", async () => {
+    const { signIn, session } = setup();
+    const headerToken = await signIn(browserAdvertiser);
+    const cookieToken = await signIn(otherBrowser);
+
+    const both = await session({
+      ...bearer(headerToken),
+      ...cookie(cookieToken),
+    });
+    expect(both.json()).toMatchObject({
+      address: browserAdvertiser.address.toLowerCase(),
+    });
+
+    const invalidHeader = await session({
+      authorization: "Bearer not-a-real-token-xxxxxxxx",
+      ...cookie(cookieToken),
+    });
+    expect(invalidHeader.statusCode).toBe(401);
+  });
+
+  it("treats API-key-shaped or ambiguous cookies as no credential", async () => {
+    const { signIn, session } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    for (const header of [
+      `${SESSION_COOKIE}=vhamk_test_${token}`,
+      `${SESSION_COOKIE}=${token}; ${SESSION_COOKIE}=${token}`,
+      `vham_session=${token}`,
+    ]) {
+      expect((await session({ cookie: header })).statusCode).toBe(401);
+    }
+  });
+
+  it.each([
+    ["a cross-site request", { "sec-fetch-site": "cross-site" }, 403],
+    ["a same-site request", { "sec-fetch-site": "same-site" }, 403],
+    ["a same-origin request", { "sec-fetch-site": "same-origin" }, 201],
+    ["the web origin without Fetch Metadata", { origin: WEB_ORIGIN }, 201],
+    [
+      "another origin without Fetch Metadata",
+      { origin: "https://evil.example" },
+      403,
+    ],
+    ["no Fetch Metadata and no Origin", {}, 403],
+  ])("cookie mutation from %s", async (_label, headers, status) => {
+    const { signIn, createCampaign } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...cookie(token), ...headers },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(status);
+    if (status === 403) {
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED", retryable: false },
+      });
+    }
+  });
+
+  it("accepts no Origin fallback without WEB_ORIGIN", async () => {
+    const { signIn, createCampaign } = setup({ webOrigin: null });
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...cookie(token), origin: WEB_ORIGIN },
+      browserAdvertiser.address,
+    );
+
+    expect(response.json()).toMatchObject({ error: { code: "CSRF_REJECTED" } });
+  });
+
+  it("leaves bearer requests out of the CSRF check", async () => {
+    const { signIn, createCampaign } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...bearer(token), "sec-fetch-site": "cross-site" },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(201);
+  });
+
+  it.each([
+    ["https://app.vham.test", "app.vham.test", "https://app.vham.test"],
+    ["http://localhost:3000", "localhost:3000", "http://localhost:3000"],
+    ["https://app.vham.test/", "app.vham.test", null],
+    ["https://app.vham.test/path", "app.vham.test", null],
+    ["https://other.vham.test", "app.vham.test", null],
+    ["ftp://app.vham.test", "app.vham.test", null],
+    ["app.vham.test", "app.vham.test", null],
+    ["https://app.vham.test", null, null],
+  ])("WEB_ORIGIN %s with SIWE domain %s", (value, domain, expected) => {
+    expect(webOriginFrom(value, domain)).toBe(expected);
   });
 });

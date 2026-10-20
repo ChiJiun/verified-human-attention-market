@@ -2,6 +2,7 @@ import { createPublicClient, http } from "viem";
 
 import { PostgresApiClientRepository } from "./api-clients/repository.js";
 import { DEFAULT_RATE_LIMITS } from "./api-clients/routes.js";
+import { webOriginFrom } from "./auth/credential.js";
 import { PostgresAuthRepository } from "./auth/repository.js";
 import { verifyEoaSignature } from "./auth/siwe.js";
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
@@ -206,6 +207,17 @@ if (!/^[1-9][0-9]{0,30}$/.test(dailyPayoutLimit)) {
 // Sign-In with Ethereum (#37). Without SIWE_DOMAIN, sign-in is disabled and
 // every advertiser-only endpoint returns 401 (fail closed).
 const siweDomain = process.env.SIWE_DOMAIN || null;
+// Browser sessions (#72): a cookie-authenticated mutation without Fetch
+// Metadata is accepted only from this Origin. Unset = Fetch Metadata only.
+const webOriginValue = process.env.WEB_ORIGIN || null;
+const webOrigin =
+  webOriginValue === null ? null : webOriginFrom(webOriginValue, siweDomain);
+
+if (webOriginValue !== null && webOrigin === null) {
+  throw new Error(
+    "WEB_ORIGIN must be an http(s) origin whose host equals SIWE_DOMAIN, e.g. https://app.example.com",
+  );
+}
 // With an RPC, smart-contract wallets (ERC-1271/6492) can sign in too.
 const publicClient = chainConfig
   ? createPublicClient({ transport: http(chainConfig.rpcUrl) })
@@ -214,6 +226,7 @@ const publicClient = chainConfig
 const app = buildApp({
   authRepository: new PostgresAuthRepository(database.db),
   siwe: siweDomain ? { domain: siweDomain, chainId } : null,
+  webOrigin,
   verifySignature: publicClient
     ? (input) => publicClient.verifyMessage(input)
     : verifyEoaSignature,

@@ -182,14 +182,3 @@ export function bearerToken(request: FastifyRequest): string | null {
   const match = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(header);
   return match ? match[1]! : null;
 }
-
-/** Default authenticator: bearer token → stored, unexpired session. */
-export function sessionAuthenticator(
-  repository: AuthRepository,
-  now: () => Date,
-): Authenticate {
-  return async (request) => {
-    const token = bearerToken(request);
-    return token ? repository.findSession(hashToken(token), now()) : null;
-  };
-}

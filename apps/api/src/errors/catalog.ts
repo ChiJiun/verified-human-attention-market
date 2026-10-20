@@ -41,6 +41,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   INVALID_SIGNATURE: { retryable: false },
   NOT_CAMPAIGN_ADVERTISER: { retryable: false },
   NOT_OPERATOR: { retryable: false },
+  CSRF_REJECTED: { retryable: false },
   INVALID_API_KEY: { retryable: false },
   API_KEY_WRONG_ENVIRONMENT: { retryable: false },
   API_KEY_NOT_ALLOWED: { retryable: false },
