@@ -6,6 +6,7 @@ import { InMemoryChainEventRepository } from "../src/chain/events-repository.js"
 import type { ChainRpc } from "../src/chain/rpc.js";
 import {
   generateRequestId,
+  LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "../src/observability/instrumentation.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
@@ -199,6 +200,43 @@ describe("payout anomaly alert", () => {
     const alert = logs.find((line) => line.alert === "payout_anomaly");
     expect(alert).toMatchObject({ campaignId: CAMPAIGN, count: 3, limit: 2 });
     expect(JSON.stringify(logs)).not.toContain("0xsecret");
+  });
+});
+
+describe("log redaction", () => {
+  it("never logs credentials or session cookies", () => {
+    const lines: string[] = [];
+    const app = Fastify({
+      logger: {
+        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+        // Serializers that keep headers, as a future log line might.
+        serializers: {
+          req: (value: { headers?: unknown }) => value,
+          res: (value: { headers?: unknown }) => value,
+        },
+        stream: { write: (line: string) => lines.push(line) },
+      },
+    });
+    closers.push(app);
+
+    app.log.info(
+      {
+        req: {
+          headers: {
+            authorization: "Bearer secret-1",
+            cookie: "__Host-vham_session=secret-2",
+          },
+        },
+        res: {
+          headers: { "set-cookie": "__Host-vham_session=secret-3; Path=/" },
+        },
+        headers: { "set-cookie": ["__Host-vham_session=secret-4"] },
+      },
+      "headers",
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(/secret-\d/);
   });
 });
 
