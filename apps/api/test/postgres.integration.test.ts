@@ -193,7 +193,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     ).rejects.toThrow();
   });
 
-  async function createCampaign(): Promise<string> {
+  async function createCampaign(maxCompletions = 10): Promise<string> {
     const id = randomUUID();
     const createdAt = new Date("2026-10-05T10:00:00.000Z");
 
@@ -205,7 +205,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       creationRequestHash: `hash-${id}`,
       contentUrl: "https://example.com/contract",
       rewardAtomic: "1000000",
-      maxCompletions: 10,
+      maxCompletions,
       startAt: new Date("2026-10-05T10:15:00.000Z"),
       endAt: new Date("2026-10-05T11:15:00.000Z"),
       status: "draft",
@@ -663,118 +663,152 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     expect(saved?.claimNonce).toBe(reissued.claim.payload.nonce);
   });
 
+  const acceptConcurrently = async ({
+    connections,
+    onchainId,
+    maxCompletions = 10,
+  }: {
+    connections: number;
+    onchainId: number;
+    maxCompletions?: number;
+  }) => {
+    const pool = createDatabase(databaseUrl, { max: connections });
+    const now = new Date("2026-10-05T10:30:00.000Z");
+    const advertiser = `0x${"2".repeat(40)}`;
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const campaignId = await createCampaign(maxCompletions);
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: String(onchainId),
+      contractAddress: CONTRACT_ADDRESS,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    const chain = new FakeChain(CONTRACT_ADDRESS);
+    chain.signer = signer.address;
+    chain.campaignIdByDraft.set(`${advertiser}:${draftRefFor(campaignId)}`, {
+      id: onchainId,
+      block: 0n,
+    });
+    chain.campaignStructs.set(String(onchainId), {
+      advertiser,
+      fundedBudget: BigInt(maxCompletions) * 1_000_000n,
+      rewardPerCompletion: 1_000_000n,
+      maxCompletions,
+      startTime: Date.parse("2026-10-05T10:15:00.000Z") / 1000,
+      endTime: Date.parse("2026-10-05T11:15:00.000Z") / 1000,
+    });
+
+    const participants = await Promise.all(
+      Array.from({ length: 3 }, () => participantOf(campaignId)),
+    );
+
+    const app = buildApp({
+      campaignRepository: new PostgresCampaignRepository(pool.db),
+      eligibilityRepository: new PostgresEligibilityRepository(pool.db),
+      submissionRepository: new PostgresSubmissionRepository(pool.db),
+      claimRepository: new PostgresClaimRepository(pool.db),
+      claimSigner: signer,
+      dailyPayoutLimitAtomic: 100_000_000n,
+      chainId: 84532,
+      chain: {
+        rpc: chain,
+        chain: {
+          chainId: 84532,
+          contractAddress: CONTRACT_ADDRESS,
+          usdcAddress: `0x${"d0".repeat(20)}`,
+        },
+        events: new PostgresChainEventRepository(pool.db),
+        now: () => now,
+      },
+      now: () => now,
+    });
+    const submit = (participant: (typeof participants)[number]) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/submissions`,
+        headers: { "idempotency-key": `pool-${participant.claimantAddress}` },
+        payload: {
+          eligibilityToken: participant.eligibilityId,
+          claimant: participant.claimantAddress,
+          answers: [{ questionId: "q1", choiceId: "a" }],
+        },
+      });
+
+    try {
+      let timer: NodeJS.Timeout | undefined;
+      const responses = await Promise.race([
+        Promise.all(participants.map(submit)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "acceptances did not finish within 10 s: an acceptance waits for a second pool connection",
+                ),
+              ),
+            10_000,
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+      const stored = await database.db
+        .select({ nonce: submissions.claimNonce })
+        .from(submissions)
+        .where(eq(submissions.campaignId, campaignId));
+      return { responses, nonces: stored.map((row) => row.nonce) };
+    } finally {
+      await pool.client.end({ timeout: 1 });
+      await app.close();
+    }
+  };
+
   it.each([
     ["one-connection", 1, 21],
     ["ten-connection", 10, 22],
   ])(
     "completes concurrent acceptances on a %s pool",
-    async (_pool, max, onchainId) => {
-      const pool = createDatabase(databaseUrl, { max });
-      const now = new Date("2026-10-05T10:30:00.000Z");
-      const advertiser = `0x${"2".repeat(40)}`;
-      const signer = createClaimSigner(`0x${"11".repeat(32)}`);
-      const campaignId = await createCampaign();
-      await repository.linkOnchain(campaignId, {
-        onchainCampaignId: String(onchainId),
-        contractAddress: CONTRACT_ADDRESS,
-        publishTxHash: null,
-        status: "active",
-        updatedAt: new Date("2026-10-05T10:20:00.000Z"),
-      });
-      const chain = new FakeChain(CONTRACT_ADDRESS);
-      chain.signer = signer.address;
-      chain.campaignIdByDraft.set(`${advertiser}:${draftRefFor(campaignId)}`, {
-        id: onchainId,
-        block: 0n,
-      });
-      chain.campaignStructs.set(String(onchainId), {
-        advertiser,
-        fundedBudget: 10_000_000n,
-        rewardPerCompletion: 1_000_000n,
-        maxCompletions: 10,
-        startTime: Date.parse("2026-10-05T10:15:00.000Z") / 1000,
-        endTime: Date.parse("2026-10-05T11:15:00.000Z") / 1000,
+    async (_pool, connections, onchainId) => {
+      const { responses, nonces } = await acceptConcurrently({
+        connections,
+        onchainId,
       });
 
-      const participants = await Promise.all(
-        Array.from({ length: 3 }, () => participantOf(campaignId)),
-      );
-
-      const app = buildApp({
-        campaignRepository: new PostgresCampaignRepository(pool.db),
-        eligibilityRepository: new PostgresEligibilityRepository(pool.db),
-        submissionRepository: new PostgresSubmissionRepository(pool.db),
-        claimRepository: new PostgresClaimRepository(pool.db),
-        claimSigner: signer,
-        dailyPayoutLimitAtomic: 100_000_000n,
-        chainId: 84532,
-        chain: {
-          rpc: chain,
-          chain: {
-            chainId: 84532,
-            contractAddress: CONTRACT_ADDRESS,
-            usdcAddress: `0x${"d0".repeat(20)}`,
-          },
-          events: new PostgresChainEventRepository(pool.db),
-          now: () => now,
-        },
-        now: () => now,
-      });
-      const submit = (participant: (typeof participants)[number]) =>
-        app.inject({
-          method: "POST",
-          url: `/v1/campaigns/${campaignId}/submissions`,
-          headers: {
-            "idempotency-key": `pool-${participant.claimantAddress}`,
-          },
-          payload: {
-            eligibilityToken: participant.eligibilityId,
-            claimant: participant.claimantAddress,
-            answers: [{ questionId: "q1", choiceId: "a" }],
-          },
+      expect(responses.map((response) => response.statusCode)).toEqual([
+        201, 201, 201,
+      ]);
+      for (const response of responses) {
+        expect(response.json()).toMatchObject({
+          status: "accepted",
+          claim: { status: "authorized" },
         });
-
-      try {
-        let timer: NodeJS.Timeout | undefined;
-        const responses = await Promise.race([
-          Promise.all(participants.map(submit)),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    "acceptances did not finish within 10 s: an acceptance waits for a second pool connection",
-                  ),
-                ),
-              10_000,
-            );
-          }),
-        ]).finally(() => clearTimeout(timer));
-
-        expect(responses.map((response) => response.statusCode)).toEqual(
-          participants.map(() => 201),
-        );
-        for (const response of responses) {
-          expect(response.json()).toMatchObject({
-            status: "accepted",
-            claim: { status: "authorized" },
-          });
-        }
-        const stored = await database.db
-          .select({ nonce: submissions.claimNonce })
-          .from(submissions)
-          .where(eq(submissions.campaignId, campaignId));
-        const nonces = stored.map((row) => row.nonce);
-        expect(nonces).toHaveLength(participants.length);
-        expect(new Set(nonces).size).toBe(participants.length);
-        expect(nonces).not.toContain(null);
-      } finally {
-        await pool.client.end({ timeout: 1 });
-        await app.close();
       }
+      expect(nonces).toHaveLength(3);
+      expect(new Set(nonces).size).toBe(3);
+      expect(nonces).not.toContain(null);
     },
     30_000,
   );
+
+  it("authorizes no more concurrent acceptances than the campaign has slots", async () => {
+    const { responses, nonces } = await acceptConcurrently({
+      connections: 10,
+      onchainId: 23,
+      maxCompletions: 1,
+    });
+
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([
+      201, 409, 409,
+    ]);
+    expect(
+      responses
+        .filter((response) => response.statusCode === 409)
+        .map(
+          (response) => response.json<{ error: { code: string } }>().error.code,
+        ),
+    ).toEqual(["CAMPAIGN_CAP_REACHED", "CAMPAIGN_CAP_REACHED"]);
+    expect(nonces).toHaveLength(1);
+    expect(nonces).not.toContain(null);
+  }, 30_000);
 
   describe("chain indexer persistence", () => {
     defineIndexerContract({
