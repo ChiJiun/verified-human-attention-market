@@ -2,8 +2,8 @@
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
+  CredentialRequest,
   IDKitRequestWidget,
-  proofOfHuman,
   type IDKitResult,
   type RpContext,
 } from "@worldcoin/idkit";
@@ -336,7 +336,8 @@ export default function MissionPage() {
           rp_context={worldRequest.rpContext}
           environment={worldRequest.environment}
           allow_legacy_proofs={false}
-          preset={proofOfHuman()}
+          // The proofOfHuman() preset ignores allow_legacy_proofs and allows 3.0 proofs.
+          constraints={CredentialRequest("proof_of_human")}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
             setError(null);
