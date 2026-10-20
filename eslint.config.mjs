@@ -24,4 +24,21 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ["apps/web/**/*.{ts,tsx}"],
+    ignores: ["apps/web/lib/campaign-link.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...[
+          "> TSTypeReference.typeAnnotation",
+          "> .typeAnnotation TSTypeReference",
+        ].map((target) => ({
+          selector: `:matches(TSAsExpression, TSTypeAssertion) ${target}[typeName.name=/^(ApiPath|CampaignId|SubmissionId)$/]`,
+          message:
+            "Parse ids and build API paths with lib/campaign-link.ts instead of casting to the brand.",
+        })),
+      ],
+    },
+  },
 );

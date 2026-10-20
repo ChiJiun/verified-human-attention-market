@@ -11,6 +11,14 @@ import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
+import {
+  campaignLink,
+  campaignPath,
+  claimAuthorizationPath,
+  parseSubmissionId,
+  type CampaignLink,
+  type SubmissionId,
+} from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
@@ -58,7 +66,7 @@ type Step =
   | { kind: "verify" }
   | { kind: "answer" }
   | { kind: "rejected"; code: string }
-  | { kind: "claim"; submissionId: string }
+  | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash | null };
 
@@ -80,7 +88,8 @@ function store<T>(key: string, value?: T | null): T | null {
 }
 
 export default function MissionPage() {
-  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [link, setLink] = useState<CampaignLink>({ kind: "none" });
+  const campaignId = link.kind === "campaign" ? link.id : null;
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [mission, setMission] = useState<Mission | null>(null);
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -96,14 +105,15 @@ export default function MissionPage() {
     `vham:${campaignId}:${wallet?.address.toLowerCase()}:${name}`;
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("campaign");
-    setCampaignId(id);
-    if (!id) return;
+    const resolved = campaignLink(window.location.search);
+    setLink(resolved);
+    if (resolved.kind !== "campaign") return;
+    const { id } = resolved;
     void (async () => {
       try {
         const [loadedCampaign, loadedMission] = await Promise.all([
-          api<Campaign>(`/v1/campaigns/${id}`),
-          api<Mission>(`/v1/campaigns/${id}/mission`),
+          api<Campaign>(campaignPath(id)),
+          api<Mission>(campaignPath(id, "/mission")),
         ]);
         setCampaign(loadedCampaign.data);
         setMission(loadedMission.data);
@@ -131,7 +141,9 @@ export default function MissionPage() {
       setWallet(connected);
       const prefix = `vham:${campaignId}:${connected.address.toLowerCase()}:`;
       const token = store<string>(`${prefix}eligibility`);
-      const submissionId = store<string>(`${prefix}submission`);
+      const submissionId = parseSubmissionId(
+        store<string>(`${prefix}submission`),
+      );
       if (token) setEligibilityToken(token);
       if (submissionId) setStep({ kind: "claim", submissionId });
       else if (token) setStep({ kind: "answer" });
@@ -144,7 +156,7 @@ export default function MissionPage() {
   ): Promise<void> {
     if (!campaignId) return;
     const { data } = await api<{ eligibilityToken: string }>(
-      `/v1/campaigns/${campaignId}/eligibility/verify`,
+      campaignPath(campaignId, "/eligibility/verify"),
       { method: "POST", body: { claimant, idkitResponse } },
     );
     store(key("eligibility"), data.eligibilityToken);
@@ -165,7 +177,7 @@ export default function MissionPage() {
       }
       // A fresh RP signature per attempt; the signing key stays on the API.
       const { data } = await api<WorldIdRequest>(
-        `/v1/campaigns/${campaignId}/world-id/request`,
+        campaignPath(campaignId, "/world-id/request"),
         { method: "POST" },
       );
       if (!data.appId) throw new Error("World ID is not configured.");
@@ -196,7 +208,7 @@ export default function MissionPage() {
         submissionId: string;
         status: "accepted" | "rejected";
         rejectionCode: string | null;
-      }>(`/v1/campaigns/${campaignId}/submissions`, {
+      }>(campaignPath(campaignId, "/submissions"), {
         method: "POST",
         idempotencyKey: attemptKey,
         body: {
@@ -210,8 +222,12 @@ export default function MissionPage() {
       });
       store(key("attempt"), null);
       if (data.status === "accepted") {
-        store(key("submission"), data.submissionId);
-        setStep({ kind: "claim", submissionId: data.submissionId });
+        const submissionId = parseSubmissionId(data.submissionId);
+        if (!submissionId) {
+          throw new Error("The API returned an invalid submission id.");
+        }
+        store(key("submission"), submissionId);
+        setStep({ kind: "claim", submissionId });
       } else {
         setStep({ kind: "rejected", code: data.rejectionCode ?? "REJECTED" });
       }
@@ -229,7 +245,7 @@ export default function MissionPage() {
       }
       // Re-requesting after expiry returns a fresh authorization.
       const { data: auth } = await api<Authorization>(
-        `/v1/campaigns/${campaignId}/submissions/${step.submissionId}/authorization`,
+        claimAuthorizationPath(campaignId, step.submissionId),
         { method: "POST", body: { eligibilityToken } },
       );
       const hash = await wallet.walletClient.writeContract({
@@ -268,7 +284,11 @@ export default function MissionPage() {
   if (!campaignId) {
     return (
       <main className="container">
-        <p className="error">Missing ?campaign=&lt;id&gt; in the link.</p>
+        <p className="error">
+          {link.kind === "invalid"
+            ? "This campaign link is not valid. Ask for a fresh link."
+            : "Missing ?campaign=<id> in the link."}
+        </p>
       </main>
     );
   }

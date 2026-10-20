@@ -61,7 +61,8 @@ At minimum:
 - on-chain linking, live campaign checks, status sync, auto-link, recovery [`onchain.test.ts`];
 - indexer (batches, provider failure, shallow/deep reorg, halt) [`chain-indexer.test.ts` + `support/indexer-contract.ts`, run against both repositories];
 - analytics reconciliation [`reconciliation.test.ts`, `onchain.test.ts`];
-- authentication, API keys, rate limits, moderation, observability, retention [`auth.test.ts`, `api-clients.test.ts`, `moderation.test.ts`, `observability.test.ts`, `postgres.integration.test.ts`];
+- authentication, API keys, rate limits, moderation, observability, retention [`auth.test.ts`, `api-clients.test.ts`, `moderation.test.ts`, `observability.test.ts`, `postgres.integration.test.ts`]; browser sessions: cookie credential, CSRF rule, header-only routes, logout and sign-in revocation [`auth.test.ts`];
+- web app: campaign link and submission id parsing, typed API paths, sign-in that confirms the cookie, session store ordering, CSP builder and proxy matcher [`apps/web/test/*.test.ts`; the path types in `apps/web/test/api-path.typecheck.ts` run with `pnpm typecheck`]; the CSP nonce on every script of the production build [`apps/web/scripts/csp-smoke.mjs`, CI step "CSP smoke"];
 - chain configuration fail-fast [`chain-config.test.ts`, `canonical-abi.test.ts`];
 - health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`;
 - database retry behavior [not planned: the API uses idempotent requests and the `retryable` error flag instead of a server-side retry layer (API_CONTRACT.md)].

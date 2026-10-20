@@ -10,24 +10,29 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiPath =
+  | "/v1/auth/logout"
+  | "/v1/auth/nonce"
+  | "/v1/auth/session"
+  | "/v1/auth/verify"
+  | "/v1/campaigns"
+  | "/v1/chain"
+  | (string & { readonly __brand: "ApiPath" });
+
 export interface ApiOptions {
   method?: "GET" | "POST";
   body?: unknown;
-  token?: string | null;
   idempotencyKey?: string;
 }
 
 export async function api<T>(
-  path: string,
+  path: ApiPath,
   options: ApiOptions = {},
 ): Promise<{ status: number; data: T }> {
   const headers: Record<string, string> = {};
 
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
-  }
-  if (options.token) {
-    headers.authorization = `Bearer ${options.token}`;
   }
   if (options.idempotencyKey) {
     headers["idempotency-key"] = options.idempotencyKey;
@@ -59,6 +64,8 @@ export function describeError(error: unknown): string {
 
   const messages: Record<string, string> = {
     UNAUTHENTICATED: "Please sign in with your wallet first.",
+    CSRF_REJECTED:
+      "The request did not come from this site. Reload the page and try again.",
     NOT_CAMPAIGN_ADVERTISER: "This wallet is not the campaign's advertiser.",
     INVALID_CAMPAIGN: "Some campaign fields are invalid.",
     CAMPAIGN_START_IN_PAST: "The start time must be in the future.",

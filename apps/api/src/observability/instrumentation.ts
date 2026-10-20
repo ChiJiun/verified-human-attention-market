@@ -57,8 +57,10 @@ const OPERATOR_OUTCOMES = new Set([
 export const LOGGER_REDACT_PATHS = [
   "req.headers.authorization",
   "req.headers.cookie",
+  'res.headers["set-cookie"]',
   "headers.authorization",
   "headers.cookie",
+  'headers["set-cookie"]',
   "*.idkitResponse",
   "*.proof",
   "*.signature",

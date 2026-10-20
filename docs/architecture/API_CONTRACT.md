@@ -8,17 +8,22 @@
 | Caller | Credential | Reaches |
 | --- | --- | --- |
 | Participants | none (World ID proof per campaign) | mission, eligibility, submissions, claim authorization, reports |
-| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`) | everything an advertiser can do, including key management |
+| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`): the web app's `__Host-vham_session` cookie (`transport: "cookie"`, CSRF-protected), or a bearer token for scripts | everything an advertiser can do; key management only with the bearer token (`403 COOKIE_SESSION_NOT_ALLOWED` with the cookie) |
 | Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | the scoped routes below, acting as the advertiser that created the key; also accepted on public routes (where it grants nothing), never on admin, key-management or session routes |
-| Operators | SIWE session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` |
+| Operators | SIWE bearer session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` (never with the cookie) |
 
 API keys:
 
-- Created by the advertiser with a SIWE session: `POST /v1/api-clients
+- Created by the advertiser with a SIWE bearer session: `POST /v1/api-clients
   { name, scopes, rateLimitPerMinute? }`. The key is returned **once**; only
   `sha256(key)` and a display prefix are stored. At most 10 active keys per
-  advertiser.
-- Sent as `Authorization: Bearer vhamk_…`.
+  advertiser. The session cookie cannot create, list or revoke keys, so a
+  script on the web app's origin cannot mint a key that outlives the page.
+- Sent as `Authorization: Bearer vhamk_…`, header-only. Any value that starts
+  with `Bearer vhamk_` is treated as a key, so a malformed one is
+  `401 INVALID_API_KEY`. The session cookie is for browser sessions only and
+  never carries an API key. A request with both authenticates with the key,
+  and the cookie's CSRF rule still applies to it (API_SPEC.md).
 - Scopes:
 
   | Scope | Routes |

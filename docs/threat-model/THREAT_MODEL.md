@@ -258,7 +258,21 @@
 - Advertiser-only endpoints require the session wallet to equal the campaign advertiser.
 - Fail closed: without `SIWE_DOMAIN`, nobody can sign in.
 
-**Residual risk:** the bearer token lives in browser memory and is exposed to XSS. Before beta, keep a strict CSP and consider HttpOnly cookies with CSRF protection. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
+**Mitigation (implemented, #72):**
+
+- The web app signs in with `transport: "cookie"`: the token is an `__Host-vham_session` cookie with `HttpOnly; Secure; SameSite=Strict; Path=/`, never returned in a body, so page scripts cannot read it. After sign-in the page reads `GET /v1/auth/session`, so a browser that refused the cookie gets an error instead of a page that looks signed in. Scripts and operators keep the bearer transport.
+- Any request other than `GET`, `HEAD` or `OPTIONS` that carries the session cookie, whatever its value and with or without an `Authorization` header, must be same-origin (`Sec-Fetch-Site: same-origin`). When the browser sends no Fetch Metadata, `Origin` must equal `WEB_ORIGIN` (optional, host-bound to `SIWE_DOMAIN`). Anything else is `403 CSRF_REJECTED`, logged as `csrf_rejected` without the requesting origin. The cookie sign-in itself is subject to the same rule (login CSRF). An `Authorization` header is never mixed with the cookie, and API keys stay header-only.
+- Key management (`/v1/api-clients*`) and operator routes (`/v1/admin/*`) refuse a credential from the cookie (`403 COOKIE_SESSION_NOT_ALLOWED`), so script on the page cannot mint an API key or act as an operator with it.
+- Logout revokes every session the request presents (a bearer token and every session cookie value) and clears the cookie only when the request carried it, so a cross-site form cannot sign the browser out. A new cookie sign-in revokes the cookie session it replaces, and a `401` for a cookie credential clears the cookie. Responses to requests that carry the cookie are `Cache-Control: no-store`. Every API response is `X-Content-Type-Options: nosniff`, and logs redact `Set-Cookie`.
+- The web app sets a strict per-request Content-Security-Policy (`script-src 'self' 'nonce-…' 'strict-dynamic'`, `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, with World ID's bridge and font host allowlisted) plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`. CI starts the production build and checks that every script on each page carries that request's nonce (`apps/web/scripts/csp-smoke.mjs`). Campaign and submission ids are validated as UUIDs before they reach a request path, and the web app's API client accepts only fixed routes or paths built from validated ids.
+
+**Residual risk:**
+
+- Script that runs on the web app's origin (an XSS that gets past the CSP, or a compromised dependency) can act as the signed-in advertiser while the page is open: create, publish and link campaigns and read analytics, because same-origin requests carry the cookie. It cannot read the token, mint an API key or reach operator routes with the cookie. It can still ask the wallet for a new SIWE signature with the bearer transport, and the user then sees a wallet prompt for this site's domain.
+- `style-src` keeps `'unsafe-inline'` for IDKit's shadow-root styles.
+- Next prerenders the root error page (`/_global-error`, shown after an uncaught render error) at build time, so its scripts have no nonce and the CSP blocks them. Its text and its plain-form Reload button still work. The policy does not add `'unsafe-inline'` for it.
+- A browser that ignores `SameSite` and sends no Fetch Metadata is covered only by the `Origin` check, which needs `WEB_ORIGIN` set.
+- Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
 
 ## T-016 API Key Abuse / Scraping
 

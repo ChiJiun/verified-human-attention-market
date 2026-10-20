@@ -57,5 +57,6 @@
 
 - [ ] Gas UX: revisit ADR-0003 (wallet-native sponsorship, paymaster or relayer) — the POC makes participants pay gas.
 - [ ] Deployment: multisig owner, KMS signer and signing service, second RPC provider, managed PostgreSQL with PITR (ADR-0008, RUNBOOK).
-- [ ] Web session hardening: CSP and HttpOnly cookies for SIWE sessions (Threat Model T-015).
+- [x] Web session hardening in code: HttpOnly cookie sessions with CSRF protection and a nonce-based CSP (#72, Threat Model T-015).
+- [ ] Web session deployment: set `WEB_ORIGIN` to the web app's https origin. Put no HTTP Basic gate in front of the web app, because the browser's `Authorization: Basic` header wins over the session cookie and cookie sessions stop working. Redact `Cookie` and `Set-Cookie` in web, CDN and WAF access logs, because the `__Host-` cookie has `Path=/` and every request to the web origin carries the token.
 - [ ] World ID: wallet-bound `signal` in the proof (ADR-0007 "Not yet covered").

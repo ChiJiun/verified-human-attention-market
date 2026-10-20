@@ -1,11 +1,11 @@
 import type { Address, WalletClient } from "viem";
 import { createSiweMessage } from "viem/siwe";
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { chainId } from "./config";
+import type { Wallet } from "./wallet";
 
 export interface Session {
-  token: string;
   address: string;
   expiresAt: string;
 }
@@ -32,10 +32,51 @@ export async function signInWithEthereum(
     account: address,
     message,
   });
-  const verified = await api<Session>("/v1/auth/verify", {
+  const verified = await api<{ transport?: unknown }>("/v1/auth/verify", {
     method: "POST",
-    body: { message, signature },
+    body: { message, signature, transport: "cookie" },
   });
 
-  return verified.data;
+  if (verified.data.transport !== "cookie") {
+    throw new Error(
+      "This API did not start a cookie session. Update the API and sign in again.",
+    );
+  }
+
+  const session = await restoreSession();
+  if (!session) {
+    throw new Error(
+      "This browser did not keep the session cookie. Open the site over https or on localhost, and allow cookies for it.",
+    );
+  }
+  return session;
+}
+
+export async function restoreSession(): Promise<Session | null> {
+  try {
+    const { status, data } = await api<Session>("/v1/auth/session");
+    return status === 204
+      ? null
+      : { address: data.address, expiresAt: data.expiresAt };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function signOut(): Promise<void> {
+  await api("/v1/auth/logout", { method: "POST" });
+}
+
+export function sessionForWallet(
+  session: Session | null,
+  wallet: Pick<Wallet, "address"> | null,
+): Session | null {
+  return session !== null &&
+    wallet !== null &&
+    session.address === wallet.address.toLowerCase()
+    ? session
+    : null;
 }

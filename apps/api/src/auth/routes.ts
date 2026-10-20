@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import {
+  CLEARED_SESSION_COOKIE,
+  csrfRejected,
+  presentedCredentials,
+  provenSameOrigin,
+  sessionCookie,
+} from "./credential.js";
 import type { AuthSession } from "./repository.js";
 import {
-  bearerToken,
   hashToken,
   issueNonce,
   signIn,
@@ -14,12 +20,25 @@ import {
 const verifySchema = z.object({
   message: z.string().min(1).max(4_000),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+  transport: z.enum(["bearer", "cookie"]).default("bearer"),
 });
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  dependencies: SiweDependencies & { authenticate: Authenticate },
+  dependencies: SiweDependencies & {
+    authenticate: Authenticate;
+    webOrigin: string | null;
+  },
 ) {
+  async function revokeSessions(tokens: string[]) {
+    const now = dependencies.now();
+    await Promise.all(
+      tokens.map((token) =>
+        dependencies.repository.revokeSession(hashToken(token), now),
+      ),
+    );
+  }
+
   app.post("/v1/auth/nonce", async (_request, reply) => {
     const { nonce, expiresAt } = await issueNonce(dependencies);
     return reply.send({ nonce, expiresAt: expiresAt.toISOString() });
@@ -38,9 +57,18 @@ export async function registerAuthRoutes(
       });
     }
 
+    const { message, signature, transport } = parsed.data;
+
+    if (
+      transport === "cookie" &&
+      !provenSameOrigin(request.headers, dependencies.webOrigin)
+    ) {
+      return csrfRejected(request, reply);
+    }
+
     const outcome = await signIn(dependencies, {
-      message: parsed.data.message,
-      signature: parsed.data.signature as `0x${string}`,
+      message,
+      signature: signature as `0x${string}`,
     });
 
     if (!outcome.ok) {
@@ -53,16 +81,37 @@ export async function registerAuthRoutes(
       });
     }
 
-    return reply.send({
-      token: outcome.token,
-      tokenType: "Bearer",
-      address: outcome.session.address,
-      chainId: outcome.session.chainId,
-      expiresAt: outcome.session.expiresAt.toISOString(),
-    });
+    const { session } = outcome;
+    const body = {
+      address: session.address,
+      chainId: session.chainId,
+      expiresAt: session.expiresAt.toISOString(),
+    };
+
+    if (transport === "cookie") {
+      await revokeSessions(presentedCredentials(request.headers).cookieTokens);
+      const maxAge = Math.max(
+        1,
+        Math.ceil(
+          (session.expiresAt.getTime() - dependencies.now().getTime()) / 1000,
+        ),
+      );
+      return reply
+        .header("set-cookie", sessionCookie(outcome.token, maxAge))
+        .header("cache-control", "no-store")
+        .send({ transport: "cookie", ...body });
+    }
+
+    return reply.send({ token: outcome.token, tokenType: "Bearer", ...body });
   });
 
   app.get("/v1/auth/session", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+
+    if (presentedCredentials(request.headers).credential.kind === "none") {
+      return reply.status(204).send();
+    }
+
     const session = await dependencies.authenticate(request);
 
     if (!session) {
@@ -77,13 +126,16 @@ export async function registerAuthRoutes(
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {
-    const token = bearerToken(request);
+    const { credential, carriesSessionCookie, cookieTokens } =
+      presentedCredentials(request.headers);
+    const tokens =
+      credential.kind === "session" && credential.source === "header"
+        ? [credential.token, ...cookieTokens]
+        : cookieTokens;
+    await revokeSessions(tokens);
 
-    if (token) {
-      await dependencies.repository.revokeSession(
-        hashToken(token),
-        dependencies.now(),
-      );
+    if (carriesSessionCookie) {
+      reply.header("set-cookie", CLEARED_SESSION_COOKIE);
     }
 
     return reply.status(204).send();
@@ -91,6 +143,15 @@ export async function registerAuthRoutes(
 }
 
 export function unauthorized(request: FastifyRequest, reply: FastifyReply) {
+  const { credential } = presentedCredentials(request.headers);
+
+  if (
+    (credential.kind === "session" || credential.kind === "unreadable") &&
+    credential.source === "cookie"
+  ) {
+    reply.header("set-cookie", CLEARED_SESSION_COOKIE);
+  }
+
   return reply.status(401).send({
     error: {
       code: "UNAUTHENTICATED",

@@ -46,6 +46,12 @@ export interface SiweDependencies {
   now: () => Date;
 }
 
+const SESSION_TOKEN_BYTES = 32;
+
+export const SESSION_TOKEN = new RegExp(
+  `^[A-Za-z0-9_-]{${Math.ceil((SESSION_TOKEN_BYTES * 4) / 3)}}$`,
+);
+
 export const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
 
@@ -149,7 +155,7 @@ export async function signIn(
     return { ok: false, status: 401, code: "NONCE_INVALID_OR_USED" };
   }
 
-  const token = randomBytes(32).toString("base64url");
+  const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
   const sessionTtl = config.sessionTtlMs ?? 12 * 60 * 60_000;
   const expiry = new Date(now.getTime() + sessionTtl);
   const expiresAt =
@@ -170,26 +176,4 @@ export async function signIn(
   });
 
   return { ok: true, token, session };
-}
-
-export function bearerToken(request: FastifyRequest): string | null {
-  const header = request.headers.authorization;
-
-  if (typeof header !== "string") {
-    return null;
-  }
-
-  const match = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(header);
-  return match ? match[1]! : null;
-}
-
-/** Default authenticator: bearer token → stored, unexpired session. */
-export function sessionAuthenticator(
-  repository: AuthRepository,
-  now: () => Date,
-): Authenticate {
-  return async (request) => {
-    const token = bearerToken(request);
-    return token ? repository.findSession(hashToken(token), now()) : null;
-  };
 }
