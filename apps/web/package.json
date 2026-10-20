@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:csp": "node scripts/csp-smoke.mjs"
   },
   "dependencies": {
     "@vham/shared": "workspace:*",
