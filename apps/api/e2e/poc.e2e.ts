@@ -54,11 +54,7 @@ import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresModerationRepository } from "../src/moderation/repository.js";
-import {
-  campaignAction,
-  type WorldIdResult,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
+import { LocalSimulatedWorldIdVerifier } from "../src/identity/world-id.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
 
 const RPC_URL = process.env.E2E_RPC_URL ?? "http://127.0.0.1:8545";
@@ -92,24 +88,6 @@ function artifact(path: string): { abi: Abi; bytecode: Hex } {
     ),
   ) as { abi: Abi; bytecode: { object: Hex } };
   return { abi: json.abi, bytecode: json.bytecode.object };
-}
-
-/** World ID needs the World App; the proof is simulated as { action, human }. */
-class SimulatedWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? {
-          ok: true,
-          nullifier: String(
-            BigInt(`0x${Buffer.from(proof.human).toString("hex")}`),
-          ),
-        }
-      : { ok: false, code: "ACTION_MISMATCH" };
-  }
 }
 
 const describeE2e = DATABASE_URL ? describe : describe.skip;
@@ -166,6 +144,29 @@ describeE2e("POC economic loop on a local chain", () => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     expect(receipt.status).toBe("success");
     return hash;
+  }
+
+  /**
+   * World ID needs the World App, so the local stand-in is used: the proof
+   * is { action, simulatedHuman, signal } with the wallet-bound signal the
+   * page would fetch for `claimant` (#71).
+   */
+  async function simulatedProof(
+    campaignId: string,
+    claimant: Address,
+    human: string,
+  ) {
+    const requested = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/world-id/request`,
+      payload: { claimant },
+    });
+    expect(requested.statusCode).toBe(200);
+    const { action, signal } = requested.json<{
+      action: string;
+      signal: Hex;
+    }>();
+    return { action, simulatedHuman: human, signal };
   }
 
   async function signIn(account: typeof deployer) {
@@ -245,7 +246,7 @@ describeE2e("POC economic loop on a local chain", () => {
       ),
       authRepository: new PostgresAuthRepository(database.db),
       siwe: { domain: DOMAIN, chainId: anvil.id },
-      worldIdVerifier: new SimulatedWorldId(),
+      worldIdVerifier: new LocalSimulatedWorldIdVerifier(anvil.id),
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: {
@@ -563,17 +564,27 @@ describeE2e("POC economic loop on a local chain", () => {
 
     // 4. A verified human completes the mission after start.
     await travelTo(seconds(130));
+    const aliceProof = await simulatedProof(campaignId, alice.address, "alice");
     const verified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: {
-        claimant: alice.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "alice" },
-      },
+      payload: { claimant: alice.address, idkitResponse: aliceProof },
     });
     expect(verified.statusCode).toBe(201);
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
+
+    // Alice's proof is bound to her wallet: relayed for Bob's, it is refused
+    // and nothing is written (Bob verifies with his own proof in step 8).
+    const relayed = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: { claimant: bob.address, idkitResponse: aliceProof },
+    });
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
 
     const submitted = await app.inject({
       method: "POST",
@@ -732,7 +743,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: bob.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "bob" },
+        idkitResponse: await simulatedProof(campaignId, bob.address, "bob"),
       },
     });
     expect(bobVerified.statusCode).toBe(201);
@@ -787,7 +798,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: carol.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "carol" },
+        idkitResponse: await simulatedProof(campaignId, carol.address, "carol"),
       },
     });
     expect(carolVerified.statusCode).toBe(201);
