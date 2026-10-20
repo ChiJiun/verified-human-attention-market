@@ -42,7 +42,7 @@ describe("worldIdSignal", () => {
 });
 
 describe("signalHash", () => {
-  it("matches IDKit's hashSignal for a 0x hex signal", () => {
+  it("matches @worldcoin/idkit-core 4.4.0 hashSignal for a 0x hex signal", () => {
     expect(signalHash(`0x${"11".repeat(32)}`)).toBe(
       "0x00b569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf8",
     );
