@@ -24,4 +24,22 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ["apps/web/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@worldcoin/idkit",
+              importNames: ["proofOfHuman"],
+              message:
+                'IDKit 4.4.0\'s proofOfHuman() preset forces allow_legacy_proofs: true, and ADR-0007 accepts only World ID 4.0 proofs. Use constraints={CredentialRequest("proof_of_human")}.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

@@ -336,7 +336,6 @@ export default function MissionPage() {
           rp_context={worldRequest.rpContext}
           environment={worldRequest.environment}
           allow_legacy_proofs={false}
-          // The proofOfHuman() preset ignores allow_legacy_proofs and allows 3.0 proofs.
           constraints={CredentialRequest("proof_of_human")}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
