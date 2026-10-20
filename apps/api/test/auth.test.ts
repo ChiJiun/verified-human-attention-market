@@ -400,6 +400,19 @@ describe("session cookie credential", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
   });
 
+  it("marks every response nosniff, as the web origin serves them", async () => {
+    const { app, session } = setup();
+
+    for (const response of [
+      await app.inject({ method: "GET", url: "/health/live" }),
+      await app.inject({ method: "GET", url: "/v1/nope" }),
+      await session({}),
+      await session(bearer("not-a-real-token-xxxxxxxx")),
+    ]) {
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    }
+  });
+
   it("reads only the Authorization header when one is present", async () => {
     const { signIn, session } = setup();
     const headerToken = await signIn(browserAdvertiser);
