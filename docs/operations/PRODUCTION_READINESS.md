@@ -58,4 +58,4 @@
 - [ ] Gas UX: revisit ADR-0003 (wallet-native sponsorship, paymaster or relayer) — the POC makes participants pay gas.
 - [ ] Deployment: multisig owner, KMS signer and signing service, second RPC provider, managed PostgreSQL with PITR (ADR-0008, RUNBOOK).
 - [ ] Web session hardening: CSP and HttpOnly cookies for SIWE sessions (Threat Model T-015).
-- [ ] World ID: wallet-bound `signal` in the proof (ADR-0007 "Not yet covered").
+- [ ] World ID: confirm on Base Sepolia that World's verify endpoint refuses a 4.0 proof whose `signal_hash` was swapped for another wallet's (the #13 swap test, ADR-0007 update 2026-10-21). The wallet-bound `signal` itself is implemented (#71).

@@ -211,8 +211,7 @@ pnpm --filter @vham/api db:migrate && pnpm --filter @vham/api dev
 # 終端機 5：indexer
 pnpm --filter @vham/api indexer
 # 終端機 6：前端
-API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MODE=simulated \
-  pnpm --filter @vham/web dev
+API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web dev
 ```
 
 在瀏覽器錢包新增網路：RPC `http://127.0.0.1:8545`，Chain ID `31337`。
@@ -235,10 +234,10 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
    | `WORLD_ID_RP_ID` | `rp_…`，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
    | `RP_SIGNING_KEY` | RP 簽章私鑰（32 bytes hex），只在伺服器簽 `rp_context`，是秘密 |
    | `WORLD_ID_ENVIRONMENT` | `production`（預設）或 `staging`（配合 simulator）。同一個值會回傳給 widget，後端也據此拒絕其他環境的 proof |
-   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；也用來推導綁定錢包的 signal（#71）。沒設定時 `world-id/request` 與資格驗證都回 503 |
+   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
 
-   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"`、action 與 signal，沒有 `appId` 與 `rp_context`。
-3. 前端不要設 `NEXT_PUBLIC_WORLD_ID_MODE=simulated`。參與者按 **Verify with World ID** 後，前端會用已連線的錢包向 API 取得 `rp_context` 與綁定這個錢包的 signal，再開 IDKit widget；IDKit 的結果原封不動送到 `eligibility/verify`，換一個錢包送出會得到 `403 SIGNAL_MISMATCH`。
+   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"` 與 action，沒有 `appId` 與 `rp_context`。
+3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程（`NEXT_PUBLIC_CHAIN_ID=31337` 時按鈕顯示 Verify（local simulation））。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
 4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
 5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
 

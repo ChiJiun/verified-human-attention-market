@@ -54,7 +54,7 @@ At minimum:
 - create campaign input validation [`campaigns.test.ts`, `moderation.test.ts` (URL policy)];
 - invalid/expired campaign submission [`submissions.test.ts`, `verifier.test.ts`];
 - idempotency same request / conflict [`campaigns.test.ts`, `submissions.test.ts`, `persistence.test.ts`, `postgres.integration.test.ts`];
-- World ID verification failure [`world-id.test.ts`, `eligibility.test.ts`, `rp-signature.test.ts`];
+- World ID verification failure and the wallet-bound signal (relayed proof refused, salt required) [`world-id.test.ts`, `world-id-signal.test.ts`, `eligibility.test.ts`, `rp-signature.test.ts`, `e2e/poc.e2e.ts`];
 - engagement rejection [`verifier.test.ts`, `submissions.test.ts`];
 - signer failure and signer mismatch [`claims.test.ts`, `remote-signer.test.ts`; acceptance rolled back when signing fails: `submissions.test.ts`, `postgres.integration.test.ts`];
 - claim issuance cap, reissue, deep-reorg relink [`claims.test.ts`, `postgres.integration.test.ts`];
@@ -63,7 +63,7 @@ At minimum:
 - analytics reconciliation [`reconciliation.test.ts`, `onchain.test.ts`];
 - authentication, API keys, rate limits, moderation, observability, retention [`auth.test.ts`, `api-clients.test.ts`, `moderation.test.ts`, `observability.test.ts`, `postgres.integration.test.ts`];
 - chain configuration fail-fast [`chain-config.test.ts`, `canonical-abi.test.ts`];
-- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`;
+- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment,world-id}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`;
 - database retry behavior [not planned: the API uses idempotent requests and the `retryable` error flag instead of a server-side retry layer (API_CONTRACT.md)].
 
 # Integration Tests
