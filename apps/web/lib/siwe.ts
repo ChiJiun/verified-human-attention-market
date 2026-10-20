@@ -10,7 +10,11 @@ export interface Session {
   expiresAt: string;
 }
 
-/** EIP-4361 sign-in; the API verifies domain, chain, nonce and signature. */
+/**
+ * EIP-4361 sign-in; the API verifies domain, chain, nonce and signature. The
+ * result is the session the browser's cookie holds afterwards, not the
+ * verify response, because a browser can refuse the cookie.
+ */
 export async function signInWithEthereum(
   walletClient: WalletClient,
   address: Address,
@@ -32,18 +36,32 @@ export async function signInWithEthereum(
     account: address,
     message,
   });
-  const verified = await api<Session>("/v1/auth/verify", {
+  const verified = await api<{ transport?: unknown }>("/v1/auth/verify", {
     method: "POST",
     body: { message, signature, transport: "cookie" },
   });
 
-  return { address: verified.data.address, expiresAt: verified.data.expiresAt };
+  if (verified.data.transport !== "cookie") {
+    throw new Error(
+      "This API did not start a cookie session. Update the API and sign in again.",
+    );
+  }
+
+  const session = await restoreSession();
+  if (!session) {
+    throw new Error(
+      "This browser did not keep the session cookie. Open the site over https or on localhost, and allow cookies for it.",
+    );
+  }
+  return session;
 }
 
 export async function restoreSession(): Promise<Session | null> {
   try {
-    const { data } = await api<Session>("/v1/auth/session");
-    return { address: data.address, expiresAt: data.expiresAt };
+    const { status, data } = await api<Session>("/v1/auth/session");
+    return status === 204
+      ? null
+      : { address: data.address, expiresAt: data.expiresAt };
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       return null;
