@@ -142,6 +142,15 @@ function setup(
     return app.inject({ method: "GET", url: "/v1/auth/session", headers });
   }
 
+  function logout(headers: Record<string, string>, payload?: string) {
+    return app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      headers,
+      ...(payload === undefined ? {} : { payload }),
+    });
+  }
+
   return {
     app,
     nonce,
@@ -151,6 +160,7 @@ function setup(
     signInWithCookie,
     createCampaign,
     session,
+    logout,
     setNow: (value: Date) => {
       now = value;
     },
@@ -554,5 +564,108 @@ describe("cookie transport", () => {
       "__Host-vham_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
     );
     expect((await session(cookie(token))).statusCode).toBe(401);
+  });
+});
+
+describe("logout", () => {
+  const sameOrigin = { "sec-fetch-site": "same-origin" };
+
+  it("revokes the cookie session along with a bearer session", async () => {
+    const { signIn, signInWithCookie, session, logout } = setup();
+    const headerToken = await signIn(otherBrowser);
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+
+    const response = await logout({
+      ...bearer(headerToken),
+      ...cookie(cookieToken),
+      ...sameOrigin,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect((await session(bearer(headerToken))).statusCode).toBe(401);
+    expect((await session(cookie(cookieToken))).statusCode).toBe(401);
+  });
+
+  it("revokes the cookie session when the Authorization header is invalid", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    await logout({
+      authorization: "Bearer not-a-real-token-xxxxxxxx",
+      ...cookie(token),
+      ...sameOrigin,
+    });
+
+    expect((await session(cookie(token))).statusCode).toBe(401);
+  });
+
+  it("revokes every session cookie the request carries", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token: first } = await signInWithCookie(browserAdvertiser);
+    const { token: second } = await signInWithCookie(otherBrowser);
+
+    await logout({
+      cookie: `${SESSION_COOKIE}=${first}; ${SESSION_COOKIE}=${second}`,
+      ...sameOrigin,
+    });
+
+    expect((await session(cookie(first))).statusCode).toBe(401);
+    expect((await session(cookie(second))).statusCode).toBe(401);
+  });
+
+  it("sends no clearing cookie to a request without one", async () => {
+    const { logout } = setup();
+
+    const crossSiteForm = await logout(
+      {
+        "content-type": "text/plain",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        origin: "https://evil.example",
+      },
+      "",
+    );
+
+    expect(crossSiteForm.statusCode).toBe(204);
+    expect(crossSiteForm.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it.each([
+    ["a malformed session cookie", `${SESSION_COOKIE}=not-a-session-token`],
+    ["two session cookies", `${SESSION_COOKIE}=a; ${SESSION_COOKIE}=b`],
+  ])(
+    "refuses a cross-site logout carrying %s",
+    async (_label, cookieHeader) => {
+      const { logout } = setup();
+
+      const response = await logout({
+        cookie: cookieHeader,
+        "sec-fetch-site": "cross-site",
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED" },
+      });
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    },
+  );
+
+  it("refuses a cross-site mutation that carries the cookie next to a bearer token", async () => {
+    const { signIn, signInWithCookie, createCampaign } = setup();
+    const headerToken = await signIn(browserAdvertiser);
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+
+    const response = await createCampaign(
+      {
+        ...bearer(headerToken),
+        ...cookie(cookieToken),
+        "sec-fetch-site": "cross-site",
+      },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "CSRF_REJECTED" } });
   });
 });
