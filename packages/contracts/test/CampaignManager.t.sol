@@ -856,6 +856,54 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
+    function testFuzz_CampaignDurationBounds(bool aroundMax, uint8 step, uint32 startDelay) public {
+        uint64 minDuration = manager.MIN_CAMPAIGN_DURATION();
+        uint64 maxDuration = manager.MAX_CAMPAIGN_DURATION();
+        // One second below, at and above the chosen bound.
+        uint64 duration = (aroundMax ? maxDuration : minDuration) - 1 + (step % 3);
+        uint64 start = uint64(block.timestamp) + startDelay;
+        uint64 end = start + duration;
+
+        if (duration >= minDuration && duration <= maxDuration) {
+            uint256 campaignId = _createWindow(start, end);
+            (,,,,,, uint64 storedStart, uint64 storedEnd,,) = manager.campaigns(campaignId);
+            require(storedStart == start && storedEnd == end, "window stored");
+        } else {
+            vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
+            _createWindow(start, end);
+        }
+    }
+
+    function testFuzz_CampaignStartInThePastRejected(uint256 secondsAgo) public {
+        vm.warp(30 days);
+        uint64 start = uint64(block.timestamp - 1 - (secondsAgo % block.timestamp));
+        uint64 end = start + manager.MIN_CAMPAIGN_DURATION();
+
+        vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
+        _createWindow(start, end);
+    }
+
+    function test_CampaignWindowEdges() public {
+        vm.warp(1 days);
+        uint64 current = uint64(block.timestamp);
+        uint64 minDuration = manager.MIN_CAMPAIGN_DURATION();
+        uint64 maxDuration = manager.MAX_CAMPAIGN_DURATION();
+
+        // Starting this very second is allowed.
+        _createWindow(current, current + minDuration);
+        _createWindow(current, current + maxDuration);
+
+        vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
+        _createWindow(current - 1, current - 1 + minDuration);
+
+        vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
+        _createWindow(current, current);
+
+        // An end before the start must revert with the window error, not an underflow panic.
+        vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
+        _createWindow(current + minDuration, current);
+    }
+
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
@@ -871,6 +919,11 @@ contract CampaignManagerTest {
         manager.fundCampaign(campaignId, budget, ref);
 
         return campaignId;
+    }
+
+    function _createWindow(uint64 start, uint64 end) private returns (uint256) {
+        vm.prank(advertiser);
+        return manager.createCampaign(uint96(ONE_USDC), 1, start, end, _nextRef());
     }
 
     /// @dev fundedBudget and paidRewards share the second slot of the Campaign struct. The
