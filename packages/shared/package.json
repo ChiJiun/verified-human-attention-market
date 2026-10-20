@@ -19,6 +19,10 @@
     "./deployment": {
       "types": "./dist/deployment.d.ts",
       "default": "./dist/deployment.js"
+    },
+    "./world-id": {
+      "types": "./dist/world-id.d.ts",
+      "default": "./dist/world-id.js"
     }
   },
   "scripts": {
@@ -27,6 +31,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "viem": "2.38.6",
     "zod": "4.6.5"
   },
   "devDependencies": {
