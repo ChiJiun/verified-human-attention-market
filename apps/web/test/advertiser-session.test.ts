@@ -65,7 +65,7 @@ describe("advertiser session store", () => {
     const store = createSessionStore(sessionApi());
     await store.signIn(wallet);
 
-    await store.noteError(new ApiError(401, "UNAUTHENTICATED"));
+    await store.syncFromError(new ApiError(401, "UNAUTHENTICATED"));
 
     expect(store.current()).toBeNull();
   });
@@ -78,7 +78,7 @@ describe("advertiser session store", () => {
     await store.restore();
     cookie = bob;
 
-    await store.noteError(new ApiError(403, "NOT_CAMPAIGN_ADVERTISER"));
+    await store.syncFromError(new ApiError(403, "NOT_CAMPAIGN_ADVERTISER"));
 
     expect(store.current()).toEqual(bob);
   });
@@ -94,7 +94,7 @@ describe("advertiser session store", () => {
       notified += 1;
     });
 
-    await store.noteError(new ApiError(403, "NOT_CAMPAIGN_ADVERTISER"));
+    await store.syncFromError(new ApiError(403, "NOT_CAMPAIGN_ADVERTISER"));
 
     expect(store.current()).toBe(before);
     expect(notified).toBe(0);
@@ -104,8 +104,8 @@ describe("advertiser session store", () => {
     const store = createSessionStore(sessionApi());
     await store.signIn(wallet);
 
-    await store.noteError(new ApiError(409, "ALREADY_LINKED"));
-    await store.noteError(new Error("wallet closed"));
+    await store.syncFromError(new ApiError(409, "ALREADY_LINKED"));
+    await store.syncFromError(new Error("wallet closed"));
 
     expect(store.current()).toEqual(alice);
   });

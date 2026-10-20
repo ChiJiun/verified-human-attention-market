@@ -280,9 +280,9 @@ export default function AdvertiserPage() {
       if (data.status !== "draft") linked(campaignId);
     } catch (caught) {
       setError(describeError(caught));
-      void auth.noteError(caught);
+      void auth.syncFromError(caught);
     }
-  }, [campaignId, activeSession, linked, auth.noteError]);
+  }, [campaignId, activeSession, linked, auth.syncFromError]);
 
   useEffect(() => {
     void api<{ chainId: number; campaignManager: string }>("/v1/chain")
@@ -353,7 +353,7 @@ export default function AdvertiserPage() {
       await action();
     } catch (caught) {
       setError(describeError(caught));
-      void auth.noteError(caught);
+      void auth.syncFromError(caught);
     } finally {
       setBusy(false);
     }

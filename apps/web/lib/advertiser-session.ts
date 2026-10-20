@@ -23,6 +23,8 @@ const sameSession = (a: Session | null, b: Session | null) =>
     a.address === b.address &&
     a.expiresAt === b.expiresAt);
 
+const keepCurrentSession = () => undefined;
+
 export function createSessionStore(sessionApi: SessionApi) {
   let session: Session | null = null;
   let generation = 0;
@@ -34,7 +36,7 @@ export function createSessionStore(sessionApi: SessionApi) {
     for (const listener of listeners) listener();
   }
 
-  function replace(next: Session | null) {
+  function supersede(next: Session | null) {
     generation += 1;
     set(next);
   }
@@ -55,18 +57,18 @@ export function createSessionStore(sessionApi: SessionApi) {
     current: () => session,
     restore,
     async signIn(wallet: Wallet) {
-      replace(await sessionApi.signIn(wallet));
+      supersede(await sessionApi.signIn(wallet));
     },
     async signOut() {
       await sessionApi.signOut();
-      replace(null);
+      supersede(null);
     },
-    async noteError(error: unknown) {
+    async syncFromError(error: unknown) {
       if (!(error instanceof ApiError)) return;
       if (error.code === "UNAUTHENTICATED") {
-        replace(null);
+        supersede(null);
       } else if (error.code === "NOT_CAMPAIGN_ADVERTISER") {
-        await restore().catch(() => undefined);
+        await restore().catch(keepCurrentSession);
       }
     },
   };
@@ -98,6 +100,6 @@ export function useAdvertiserSession(
     active: sessionForWallet(session, wallet),
     signIn: store.signIn,
     signOut: store.signOut,
-    noteError: store.noteError,
+    syncFromError: store.syncFromError,
   };
 }
