@@ -1,6 +1,7 @@
 import {
   concatHex,
   getAddress,
+  keccak256,
   padHex,
   stringToHex,
   toHex,
@@ -19,10 +20,6 @@ import {
 const CAMPAIGN = "00000000-0000-4000-8000-000000000071";
 const CLAIMANT: Hex = `0x${"a".repeat(40)}`;
 const SALT = `0x${"0123456789abcdef".repeat(4)}` as WorldIdSignalSalt;
-/**
- * keccak256 of the ABI layout written out in the first test, computed with
- * @noble/hashes keccak_256 over hand-assembled bytes (no viem involved).
- */
 const SIGNAL =
   "0xef3c395e4e9277232b7fc1a85d2d5fb5d9b472584cbabc40020d6a8b3d6e41d1";
 
@@ -39,23 +36,20 @@ const utf8Word = (text: string) => {
 
 describe("worldIdSignal", () => {
   it("is keccak256(abi.encode(domain, campaignId, claimant, salt))", () => {
-    const signal = worldIdSignal({
-      campaignId: CAMPAIGN,
-      claimant: CLAIMANT,
-      salt: SALT,
-    });
+    const layout = concatHex([
+      word(128n),
+      word(192n),
+      word(CLAIMANT),
+      SALT,
+      utf8Word("vham:world-id-signal:v2"),
+      utf8Word(CAMPAIGN),
+    ]);
 
-    expect(signal).toBe(SIGNAL);
+    expect(layout).toHaveLength(2 + 288 * 2);
+    expect(keccak256(layout)).toBe(SIGNAL);
     expect(
-      concatHex([
-        word(128n),
-        word(192n),
-        word(CLAIMANT),
-        SALT,
-        utf8Word("vham:world-id-signal:v2"),
-        utf8Word(CAMPAIGN),
-      ]),
-    ).toHaveLength(2 + 288 * 2);
+      worldIdSignal({ campaignId: CAMPAIGN, claimant: CLAIMANT, salt: SALT }),
+    ).toBe(SIGNAL);
   });
 
   it("gives the same signal whatever the case of the address or the campaign id", () => {

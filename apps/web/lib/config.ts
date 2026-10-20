@@ -13,7 +13,4 @@ export const chainId = Number(
 
 export const chain: Chain = SUPPORTED[chainId] ?? baseSepolia;
 
-/** anvil: the only chain where the API may run its World ID stand-in. */
-export const isLocalChain = chainId === foundry.id;
-
 export const USDC_DECIMALS = 6;

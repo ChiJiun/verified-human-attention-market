@@ -218,7 +218,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
 1. **廣告主（anvil #2）：** 打開 http://localhost:3000/advertiser，依序連接錢包、登入、建立 campaign。開始時間要設在幾分鐘後。接著按 Create on-chain，再按 Approve & fund，等狀態變成 `active` 後，複製頁面上的 participant link。
 2. **等到開始時間後**（本機鏈時間跟著真實時間走）：
-3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify（local simulation）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
+3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify with World ID（本機為模擬，不會開 widget，直接通過）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
 4. 回到廣告主頁面，可以看到已付金額和完成數。
 
 ### 使用真的 World ID（#12）
@@ -237,7 +237,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
    | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
 
    `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"` 與 action，沒有 `appId` 與 `rp_context`。
-3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程（`NEXT_PUBLIC_CHAIN_ID=31337` 時按鈕顯示 Verify（local simulation））。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
+3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
 4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
 5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
 

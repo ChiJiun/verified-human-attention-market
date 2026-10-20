@@ -27,7 +27,6 @@ const verifyEligibilitySchema = z.object({
   idkitResponse: z.unknown(),
 });
 
-/** How IDKit requests open; null = World ID is not configured (#12). */
 export type WorldIdRequestConfig =
   | {
       mode: "live";

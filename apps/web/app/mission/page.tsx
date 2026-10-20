@@ -5,7 +5,7 @@ import {
   newWorldIdSignalSalt,
   worldIdSignal,
   type WorldIdSignal,
-  type WorldIdSignalSalt,
+  type WorldIdSignalInput,
 } from "@vham/shared/world-id";
 import {
   CredentialRequest,
@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
-import { chain, chainId, isLocalChain, USDC_DECIMALS } from "../../lib/config";
+import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
 interface Campaign {
@@ -63,14 +63,9 @@ interface LiveWorldIdRequest {
 type WorldIdRequest =
   LiveWorldIdRequest | { mode: "simulated"; action: string };
 
-/**
- * One click of "Verify with World ID". The salt exists only here, in
- * memory, from the click until the proof is posted (ADR-0007).
- */
 interface PendingVerification {
   request: LiveWorldIdRequest;
-  claimant: Address;
-  signalSalt: WorldIdSignalSalt;
+  binding: WorldIdSignalInput;
   signal: WorldIdSignal;
 }
 
@@ -155,16 +150,20 @@ export default function MissionPage() {
       else if (token) setStep({ kind: "answer" });
     });
 
-  /** Sends the IDKit result, unchanged, with the wallet and salt it was made for; never logs it. */
   async function verifyEligibility(
-    claimant: Address,
-    signalSalt: WorldIdSignalSalt,
+    binding: WorldIdSignalInput,
     idkitResponse: unknown,
   ): Promise<void> {
-    if (!campaignId) return;
     const { data } = await api<{ eligibilityToken: string }>(
-      `/v1/campaigns/${campaignId}/eligibility/verify`,
-      { method: "POST", body: { claimant, signalSalt, idkitResponse } },
+      `/v1/campaigns/${binding.campaignId}/eligibility/verify`,
+      {
+        method: "POST",
+        body: {
+          claimant: binding.claimant,
+          signalSalt: binding.salt,
+          idkitResponse,
+        },
+      },
     );
     store(key("eligibility"), data.eligibilityToken);
     setEligibilityToken(data.eligibilityToken);
@@ -177,24 +176,23 @@ export default function MissionPage() {
         `/v1/campaigns/${campaign.id}/world-id/request`,
         { method: "POST" },
       );
-      const claimant = wallet.address;
-      const signalSalt = newWorldIdSignalSalt();
-      const signal = worldIdSignal({
+      const binding: WorldIdSignalInput = {
         campaignId: campaign.id,
-        claimant,
-        salt: signalSalt,
-      });
+        claimant: wallet.address,
+        salt: newWorldIdSignalSalt(),
+      };
+      const signal = worldIdSignal(binding);
       if (data.mode === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
-        await verifyEligibility(claimant, signalSalt, {
+        await verifyEligibility(binding, {
           action: data.action,
-          simulatedHuman: claimant.toLowerCase(),
+          simulatedHuman: binding.claimant.toLowerCase(),
           signal,
         });
         setStep({ kind: "answer" });
         return;
       }
-      setPending({ request: data, claimant, signalSalt, signal });
+      setPending({ request: data, binding, signal });
       setWidgetOpen(true);
     });
 
@@ -202,7 +200,7 @@ export default function MissionPage() {
   async function handleWorldIdVerify(result: IDKitResult) {
     if (!pending) throw new Error("Start the verification again.");
     try {
-      await verifyEligibility(pending.claimant, pending.signalSalt, result);
+      await verifyEligibility(pending.binding, result);
     } catch (caught) {
       const message = describeError(caught);
       setError(message);
@@ -345,9 +343,7 @@ export default function MissionPage() {
             Your reward is bound to this wallet. One person, one reward.
           </p>
           <button onClick={verifyHuman} disabled={busy || !active}>
-            {isLocalChain
-              ? "Verify (local simulation)"
-              : "Verify with World ID"}
+            Verify with World ID
           </button>
         </section>
       )}
@@ -355,7 +351,10 @@ export default function MissionPage() {
       {pending && (
         <IDKitRequestWidget
           open={widgetOpen}
-          onOpenChange={setWidgetOpen}
+          onOpenChange={(open) => {
+            setWidgetOpen(open);
+            if (!open) setPending(null);
+          }}
           app_id={pending.request.appId}
           action={pending.request.action}
           rp_context={pending.request.rpContext}

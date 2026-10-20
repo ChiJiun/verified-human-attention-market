@@ -1,10 +1,3 @@
-/**
- * The World ID signal that binds a proof to one claimant wallet (ADR-0007,
- * update 2026-10-21). The browser draws the salt, derives the signal and
- * hands IDKit the signal; the API gets the salt with the proof and derives
- * the same signal. Nothing returns a salt, so nobody can rebuild the
- * signal_hash of an on-chain claimant from public data.
- */
 import {
   bytesToHex,
   encodeAbiParameters,
@@ -36,11 +29,13 @@ export function newWorldIdSignalSalt(): WorldIdSignalSalt {
   ) as WorldIdSignalSalt;
 }
 
-export function worldIdSignal(input: {
+export interface WorldIdSignalInput {
   campaignId: string;
   claimant: string;
   salt: WorldIdSignalSalt;
-}): WorldIdSignal {
+}
+
+export function worldIdSignal(input: WorldIdSignalInput): WorldIdSignal {
   return keccak256(
     encodeAbiParameters(
       [

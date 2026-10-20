@@ -95,7 +95,7 @@ export interface AppDependencies {
   /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
   dailyPayoutLimitAtomic?: bigint | null;
   worldIdVerifier?: WorldIdVerifier;
-  /** RP signing for IDKit requests (#12); null or absent = disabled. */
+  /** Live or simulated IDKit requests (#12); null or absent = disabled. */
   worldIdRequest?: WorldIdRequestConfig | null;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];

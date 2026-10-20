@@ -147,8 +147,7 @@ describeE2e("POC economic loop on a local chain", () => {
     return hash;
   }
 
-  /** What the mission page posts to eligibility/verify, minus the claimant. */
-  async function simulatedProof(
+  async function simulatedVerification(
     campaignId: string,
     claimant: Address,
     human: string,
@@ -566,11 +565,15 @@ describeE2e("POC economic loop on a local chain", () => {
 
     // 4. A verified human completes the mission after start.
     await travelTo(seconds(130));
-    const aliceProof = await simulatedProof(campaignId, alice.address, "alice");
+    const aliceVerification = await simulatedVerification(
+      campaignId,
+      alice.address,
+      "alice",
+    );
     const verified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: { claimant: alice.address, ...aliceProof },
+      payload: { claimant: alice.address, ...aliceVerification },
     });
     expect(verified.statusCode).toBe(201);
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
@@ -579,7 +582,7 @@ describeE2e("POC economic loop on a local chain", () => {
     const relayed = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: { claimant: bob.address, ...aliceProof },
+      payload: { claimant: bob.address, ...aliceVerification },
     });
     expect(relayed.statusCode).toBe(403);
     expect(relayed.json()).toMatchObject({
@@ -743,7 +746,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: bob.address,
-        ...(await simulatedProof(campaignId, bob.address, "bob")),
+        ...(await simulatedVerification(campaignId, bob.address, "bob")),
       },
     });
     expect(bobVerified.statusCode).toBe(201);
@@ -798,7 +801,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: carol.address,
-        ...(await simulatedProof(campaignId, carol.address, "carol")),
+        ...(await simulatedVerification(campaignId, carol.address, "carol")),
       },
     });
     expect(carolVerified.statusCode).toBe(201);

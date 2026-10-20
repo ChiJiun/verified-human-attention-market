@@ -159,8 +159,6 @@ if (!Number.isSafeInteger(trustProxy) || trustProxy < 0) {
   throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
 }
 
-// IDKit requests (#12): live needs the RP id, the server-only signing key
-// and the app id together; anything less is "not configured".
 const rpSigningKey = process.env.RP_SIGNING_KEY || null;
 const worldIdAppId = process.env.WORLD_ID_APP_ID || null;
 const worldIdRequest: WorldIdRequestConfig | null =
