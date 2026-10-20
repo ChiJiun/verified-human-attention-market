@@ -10,14 +10,11 @@ import {
   type SettlementReading,
 } from "../src/settlement.js";
 
-// CampaignManager.MAX_AUTHORIZATION_TTL is 15 minutes.
 const TTL = 900n;
 const START = 1_800_000_000n;
 const END = START + 3_600n;
 const CLOSED_AT = START + 600n;
 
-// The contract refunds when block.timestamp > deadline + TTL, where the
-// deadline is the close time, or the end time for a campaign never closed.
 const REFUND_AFTER_END = END + TTL + 1n;
 const REFUND_AFTER_CLOSE = CLOSED_AT + TTL + 1n;
 
@@ -33,7 +30,6 @@ const reading = (
   ...overrides,
 });
 
-/** The members of `enum CampaignStatus` in the Solidity source, in order. */
 function declaredStatuses(): string[] {
   const body = /enum\s+CampaignStatus\s*\{([^}]*)\}/.exec(contractSource)?.[1];
   if (body === undefined) {

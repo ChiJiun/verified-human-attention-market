@@ -810,7 +810,6 @@ describeE2e("POC economic loop on a local chain", () => {
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
 
-    // The custom error a refund simulation reverts with, or null if it passes.
     // eth_call at "latest" runs at the latest block's timestamp.
     const refundRevert = async () => {
       try {
@@ -836,8 +835,6 @@ describeE2e("POC economic loop on a local chain", () => {
     };
     expect(await refundRevert()).toBe("RefundNotAvailable");
 
-    // The boundary is the formula the advertiser page uses, judged by the
-    // real contract: rejected one second before it, accepted at it.
     const campaign = await publicClient.readContract({
       address: managerAddress,
       abi: campaignManagerAbi,

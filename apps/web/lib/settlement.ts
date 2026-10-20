@@ -17,20 +17,17 @@ import {
 
 import type { Wallet } from "./wallet";
 
-/** The draft as the API describes it, plus the reference the contract maps to its id. */
 export interface SettlementTarget extends FundingTargetExpectation {
   draftRef: Hash;
 }
 
 export interface ChainSettlement {
   reading: SettlementReading;
-  /** Local clock when the block was read. Only the countdown uses it. */
   readAtMs: number;
 }
 
 export type SettlementAction = "close" | "refund";
 
-/** The CampaignManager function each action calls, and how the status card names it. */
 export const SETTLEMENT_CALLS = {
   close: {
     functionName: "closeCampaign",
@@ -51,16 +48,8 @@ export function formatRemaining(seconds: number): string {
   return minutes > 0 ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
 }
 
-/** MAX_AUTHORIZATION_TTL is a constant, so one read per contract is enough. */
 const ttlByContract = new Map<string, bigint>();
 
-/**
- * Reads, through the wallet's own chain view, what CampaignManager will judge
- * a close or refund by. Close and refund carry only the campaign id, and after
- * a deep reorg an id can belong to another draft of the same advertiser, so
- * the id must still map to this draft with its parameters (ADR-0011) before
- * anything read here is trusted.
- */
 export async function readSettlement(
   wallet: Wallet,
   deployment: Deployment,
@@ -132,17 +121,11 @@ export async function readSettlement(
   };
 }
 
-/** viem's one-line message; its full `message` adds docs links and versions. */
 export function describeChainError(error: unknown): string {
   if (error instanceof BaseError) return error.shortMessage;
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-/**
- * One line for a failed simulation. CampaignManager reverts with custom
- * errors (RefundNotAvailable, CampaignAlreadyEnded, Paused, ...); naming the
- * error tells the advertiser what the contract objects to.
- */
 export function describeSimulationFailure(error: unknown): string {
   const reverted =
     error instanceof BaseError

@@ -1,14 +1,3 @@
-/**
- * When the advertiser may close a campaign and refund its unused budget, as
- * CampaignManager enforces it. The advertiser page reads the contract's own
- * numbers and offers only what these functions allow. The contract stays the
- * authority and still rejects anything that slips through.
- */
-
-/**
- * `CampaignManager.CampaignStatus` in declaration order. A test pins this
- * list to the Solidity source, so inserting a status there fails the tests.
- */
 const CONTRACT_STATUSES = [
   "draft",
   "active",
@@ -20,7 +9,6 @@ const CONTRACT_STATUSES = [
 
 export type ContractCampaignStatus = (typeof CONTRACT_STATUSES)[number];
 
-/** Parses the `status` index that `campaigns(id)` returns. */
 export function parseContractCampaignStatus(
   index: number,
 ): ContractCampaignStatus {
@@ -31,28 +19,14 @@ export function parseContractCampaignStatus(
   return status;
 }
 
-/**
- * A close is mined some seconds after the page reads the chain, and the
- * contract rejects one mined at or after `endTime`. Inside this margin no
- * close is offered.
- */
 export const CLOSE_MARGIN_SECONDS = 60n;
 
-/** What the advertiser's wallet reads from CampaignManager. All times are seconds. */
 export interface SettlementReading {
-  /**
-   * The stored status from `campaigns(id)`, which close and refund check. Not
-   * `statusOf(id)`: that reports `expired` once an active campaign passes its
-   * end time, yet such a campaign can still be refunded.
-   */
   status: ContractCampaignStatus;
   endTime: bigint;
-  /** 0n until the campaign is closed. */
   closedAt: bigint;
-  /** `MAX_AUTHORIZATION_TTL`. */
   ttl: bigint;
   paused: boolean;
-  /** Timestamp of the latest block. The contract judges by block time, never the local clock. */
   now: bigint;
 }
 
@@ -62,15 +36,9 @@ export type CloseAvailability =
 
 export type RefundAvailability =
   | { kind: "available" }
-  /** The authorizations issued before the deadline have not all expired yet. */
   | { kind: "waiting"; availableAt: bigint }
   | { kind: "unavailable"; reason: "not-active" | "settled" | "paused" };
 
-/**
- * First block timestamp at which `refundUnusedBudget` succeeds. The deadline
- * is the close time, or the end time when the campaign was never closed; the
- * contract needs `block.timestamp > deadline + ttl`, hence the extra second.
- */
 export function refundAvailableAt(
   reading: Pick<SettlementReading, "endTime" | "closedAt" | "ttl">,
 ): bigint {
@@ -79,7 +47,6 @@ export function refundAvailableAt(
   return issuanceDeadline + reading.ttl + 1n;
 }
 
-/** `closeCampaign` works while the contract is paused. */
 export function closeAvailability(
   reading: SettlementReading,
 ): CloseAvailability {
@@ -95,7 +62,6 @@ export function closeAvailability(
   return { kind: "available" };
 }
 
-/** `refundUnusedBudget` is blocked while the contract is paused. */
 export function refundAvailability(
   reading: SettlementReading,
 ): RefundAvailability {

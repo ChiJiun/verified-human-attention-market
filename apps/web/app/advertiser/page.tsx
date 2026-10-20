@@ -92,7 +92,6 @@ type TxStatus =
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
 
-/** The campaign as the connected wallet reads it from the chain. */
 type ChainView =
   | { state: "unread" }
   | { state: "read"; onchain: ChainSettlement }
@@ -113,7 +112,6 @@ function settlementTarget(analytics: Analytics): SettlementTarget | null {
       };
 }
 
-/** Counts down from the last chain read, so it needs no extra RPC calls. */
 function Countdown({
   availableAt,
   onchain,
@@ -231,12 +229,7 @@ export default function AdvertiserPage() {
    */
   const [awaitingLink, setAwaitingLink] = useState(false);
   const [chainView, setChainView] = useState<ChainView>(UNREAD);
-  /**
-   * A close or refund this page broadcast whose effect is not visible yet. Its
-   * button stays hidden: sending it again would only revert and cost gas.
-   */
   const [sent, setSent] = useState<SettlementAction | null>(null);
-  /** Lets only the most recently started chain read apply its result. */
   const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
@@ -302,11 +295,6 @@ export default function AdvertiserPage() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  /**
-   * Close and refund depend on block time and the contract's own state, so the
-   * wallet reads them from the chain on every analytics refresh. Only funded
-   * campaigns on the current deployment have anything to read.
-   */
   const readChain = useCallback(async () => {
     const read = ++chainReads.current;
     const target = analytics ? settlementTarget(analytics) : null;
@@ -343,8 +331,6 @@ export default function AdvertiserPage() {
     try {
       await action();
     } catch (caught) {
-      // A throw while the card still asks for a signature means the wallet
-      // call itself failed, so nothing is waiting any more.
       setTx((current) =>
         current.state === "signing" ? { state: "idle" } : current,
       );
@@ -665,12 +651,6 @@ export default function AdvertiserPage() {
       await refresh();
     });
 
-  /**
-   * Close and refund carry only the campaign id, so the id is re-read and
-   * matched to this draft right before sending (readSettlement). The
-   * simulation then names whatever the contract would reject. Nothing is
-   * retried: a wallet rejection, a revert or an unknown outcome is shown as is.
-   */
   const settle = (action: SettlementAction) =>
     run(async () => {
       if (!wallet || !session || !analytics) return;
