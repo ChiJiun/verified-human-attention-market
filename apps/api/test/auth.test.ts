@@ -25,7 +25,11 @@ afterEach(async () => {
 });
 
 function setup(
-  options: { configured?: boolean; webOrigin?: string | null } = {},
+  options: {
+    configured?: boolean;
+    webOrigin?: string | null;
+    operators?: string[];
+  } = {},
 ) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const app = buildApp({
@@ -34,6 +38,11 @@ function setup(
         ? null
         : { domain: DOMAIN, chainId: CHAIN_ID, sessionTtlMs: 60 * 60_000 },
     webOrigin: options.webOrigin === undefined ? WEB_ORIGIN : options.webOrigin,
+    moderation: {
+      mode: "open",
+      operators: options.operators ?? [],
+      advertiserAllowlist: [],
+    },
     now: () => now,
   });
   apps.push(app);
@@ -703,5 +712,68 @@ describe("logout", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error: { code: "CSRF_REJECTED" } });
+  });
+});
+
+describe("routes that take header credentials only", () => {
+  const sameOrigin = { "sec-fetch-site": "same-origin" };
+
+  it("keeps API key management off the session cookie", async () => {
+    const { app, signIn, signInWithCookie } = setup();
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+    const headerToken = await signIn(browserAdvertiser);
+    const keyRequest = { name: "integration", scopes: ["campaigns:write"] };
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/api-clients",
+      headers: bearer(headerToken),
+      payload: keyRequest,
+    });
+    expect(created.statusCode).toBe(201);
+    const { id } = created.json<{ id: string }>();
+
+    for (const [method, url, payload] of [
+      ["POST", "/v1/api-clients", keyRequest],
+      ["GET", "/v1/api-clients", undefined],
+      ["DELETE", `/v1/api-clients/${id}`, undefined],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { ...cookie(cookieToken), ...sameOrigin },
+        ...(payload ? { payload } : {}),
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "COOKIE_SESSION_NOT_ALLOWED", retryable: false },
+      });
+    }
+  });
+
+  it("keeps operator routes off the session cookie", async () => {
+    const { app, signIn, signInWithCookie } = setup({
+      operators: [browserAdvertiser.address.toLowerCase()],
+    });
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+    const headerToken = await signIn(browserAdvertiser);
+
+    const withHeader = await app.inject({
+      method: "GET",
+      url: "/v1/admin/moderation",
+      headers: bearer(headerToken),
+    });
+    const withCookie = await app.inject({
+      method: "GET",
+      url: "/v1/admin/moderation",
+      headers: cookie(cookieToken),
+    });
+
+    expect(withHeader.statusCode).toBe(200);
+    expect(withCookie.statusCode).toBe(403);
+    expect(withCookie.json()).toMatchObject({
+      error: { code: "COOKIE_SESSION_NOT_ALLOWED" },
+    });
   });
 });
