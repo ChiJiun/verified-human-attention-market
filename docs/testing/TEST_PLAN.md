@@ -3,9 +3,9 @@
 > Status: System Design  
 > Goal: make acceptance criteria executable before mainnet exposure.
 >
-> Reconciled with the implemented suites: 2026-10-19
+> Reconciled with the implemented suites: 2026-10-20
 
-Where a case is implemented, the test name is given in brackets. `[gap]` marks cases the plan still calls for that no suite covers.
+Where a case is implemented, the test name is given in brackets.
 
 Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
 
@@ -13,31 +13,33 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 
 ## Unit
 
-- campaign creation validation [`test_RewardAboveLimitRejected`, `test_CompletionsAboveLimitRejected`, `test_BudgetAboveLimitRejected`, `test_VeryLargeDirectCallsRejected`, `test_ZeroDraftRefRejected`, `test_DuplicateDraftRefReverts`, `test_DraftRefIsScopedToTheAdvertiser`];
-- funding [`test_CreateFundAndClaim`, `test_FundingAfterEndRejected`, `test_FundingForAnotherDraftRejected`, `test_CancelUnfundedDraft`, `test_CannotCancelFundedCampaign`];
+- campaign creation validation [`test_RewardAboveLimitRejected`, `test_CompletionsAboveLimitRejected`, `test_BudgetAboveLimitRejected`, `test_VeryLargeDirectCallsRejected`, `test_ZeroDraftRefRejected`, `test_DuplicateDraftRefReverts`, `test_DraftRefIsScopedToTheAdvertiser`, `test_CampaignWindowEdges`];
+- funding [`test_CreateFundAndClaim`, `test_FundingAfterEndRejected`, `test_FundingForAnotherDraftRejected`, `test_InvalidFundingAmountRejected`, `test_FundingTwiceRejected`, `test_CancelUnfundedDraft`, `test_CannotCancelFundedCampaign`];
 - lifecycle transitions [`test_PreCloseAuthorizationRemainsClaimableAfterClose`, `test_PostCloseAuthorizationRejected`, `test_RefundWaitsForAuthorizationGracePeriod`];
 - valid claim [`test_CreateFundAndClaim`];
 - invalid signer [`test_InvalidSignerRejected`, `test_SignerRotationRevokesOldSignatures`];
 - expired authorization [`test_ExpiredAuthorizationRejected`];
+- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_IssuedBeforeStartFailsTheIssuanceWindow`, `test_InvertedWindowFailsTimeChecksBeforeLifetimeCheck`]. The `expiresAt <= issuedAt` half of the `AuthorizationLifetimeTooLong` check never fires on its own. `claim` reverts with `AuthorizationNotYetValid` or `AuthorizationExpired` for every such authorization before it reaches that check. Issue #80 asks whether to keep that half;
 - wrong claimant [`test_WrongClaimantRejected`];
-- wrong reward amount [gap: `InvalidClaimAmount` is enforced but has no dedicated test];
+- wrong reward amount [`test_InvalidClaimAmountRejected`];
 - consumed nonce [`test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`];
 - max completions reached [`test_CompletionLimitReached`];
 - wrong draft [`test_ClaimRejectsAnotherDraftsAuthorization`, `test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign`];
-- close/expiry [`test_PostCloseAuthorizationRejected`; expiry window via the invariant handler];
+- close/expiry [`test_PostCloseAuthorizationRejected`, `test_AuthorizationIssuedAfterEndRejected` (a campaign that was never closed accepts an authorization issued at its end and refuses one issued a second later); expiry window via the invariant handler];
 - refund [`test_OnlyAdvertiserCanRefund`, `test_RefundWaitsForAuthorizationGracePeriod`];
 - pause and ownership [`test_PauseBlocksClaims`, `test_OnlyOwnerCanPauseAndPauseBlocksRefunds`];
 - backend/contract agreement [`test_ClaimAuthorizationTypehashMatchesBackend`, `test_EventTopicsMatchIndexer`, `test_FunctionSelectorsMatchIndexer`];
 - deployment script [`DeployCampaignManager.t.sol`: configured limits, wrong chain, missing addresses, token without code, out-of-range limit, deployment JSON fields];
 - exposure limits [`test_InvalidExposureLimitsRejected`, `test_ExposureLimitBoundariesAccepted`], creation event [`test_CampaignCreatedCarriesDraftRef`];
-- [gap] reverts with no dedicated test: `AuthorizationNotYetValid`, `AuthorizationLifetimeTooLong`, `InsufficientCampaignBudget`, `InvalidFundingAmount`, `AlreadyFunded`, `InvalidSignatureS` / `InvalidSignatureV` / `InvalidSignatureLength`.
+- signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature), `test_InvalidSignatureVRejected`, `test_SignatureVZeroOrOneAccepted` (a recovery id of 0 or 1 counts as 27 or 28)];
+- `AlreadyFunded` and `InsufficientCampaignBudget` guards, which no public sequence reaches [`test_AlreadyFundedGuardRejectsForcedFundedDraft`, `test_InsufficientCampaignBudgetGuardRejectsForcedShortBudget`]. Both tests set `fundedBudget` and `paidRewards` through `CampaignManagerUnreachableStateHarness`. `fundCampaign` sets `fundedBudget` and moves the campaign out of Draft in one transaction, so a second funding fails the Draft status check (`InvalidCampaignStatus`) before it reaches `AlreadyFunded`. Funding must equal `rewardPerCompletion * maxCompletions` and each `claim` adds exactly one `rewardPerCompletion` to `paidRewards`, so `CompletionLimitReached` fires before the budget can run out. Both guards are defense in depth. They matter only if that budget accounting breaks. Issue #80 asks whether to keep them.
 
 ## Fuzz
 
 - funding amounts and completion counts [`testFuzz_FundingEqualsMaximumLiability`, `testFuzz_CreateNeverExceedsExposureLimits`];
 - claim order and close/refund timing [stateful handler in `CampaignManager.invariant.t.sol`: `claim`, `close`, `refund`, `advanceTime`];
 - reward amount boundaries [`test_ExposureLimitBoundariesAccepted` plus the fuzz above];
-- campaign timestamps [gap: only fixed windows are tested; `InvalidCampaignWindow` boundaries are not fuzzed].
+- campaign timestamps [`testFuzz_CampaignDurationBounds` (one second below, at and above the minimum and maximum duration), `testFuzz_CampaignStartInThePastRejected`, `test_CampaignWindowEdges`].
 
 ## Invariants
 
