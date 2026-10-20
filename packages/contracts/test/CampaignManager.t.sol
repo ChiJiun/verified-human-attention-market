@@ -67,7 +67,6 @@ contract CampaignManagerTest {
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
-    // Storage slot of `CampaignManager.campaigns` (`forge inspect CampaignManager storage-layout`).
     uint256 private constant CAMPAIGNS_SLOT = 3;
 
     // Cross-language fixture: apps/api/test/claims.test.ts computes the same
@@ -681,8 +680,6 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
-    /// The `expiresAt <= issuedAt` half of the lifetime guard never fires on its own.
-    /// NotYetValid and Expired already reject every authorization that meets it.
     function test_InvertedAuthorizationWindowRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);
@@ -705,7 +702,6 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
-    /// The lower bound of the issuance window reverts with the same error as the upper bound.
     function test_AuthorizationIssuedBeforeStartRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime - 1);
@@ -725,8 +721,6 @@ contract CampaignManagerTest {
         manager.claim(authorization, signature);
     }
 
-    /// A campaign that was never closed accepts no authorization issued after its end. Refund opens once the
-    /// end plus MAX_AUTHORIZATION_TTL has passed, and a later authorization could outlive that wait.
     function test_AuthorizationIssuedAfterEndRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
 
@@ -756,7 +750,6 @@ contract CampaignManagerTest {
             _authorization(campaignId, claimant, keccak256("bad-length"));
         (uint8 v, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
 
-        // Without the length check the 66-byte form would recover, because its trailing byte is never read.
         bytes[3] memory badSignatures = [bytes(""), abi.encodePacked(r, s), abi.encodePacked(r, s, v, uint8(0))];
         for (uint256 i; i < badSignatures.length; ++i) {
             vm.expectRevert(CampaignManager.InvalidSignatureLength.selector);
@@ -776,7 +769,6 @@ contract CampaignManagerTest {
             _authorization(campaignId, claimant, keccak256("high-s"));
         (uint8 v, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
 
-        // (r, n - s, flipped v) is the second valid encoding of the same signature.
         bytes32 highS = bytes32(SECP256K1_N - uint256(s));
         uint8 flippedV = v == 27 ? 28 : 27;
         bytes32 digest = manager.hashClaimAuthorization(authorization);
@@ -798,7 +790,6 @@ contract CampaignManagerTest {
             _authorization(campaignId, claimant, keccak256("bad-v"));
         (, bytes32 r, bytes32 s) = _signComponents(authorization, SIGNER_KEY);
 
-        // The contract lifts 0 and 1 to 27 and 28, so the rejected range is 2..26 and 29..255.
         uint8[4] memory badV = [2, 26, 29, 255];
         for (uint256 i; i < badV.length; ++i) {
             vm.expectRevert(CampaignManager.InvalidSignatureV.selector);
@@ -807,7 +798,6 @@ contract CampaignManagerTest {
         }
     }
 
-    /// The recovery id may be sent as 0 or 1 instead of 27 or 28.
     function test_SignatureVZeroOrOneAccepted() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);
@@ -847,7 +837,6 @@ contract CampaignManagerTest {
         require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Active, "exact amount funds");
     }
 
-    /// A second funding call is stopped by the status guard before it can reach AlreadyFunded.
     function test_FundingTwiceRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
 
@@ -856,8 +845,6 @@ contract CampaignManagerTest {
         manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, draftRefOf[campaignId]);
     }
 
-    /// No public sequence reaches this guard. Funding sets the budget and leaves Draft in
-    /// the same transaction, so a Draft that already holds a budget cannot exist.
     function test_AlreadyFundedRejected() public {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
@@ -871,9 +858,6 @@ contract CampaignManagerTest {
         manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
     }
 
-    /// No public sequence reaches this guard. Each claim adds exactly one reward and one
-    /// completion to a budget of reward * maxCompletions, so CompletionLimitReached always
-    /// fires first. The guard stops a campaign from paying out of the escrow of other campaigns.
     function test_InsufficientCampaignBudgetRejected() public {
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);
@@ -898,7 +882,6 @@ contract CampaignManagerTest {
     function testFuzz_CampaignDurationBounds(bool aroundMax, uint8 step, uint32 startDelay) public {
         uint64 minDuration = manager.MIN_CAMPAIGN_DURATION();
         uint64 maxDuration = manager.MAX_CAMPAIGN_DURATION();
-        // One second below, at and above the chosen bound.
         uint64 duration = (aroundMax ? maxDuration : minDuration) - 1 + (step % 3);
         uint64 start = uint64(block.timestamp) + startDelay;
         uint64 end = start + duration;
@@ -928,7 +911,6 @@ contract CampaignManagerTest {
         uint64 minDuration = manager.MIN_CAMPAIGN_DURATION();
         uint64 maxDuration = manager.MAX_CAMPAIGN_DURATION();
 
-        // Starting this very second is allowed.
         _createWindow(current, current + minDuration);
         _createWindow(current, current + maxDuration);
 
@@ -938,7 +920,6 @@ contract CampaignManagerTest {
         vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
         _createWindow(current, current);
 
-        // An end before the start must revert with the window error, not an underflow panic.
         vm.expectRevert(CampaignManager.InvalidCampaignWindow.selector);
         _createWindow(current + minDuration, current);
     }
@@ -965,9 +946,6 @@ contract CampaignManagerTest {
         return manager.createCampaign(uint96(ONE_USDC), 1, start, end, _nextRef());
     }
 
-    /// @dev fundedBudget and paidRewards share the second slot of the Campaign struct. The
-    /// values are read back through the getter so a moved slot fails here instead of
-    /// silently exercising a different state.
     function _setBudgetAccounting(uint256 campaignId, uint128 fundedBudget, uint128 paidRewards) private {
         bytes32 slot = bytes32(uint256(keccak256(abi.encode(campaignId, CAMPAIGNS_SLOT))) + 1);
         vm.store(address(manager), slot, bytes32((uint256(paidRewards) << 128) | fundedBudget));
@@ -994,7 +972,6 @@ contract CampaignManagerTest {
         });
     }
 
-    /// @dev A digest fixes the recovery id its signature carries, so the nonce is varied until it matches.
     function _authorizationSignedWithV(uint256 campaignId, address recipient, uint8 wantedV)
         private
         returns (CampaignManager.ClaimAuthorization memory authorization, bytes32 r, bytes32 s)

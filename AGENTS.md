@@ -502,7 +502,7 @@ Current contract tests cover:
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
 - claim authorization edges: wrong amount, not yet valid, over-long lifetime, inverted window, issued before the campaign start, issued after the end of a campaign that was never closed;
 - signature encoding: wrong length, high-s twin of a valid signature, invalid `v`, `v` of 0 or 1 accepted as 27 or 28;
-- funding: wrong amount, funding twice; `AlreadyFunded` and `InsufficientCampaignBudget`, which no public sequence reaches, on storage set with `vm.store`;
+- funding: wrong amount, funding twice; `AlreadyFunded` and `InsufficientCampaignBudget`;
 - campaign window: fuzzed duration bounds (one second below, at and above the minimum and maximum), start in the past, start on the current second, end before start;
 - deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
