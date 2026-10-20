@@ -9,6 +9,7 @@ import {
   type WorldIdFailureCode,
   type WorldIdVerifier,
 } from "../identity/world-id.js";
+import { worldIdSignal } from "../identity/world-id-signal.js";
 import { deriveParticipantKey } from "../privacy/participant-key.js";
 import {
   EligibilityConflictError,
@@ -50,6 +51,7 @@ const WORLD_ID_STATUS: Record<WorldIdFailureCode, number> = {
   INVALID_PROOF_PAYLOAD: 400,
   ACTION_MISMATCH: 403,
   ENVIRONMENT_MISMATCH: 403,
+  SIGNAL_MISMATCH: 403,
   VERIFICATION_FAILED: 403,
 };
 
@@ -92,6 +94,11 @@ export async function verifyEligibility(
 
   const verification = await dependencies.worldId.verify({
     action: campaignAction(campaign.id),
+    signal: worldIdSignal(
+      dependencies.participantKeySecret,
+      campaign.id,
+      input.claimantAddress,
+    ),
     idkitResponse: input.idkitResponse,
   });
 

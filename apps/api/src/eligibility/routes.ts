@@ -2,7 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
-import { campaignAction } from "../identity/world-id.js";
+import {
+  campaignAction,
+  LocalSimulatedWorldIdVerifier,
+} from "../identity/world-id.js";
+import { worldIdSignal } from "../identity/world-id-signal.js";
 import type { RpSigner } from "../identity/rp-signature.js";
 import {
   verifyEligibility,
@@ -12,8 +16,14 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const claimantSchema = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address");
+
+const worldIdRequestSchema = z.object({ claimant: claimantSchema });
+
 const verifyEligibilitySchema = z.object({
-  claimant: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address"),
+  claimant: claimantSchema,
   // Forwarded to World ID unchanged; validated by the verifier.
   idkitResponse: z.unknown(),
 });
@@ -34,9 +44,10 @@ export async function registerEligibilityRoutes(
   },
 ) {
   /**
-   * Everything IDKit needs to open a World ID request for this campaign:
-   * the campaign action and a fresh RP signature (rp_context). The signing
-   * key never leaves the server (ADR-0007).
+   * Everything IDKit needs to open a World ID request for this campaign and
+   * claimant: the campaign action, the wallet-bound signal (#71) and a fresh
+   * RP signature (rp_context). The signing key never leaves the server
+   * (ADR-0007).
    */
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/world-id/request",
@@ -46,10 +57,21 @@ export async function registerEligibilityRoutes(
           error: { code, message, requestId: request.id },
         });
 
-      const config = dependencies.worldIdRequest ?? null;
-      const campaign = UUID_PATTERN.test(request.params.id)
-        ? await dependencies.campaigns.getById(request.params.id)
-        : null;
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
+      }
+
+      const parsed = worldIdRequestSchema.safeParse(request.body);
+
+      if (!parsed.success) {
+        return fail(
+          400,
+          "INVALID_ELIGIBILITY_REQUEST",
+          "claimant must be an EVM address",
+        );
+      }
+
+      const campaign = await dependencies.campaigns.getById(request.params.id);
 
       if (!campaign) {
         return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
@@ -73,7 +95,7 @@ export async function registerEligibilityRoutes(
         );
       }
 
-      if (!config) {
+      if (!dependencies.participantKeySecret) {
         return fail(
           503,
           "WORLD_ID_NOT_CONFIGURED",
@@ -82,6 +104,28 @@ export async function registerEligibilityRoutes(
       }
 
       const action = campaignAction(campaign.id);
+      const signal = worldIdSignal(
+        dependencies.participantKeySecret,
+        campaign.id,
+        parsed.data.claimant,
+      );
+
+      // The local anvil stand-in has no IDKit request to sign; the page sends
+      // the signal back with its simulated proof.
+      if (dependencies.worldId instanceof LocalSimulatedWorldIdVerifier) {
+        return reply.send({ appId: null, action, signal });
+      }
+
+      const config = dependencies.worldIdRequest ?? null;
+
+      if (!config) {
+        return fail(
+          503,
+          "WORLD_ID_NOT_CONFIGURED",
+          "World ID requests are not configured",
+        );
+      }
+
       const signature = await config.signer.sign({ action, now });
 
       return reply.send({
@@ -95,6 +139,7 @@ export async function registerEligibilityRoutes(
           expires_at: signature.expiresAt,
           signature: signature.sig,
         },
+        signal,
       });
     },
   );

@@ -1,30 +1,41 @@
+import type { Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   campaignAction,
   HttpWorldIdVerifier,
   LocalSimulatedWorldIdVerifier,
-  normalizeNullifier,
+  normalizeFieldElement,
 } from "../src/identity/world-id.js";
+import { signalHash } from "../src/identity/world-id-signal.js";
 
 const ACTION = campaignAction("00000000-0000-4000-8000-000000000001");
 const NULLIFIER_HEX =
   "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8";
 const NULLIFIER_DEC = BigInt(NULLIFIER_HEX).toString(10);
+const SIGNAL: Hex = `0x${"11".repeat(32)}`;
+// hashSignal(SIGNAL) from @worldcoin/idkit-core 4.4.0, see world-id-signal.test.ts.
+const SIGNAL_HASH =
+  "0x00b569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf8";
+const EMPTY_SIGNAL_HASH =
+  "0x00c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a4";
 
 const LEGACY_ITEM = {
   identifier: "orb",
   proof: "0xproof",
   merkle_root: "0xroot",
   nullifier: NULLIFIER_HEX,
+  signal_hash: SIGNAL_HASH,
 };
 
+/** One credential item as IDKit returns it for a proof made with SIGNAL. */
 function responseItem(overrides: Record<string, unknown> = {}) {
   return {
     identifier: "proof_of_human",
     issuer_schema_id: 1,
     proof: ["0x111", "0x222", "0x333", "0x444", "0x555"],
     nullifier: NULLIFIER_HEX,
+    signal_hash: SIGNAL_HASH,
     expires_at_min: 1791194400,
     ...overrides,
   };
@@ -76,23 +87,11 @@ function verifierWith(fetchImpl: typeof fetch) {
 describe("HttpWorldIdVerifier", () => {
   it("forwards the IDKit result unchanged and returns the decimal nullifier", async () => {
     const payload = idkitResponse();
-    const fetchMock = vi.fn(async () =>
-      jsonResponse(200, {
-        success: true,
-        environment: "production",
-        results: [
-          {
-            identifier: "proof_of_human",
-            success: true,
-            nullifier: NULLIFIER_HEX,
-          },
-        ],
-      }),
-    );
+    const fetchMock = worldAccepting();
 
     const result = await verifierWith(
       fetchMock as unknown as typeof fetch,
-    ).verify({ action: ACTION, idkitResponse: payload });
+    ).verify({ action: ACTION, signal: SIGNAL, idkitResponse: payload });
 
     expect(result).toEqual({ ok: true, nullifier: NULLIFIER_DEC });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -106,6 +105,55 @@ describe("HttpWorldIdVerifier", () => {
     expect(JSON.parse(init.body as string)).toEqual(payload);
   });
 
+  it("accepts the signal hash in decimal form", async () => {
+    const result = await verifierWith(
+      worldAccepting() as unknown as typeof fetch,
+    ).verify({
+      action: ACTION,
+      signal: SIGNAL,
+      idkitResponse: idkitResponse({
+        responses: [
+          responseItem({ signal_hash: BigInt(SIGNAL_HASH).toString(10) }),
+        ],
+      }),
+    });
+
+    expect(result).toEqual({ ok: true, nullifier: NULLIFIER_DEC });
+  });
+
+  it.each([
+    ["no signal", [responseItem({ signal_hash: undefined })]],
+    ["a zero signal hash", [responseItem({ signal_hash: "0x0" })]],
+    [
+      "the empty-signal default",
+      [responseItem({ signal_hash: EMPTY_SIGNAL_HASH })],
+    ],
+    [
+      "another wallet's signal",
+      [responseItem({ signal_hash: signalHash(`0x${"22".repeat(32)}`) })],
+    ],
+    [
+      "one bound and one unbound credential",
+      [responseItem(), responseItem({ signal_hash: undefined })],
+    ],
+  ])(
+    "refuses a proof made with %s without calling World",
+    async (_label, responses) => {
+      const fetchMock = vi.fn();
+
+      const result = await verifierWith(
+        fetchMock as unknown as typeof fetch,
+      ).verify({
+        action: ACTION,
+        signal: SIGNAL,
+        idkitResponse: idkitResponse({ responses }),
+      });
+
+      expect(result).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects proofs for another action without calling World", async () => {
     const fetchMock = vi.fn();
 
@@ -113,6 +161,7 @@ describe("HttpWorldIdVerifier", () => {
       fetchMock as unknown as typeof fetch,
     ).verify({
       action: ACTION,
+      signal: SIGNAL,
       idkitResponse: idkitResponse({ action: "vham-campaign-other" }),
     });
 
@@ -127,6 +176,7 @@ describe("HttpWorldIdVerifier", () => {
       fetchMock as unknown as typeof fetch,
     ).verify({
       action: ACTION,
+      signal: SIGNAL,
       idkitResponse: idkitResponse({ environment: "staging" }),
     });
 
@@ -150,6 +200,7 @@ describe("HttpWorldIdVerifier", () => {
       fetchMock as unknown as typeof fetch,
     ).verify({
       action: ACTION,
+      signal: SIGNAL,
       idkitResponse: idkitResponse({
         protocol_version: "3.0",
         responses: [
@@ -158,6 +209,7 @@ describe("HttpWorldIdVerifier", () => {
             proof: "0xproof",
             merkle_root: "0xroot",
             nullifier: legacyNullifier,
+            signal_hash: SIGNAL_HASH,
           },
         ],
       }),
@@ -179,6 +231,7 @@ describe("HttpWorldIdVerifier", () => {
         fetchMock as unknown as typeof fetch,
       ).verify({
         action: ACTION,
+        signal: SIGNAL,
         idkitResponse: idkitResponse({ responses }),
       });
 
@@ -213,6 +266,7 @@ describe("HttpWorldIdVerifier", () => {
         fetchMock as unknown as typeof fetch,
       ).verify({
         action: ACTION,
+        signal: SIGNAL,
         idkitResponse: idkitResponse({ responses: [responseItem(overrides)] }),
       });
 
@@ -224,13 +278,13 @@ describe("HttpWorldIdVerifier", () => {
   it("forwards the optional and unknown fields of a 4.0 payload unchanged", async () => {
     const payload = idkitResponse({
       user_presence_completed: true,
-      responses: [responseItem({ signal_hash: "0x0", sybil_score: 3 })],
+      responses: [responseItem({ signal_hash: SIGNAL_HASH, sybil_score: 3 })],
     });
     const fetchMock = worldAccepting();
 
     const result = await verifierWith(
       fetchMock as unknown as typeof fetch,
-    ).verify({ action: ACTION, idkitResponse: payload });
+    ).verify({ action: ACTION, signal: SIGNAL, idkitResponse: payload });
 
     expect(result).toEqual({ ok: true, nullifier: NULLIFIER_DEC });
 
@@ -253,7 +307,7 @@ describe("HttpWorldIdVerifier", () => {
 
     const result = await verifierWith(
       fetchMock as unknown as typeof fetch,
-    ).verify({ action: ACTION, idkitResponse: payload });
+    ).verify({ action: ACTION, signal: SIGNAL, idkitResponse: payload });
 
     expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -306,6 +360,7 @@ describe("HttpWorldIdVerifier", () => {
     const result = await verifierWith((async () =>
       respond()) as unknown as typeof fetch).verify({
       action: ACTION,
+      signal: SIGNAL,
       idkitResponse: idkitResponse(),
     });
 
@@ -317,6 +372,7 @@ describe("HttpWorldIdVerifier", () => {
       throw new Error("ECONNRESET");
     }) as unknown as typeof fetch).verify({
       action: ACTION,
+      signal: SIGNAL,
       idkitResponse: idkitResponse(),
     });
 
@@ -334,21 +390,23 @@ describe("HttpWorldIdVerifier", () => {
   });
 });
 
-describe("normalizeNullifier", () => {
+describe("normalizeFieldElement", () => {
   it("canonicalizes hex and decimal forms", () => {
-    expect(normalizeNullifier(NULLIFIER_HEX)).toBe(NULLIFIER_DEC);
-    expect(normalizeNullifier(NULLIFIER_DEC)).toBe(NULLIFIER_DEC);
-    expect(normalizeNullifier("0x0A")).toBe("10");
+    expect(normalizeFieldElement(NULLIFIER_HEX)).toBe(NULLIFIER_DEC);
+    expect(normalizeFieldElement(NULLIFIER_DEC)).toBe(NULLIFIER_DEC);
+    expect(normalizeFieldElement("0x0A")).toBe("10");
   });
 
   it("rejects non-numeric values", () => {
-    expect(normalizeNullifier("abc")).toBeNull();
-    expect(normalizeNullifier("0x")).toBeNull();
-    expect(normalizeNullifier("-1")).toBeNull();
+    expect(normalizeFieldElement("abc")).toBeNull();
+    expect(normalizeFieldElement("0x")).toBeNull();
+    expect(normalizeFieldElement("-1")).toBeNull();
   });
 });
 
 describe("LocalSimulatedWorldIdVerifier", () => {
+  const alice = { action: ACTION, simulatedHuman: "alice", signal: SIGNAL };
+
   it("can only be constructed for the local anvil chain", () => {
     expect(() => new LocalSimulatedWorldIdVerifier(84532)).toThrow();
     expect(() => new LocalSimulatedWorldIdVerifier(8453)).toThrow();
@@ -359,11 +417,13 @@ describe("LocalSimulatedWorldIdVerifier", () => {
     const verifier = new LocalSimulatedWorldIdVerifier(31337);
     const first = await verifier.verify({
       action: ACTION,
-      idkitResponse: { action: ACTION, simulatedHuman: "alice" },
+      signal: SIGNAL,
+      idkitResponse: alice,
     });
     const again = await verifier.verify({
       action: ACTION,
-      idkitResponse: { action: ACTION, simulatedHuman: "alice" },
+      signal: SIGNAL,
+      idkitResponse: alice,
     });
 
     expect(first.ok).toBe(true);
@@ -371,14 +431,35 @@ describe("LocalSimulatedWorldIdVerifier", () => {
     expect(
       await verifier.verify({
         action: ACTION,
-        idkitResponse: { action: "other", simulatedHuman: "alice" },
+        signal: SIGNAL,
+        idkitResponse: { ...alice, action: "other" },
       }),
     ).toEqual({ ok: false, code: "ACTION_MISMATCH" });
     expect(
       await verifier.verify({
         action: ACTION,
-        idkitResponse: { action: ACTION },
+        signal: SIGNAL,
+        idkitResponse: { action: ACTION, signal: SIGNAL },
       }),
     ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+  });
+
+  it("refuses a simulated proof made for another wallet's signal", async () => {
+    const verifier = new LocalSimulatedWorldIdVerifier(31337);
+
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        signal: `0x${"22".repeat(32)}`,
+        idkitResponse: alice,
+      }),
+    ).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        signal: SIGNAL,
+        idkitResponse: { action: ACTION, simulatedHuman: "alice" },
+      }),
+    ).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
   });
 });

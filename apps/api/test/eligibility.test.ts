@@ -1,3 +1,4 @@
+import type { Hex } from "viem";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
@@ -9,6 +10,7 @@ import {
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
+import { worldIdSignal } from "../src/identity/world-id-signal.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const now = new Date("2026-10-05T10:00:00.000Z");
@@ -20,16 +22,21 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-/** Fake World ID: the "proof" is just { action, human }. */
+/** Fake World ID: the "proof" is just { action, human, signal }. */
 class FakeWorldId implements WorldIdVerifier {
-  calls: { action: string; idkitResponse: unknown }[] = [];
+  calls: { action: string; signal: Hex; idkitResponse: unknown }[] = [];
 
   async verify(request: {
     action: string;
+    signal: Hex;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     this.calls.push(request);
-    const proof = request.idkitResponse as { action?: string; human?: string };
+    const proof = request.idkitResponse as {
+      action?: string;
+      human?: string;
+      signal?: string;
+    };
 
     if (proof.human === "invalid") {
       return { ok: false, code: "VERIFICATION_FAILED" };
@@ -41,6 +48,10 @@ class FakeWorldId implements WorldIdVerifier {
 
     if (proof.action !== request.action) {
       return { ok: false, code: "ACTION_MISMATCH" };
+    }
+
+    if (proof.signal !== request.signal) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
     }
 
     return { ok: true, nullifier: String(proof.human) };
@@ -111,8 +122,13 @@ async function setup(
   };
 }
 
-function proof(campaignId: string, human: string) {
-  return { action: campaignAction(campaignId), human };
+/** The proof `human` produced for `claimant`'s wallet. */
+function proof(campaignId: string, human: string, claimant = WALLET_A) {
+  return {
+    action: campaignAction(campaignId),
+    human,
+    signal: worldIdSignal(SECRET, campaignId, claimant),
+  };
 }
 
 describe("POST /v1/campaigns/:id/eligibility/verify", () => {
@@ -157,13 +173,34 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
 
     const response = await verify({
       claimant: WALLET_B,
-      idkitResponse: proof(campaignId, "h"),
+      idkitResponse: proof(campaignId, "h", WALLET_B),
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       error: { code: "PARTICIPANT_WALLET_MISMATCH" },
     });
+  });
+
+  it("refuses a proof made for another wallet and writes nothing", async () => {
+    const { campaignId, verify } = await setup();
+
+    const relayed = await verify({
+      claimant: WALLET_B,
+      idkitResponse: proof(campaignId, "h", WALLET_A),
+    });
+
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+
+    // Wallet B is still free for that human, proving no record was written.
+    const own = await verify({
+      claimant: WALLET_B,
+      idkitResponse: proof(campaignId, "h", WALLET_B),
+    });
+    expect(own.statusCode).toBe(201);
   });
 
   it("rejects one wallet being used by a second human", async () => {

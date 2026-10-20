@@ -1,4 +1,7 @@
+import type { Hex } from "viem";
 import { z } from "zod";
+
+import { signalHash } from "./world-id-signal.js";
 
 /**
  * World ID backend verification (ADR-0007).
@@ -12,6 +15,8 @@ import { z } from "zod";
  * - Nullifiers are scoped per app + action. Using one action per campaign
  *   gives exactly the campaign-scoped duplicate-human policy we need, without
  *   any cross-campaign identifier.
+ * - World checks a proof against the `signal_hash` it carries but does not
+ *   know which signal we expect, so the wallet binding (#71) is checked here.
  *
  * Raw proofs are never logged or persisted by this module.
  */
@@ -23,6 +28,7 @@ export type WorldIdFailureCode =
   | "INVALID_PROOF_PAYLOAD"
   | "ACTION_MISMATCH"
   | "ENVIRONMENT_MISMATCH"
+  | "SIGNAL_MISMATCH"
   | "VERIFICATION_FAILED"
   | "PROVIDER_UNAVAILABLE";
 
@@ -33,6 +39,8 @@ export type WorldIdResult =
 export interface WorldIdVerifier {
   verify(request: {
     action: string;
+    /** The proof must have been produced for this wallet-bound signal. */
+    signal: Hex;
     idkitResponse: unknown;
   }): Promise<WorldIdResult>;
 }
@@ -72,8 +80,11 @@ const verifyResponseSchema = z.looseObject({
     .optional(),
 });
 
-/** Normalizes hex (0x…) or decimal nullifiers to a canonical decimal string. */
-export function normalizeNullifier(value: string): string | null {
+/**
+ * Normalizes a hex (0x…) or decimal field element (nullifier, signal hash)
+ * to a canonical decimal string.
+ */
+export function normalizeFieldElement(value: string): string | null {
   const trimmed = value.trim();
 
   if (!/^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$/.test(trimmed)) {
@@ -111,6 +122,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
+    signal: Hex;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const parsed = idkitResponseSchema.safeParse(request.idkitResponse);
@@ -129,9 +141,25 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
       return { ok: false, code: "ENVIRONMENT_MISMATCH" };
     }
 
+    // Every credential in the result must be bound to the claimant's signal;
+    // a result mixing bound and unbound items is not one the page produces.
+    const expectedSignalHash = normalizeFieldElement(
+      signalHash(request.signal),
+    );
+
+    if (
+      !parsed.data.responses.every(
+        (response) =>
+          response.signal_hash !== undefined &&
+          normalizeFieldElement(response.signal_hash) === expectedSignalHash,
+      )
+    ) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
+    }
+
     const submittedNullifiers = new Set(
       parsed.data.responses
-        .map((response) => normalizeNullifier(response.nullifier))
+        .map((response) => normalizeFieldElement(response.nullifier))
         .filter((value): value is string => value !== null),
     );
 
@@ -194,7 +222,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
     for (const candidate of candidates) {
       const normalized =
-        candidate === undefined ? null : normalizeNullifier(candidate);
+        candidate === undefined ? null : normalizeFieldElement(candidate);
 
       // Only accept a nullifier the user actually submitted and World verified.
       if (normalized !== null && submittedNullifiers.has(normalized)) {
@@ -219,7 +247,8 @@ export const LOCAL_DEV_CHAIN_ID = 31337;
 /**
  * Local-development stand-in for World ID, for demos on anvil only.
  *
- * The "proof" is `{ action, simulatedHuman }`. It proves nothing, so the
+ * The "proof" is `{ action, simulatedHuman, signal }`, with the signal from
+ * `POST /world-id/request` as in the live flow. It proves nothing, so the
  * constructor refuses any chain other than the local anvil chain, where no
  * real value exists. The server also refuses to start in this mode
  * elsewhere.
@@ -235,12 +264,14 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
+    signal: Hex;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const proof = z
       .object({
         action: z.string(),
         simulatedHuman: z.string().min(1).max(100),
+        signal: z.string().optional(),
       })
       .safeParse(request.idkitResponse);
 
@@ -250,6 +281,10 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
 
     if (proof.data.action !== request.action) {
       return { ok: false, code: "ACTION_MISMATCH" };
+    }
+
+    if (proof.data.signal !== request.signal) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
     }
 
     return {

@@ -1,10 +1,7 @@
 import { getAddress } from "viem";
 import { describe, expect, it } from "vitest";
 
-import {
-  signalHash,
-  worldIdSignal,
-} from "../src/identity/world-id-signal.js";
+import { signalHash, worldIdSignal } from "../src/identity/world-id-signal.js";
 import { deriveParticipantKey } from "../src/privacy/participant-key.js";
 
 const SECRET = "world-id-signal-test-secret-0123456789abcdef";

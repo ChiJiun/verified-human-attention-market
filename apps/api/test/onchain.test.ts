@@ -523,7 +523,9 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const post = (url: string, payload: object, headers = {}) =>
       fixture.app.inject({ method: "POST", url, payload, headers });
     const responses = [
-      await post(`/v1/campaigns/${campaignId}/world-id/request`, {}),
+      await post(`/v1/campaigns/${campaignId}/world-id/request`, {
+        claimant: CLAIMANT,
+      }),
       await post(`/v1/campaigns/${campaignId}/eligibility/verify`, {
         claimant: CLAIMANT,
         idkitResponse: { action: `vham-campaign-${campaignId}`, human: "h" },
@@ -994,7 +996,11 @@ describe("campaigns of a retired deployment (ADR-0011)", () => {
     // Still "active" in the database, but its rewards could only be signed
     // for on the old contract, so participants must not start or finish it.
     expect(
-      (await post(`/v1/campaigns/${id}/world-id/request`, {})).json(),
+      (
+        await post(`/v1/campaigns/${id}/world-id/request`, {
+          claimant: CLAIMANT,
+        })
+      ).json(),
     ).toMatchObject({ error: { code: "CAMPAIGN_NOT_OPEN" } });
     expect(
       (
