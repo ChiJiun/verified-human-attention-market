@@ -51,12 +51,6 @@ export type ClaimOutcome =
   | { ok: true; claim: SignedClaim; created: boolean }
   | { ok: false; status: number; code: string };
 
-/**
- * Signs and stores the authorization of an accepted submission inside
- * `scope` (the caller's transaction, or null for the root pool). Only the
- * campaign row lock, the cap and payout-limit counts, the signature and the
- * update run here; everything that waits on the chain was read beforehand.
- */
 export type ClaimIssuer = (
   submissionId: string,
   scope: PersistenceScope,
@@ -66,9 +60,7 @@ export type ClaimPreparation =
   | { ok: false; status: number; code: string }
   | {
       ok: true;
-      /** The contract would pay a completion accepted now (ADR-0011, 12). */
       payable: boolean;
-      /** null without a signer: the completion stays pending_authorization. */
       issue: ClaimIssuer | null;
     };
 
@@ -78,16 +70,6 @@ const SIGNER_SELECTOR = encodeFunctionData({
   functionName: "authorizedSigner",
 });
 
-/**
- * Reads everything an authorization depends on before any transaction
- * opens: the campaign live from the contract (this draft's canonical
- * creation, and whether it pays right now), the contract's signer, whether
- * the wallet was already paid, and the confirmed payouts from the index.
- * The returned issuer never waits for an RPC or the signing service's
- * network round trip beyond `sign` itself, so an acceptance holds its pool
- * connection for the database work and one signature. RPC failures fail
- * closed; no authorization is issued on stale or guessed chain state.
- */
 export async function prepareClaim(
   dependencies: ClaimDependencies,
   campaign: CampaignRecord,
@@ -112,10 +94,6 @@ export async function prepareClaim(
 
   const now = dependencies.now();
 
-  // The link must still be this draft's canonical creation with the draft's
-  // parameters: a link left behind by a reorg would otherwise sign against
-  // another campaign's budget (ADR-0011). Indexed events lag by the
-  // confirmation depth; this reading does not.
   const live = await checkLiveCampaign(
     chain.rpc,
     chain.contractAddress,
@@ -134,7 +112,6 @@ export async function prepareClaim(
     return { ok: true, payable, issue: null };
   }
 
-  // A configured key must match the contract's current signer.
   let onchainSigner: string;
   try {
     const word = await chain.rpc.call(chain.contractAddress, SIGNER_SELECTOR);
@@ -245,11 +222,6 @@ export async function prepareClaim(
   return { ok: true, payable, issue };
 }
 
-/**
- * The authorization of an accepted completion on request: the stored
- * signature while it is valid for the campaign's current link, otherwise a
- * new one (replays, and acceptances recorded without a signer).
- */
 export async function authorizeClaim(
   dependencies: ClaimDependencies,
   input: {

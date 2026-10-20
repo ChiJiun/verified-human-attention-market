@@ -666,10 +666,6 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   });
 
   it("completes concurrent acceptances on a one-connection pool", async () => {
-    // Everything an acceptance waits for while its transaction holds a pool
-    // connection must run on that connection. A read on the root pool, an
-    // RPC or the signer awaited inside the transaction never completes here,
-    // and with the default pool ten such acceptances stop every query.
     const pool = createDatabase(databaseUrl, { max: 1 });
     const now = new Date("2026-10-05T10:30:00.000Z");
     const advertiser = `0x${"2".repeat(40)}`;
@@ -697,7 +693,6 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       endTime: Date.parse("2026-10-05T11:15:00.000Z") / 1000,
     });
 
-    // Wallets and participant keys unique in this shared database.
     const eligibilityRepository = new PostgresEligibilityRepository(
       database.db,
     );
@@ -784,7 +779,6 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       expect(new Set(nonces).size).toBe(participants.length);
       expect(nonces).not.toContain(null);
     } finally {
-      // Terminates a connection a stuck acceptance may still reserve.
       await pool.client.end({ timeout: 1 });
       await app.close();
     }

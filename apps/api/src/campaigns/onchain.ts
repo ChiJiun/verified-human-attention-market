@@ -167,12 +167,6 @@ export type LiveCampaignState =
   /** The RPC failed; nothing can be decided. */
   | { state: "unavailable" };
 
-/**
- * Reads the campaign's current on-chain state directly (not the indexed
- * copy, which lags by the confirmation depth): a completion is accepted
- * only while the contract would actually pay it (ADR-0011, #13). The struct
- * comes back with the verdict so that issuance decides on the same reading.
- */
 export async function checkLiveCampaign(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: string,

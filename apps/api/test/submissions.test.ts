@@ -150,7 +150,6 @@ async function setup() {
   };
 }
 
-/** What the claim service returns when it signs for `claimant`. */
 function signedFor(claimant: string): SignedClaim {
   return {
     payload: {
@@ -168,7 +167,6 @@ function signedFor(claimant: string): SignedClaim {
   };
 }
 
-/** Service dependencies over the in-memory stores of `s`, chain stubbed. */
 function serviceDependencies(
   s: Awaited<ReturnType<typeof setup>>,
   authorize: SubmissionServiceDependencies["authorize"],
@@ -322,7 +320,6 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
       );
       expect(await s.submissions.countByEligibility(token)).toBe(0);
 
-      // Once the chain answers, the same participant still has every attempt.
       const recorded = await submitCompletion(
         serviceDependencies(s, async () => ({
           ok: true,

@@ -45,19 +45,6 @@ export interface SubmissionServiceDependencies {
   chainHalted: () => Promise<boolean>;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
-  /**
-   * Pre-flight for a verified participant's completion (ADR-0011, 12),
-   * run before anything is recorded and outside any transaction: the
-   * contract must still pay this draft's campaign right now (`payable`,
-   * read live rather than from the lagging index), and the returned issuer
-   * signs the claim authorization inside the transaction that records an
-   * acceptance. Either the completion and its authorization are both
-   * persisted or neither is, so no accepted completion exists that the
-   * contract would not pay (closed between the checks and the signature,
-   * signer down, payout limit or cap reached); the attempt is then not
-   * consumed and the same request can be retried. null = no chain
-   * configured (local development: completions stay pending_authorization).
-   */
   authorize:
     | ((
         campaign: CampaignRecord,
@@ -133,12 +120,6 @@ function canonicalAnswers(raw: unknown) {
   });
 }
 
-/**
- * Engagement submission: eligibility (World ID, #9) + deterministic verifier
- * (#15) + idempotent persistence (#8). An accepted completion is signed
- * inside the transaction that records it (#10, ADR-0011); replays return the
- * stored result and leave the authorization to `issueAuthorization`.
- */
 export async function submitCompletion(
   dependencies: SubmissionServiceDependencies,
   input: {
@@ -229,10 +210,6 @@ export async function submitCompletion(
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
-  // Last check before any completion is recorded, and only for a verified
-  // participant (no RPC call for unauthenticated requests): the contract
-  // must still pay this draft's campaign right now (ADR-0011, #13). The
-  // chain and the signer are consulted here, before the transaction opens.
   let issue: ClaimIssuer | null = null;
   if (dependencies.authorize) {
     const prepared = await dependencies.authorize(campaign, claimantAddress);

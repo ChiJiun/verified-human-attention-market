@@ -3,11 +3,6 @@ import { decodeFunctionResult, encodeFunctionData, type Address } from "viem";
 
 import type { ChainRpc } from "../chain/rpc.js";
 
-/**
- * Live `claimedWallet(campaignId, claimant)`, read immediately before
- * signing. Unlike indexed events it has no confirmation lag, so a wallet
- * paid moments ago is never issued a second authorization.
- */
 export async function readClaimedWallet(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: Address,

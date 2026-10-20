@@ -363,11 +363,6 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       now,
-      // Acceptance means payable (ADR-0011): the chain is read before the
-      // transaction, and a new acceptance is signed inside its own
-      // transaction, so either the completion and its authorization are
-      // both stored or neither is. Replays return the stored authorization
-      // through issueAuthorization.
       authorize: claimDependencies.chain
         ? (campaign, claimant) =>
             prepareClaim(claimDependencies, campaign, claimant)

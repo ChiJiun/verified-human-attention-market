@@ -89,7 +89,6 @@ export class FakeChain implements ChainRpc {
    * earlier block sees nothing; a reorg below it removes it).
    */
   readonly campaignIdByDraft = new Map<string, { id: number; block: bigint }>();
-  /** `authorizedSigner()`; null leaves the call unsimulated (it fails). */
   signer: string | null = null;
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
@@ -299,7 +298,6 @@ export class FakeChain implements ChainRpc {
       return addressWord(this.signer);
     }
 
-    // claimedWallet(id, wallet): nobody has been paid on the fake chain.
     if (to === this.contract && data.startsWith(CLAIMED_WALLET_SELECTOR)) {
       return word(0);
     }

@@ -180,8 +180,6 @@ contract CampaignManagerInvariantTest {
         return targetedContracts;
     }
 
-    /// The handler's claim path pays: the invariants below would hold vacuously
-    /// if every claim reverted (for example with WrongDraft) and was swallowed.
     function test_HandlerClaimPays() public {
         handler.claim(1);
 

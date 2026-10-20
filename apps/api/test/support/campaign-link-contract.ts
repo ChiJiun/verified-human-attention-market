@@ -51,17 +51,11 @@ async function createDraft(campaigns: CampaignRepository): Promise<string> {
   return id;
 }
 
-/**
- * On-chain link behaviour every CampaignRepository must satisfy (ADR-0011).
- * Registered once per implementation so the in-memory double cannot drift
- * from PostgreSQL semantics.
- */
 export function defineCampaignLinkContract(
   repository: () => CampaignRepository,
 ) {
   it("stores and matches the contract address whatever its casing", async () => {
     const campaigns = repository();
-    // A deployment of its own in the shared database: ids restart per contract.
     const lower = `0x${"ab".repeat(20)}`;
     const checksummed = getAddress(lower);
     expect(checksummed).not.toBe(lower);
@@ -80,7 +74,6 @@ export function defineCampaignLinkContract(
     expect(linked.onchainContractAddress).toBe(lower);
     expect((await campaigns.getById(id))?.onchainContractAddress).toBe(lower);
 
-    // The same link in either casing is idempotent, not a conflict.
     expect(
       (await campaigns.linkOnchain(id, { ...link, contractAddress: lower })).id,
     ).toBe(id);
