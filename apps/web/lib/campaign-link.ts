@@ -1,8 +1,6 @@
 /** What `?campaign=` in the page URL resolved to. */
 export type CampaignLink =
-  | { kind: "none" }
-  | { kind: "invalid" }
-  | { kind: "campaign"; id: string };
+  { kind: "none" } | { kind: "invalid" } | { kind: "campaign"; id: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
