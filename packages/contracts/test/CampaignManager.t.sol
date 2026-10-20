@@ -8,7 +8,6 @@ interface Vm {
     function sign(uint256 privateKey, bytes32 digest) external returns (uint8 v, bytes32 r, bytes32 s);
     function prank(address sender) external;
     function warp(uint256 newTimestamp) external;
-    function store(address target, bytes32 slot, bytes32 value) external;
     function expectRevert(bytes4 revertData) external;
     function expectRevert(bytes calldata revertData) external;
     function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData, address emitter) external;
@@ -57,6 +56,26 @@ contract MockUSDC {
     }
 }
 
+contract CampaignManagerUnreachableStateHarness is CampaignManager {
+    constructor(
+        address rewardToken_,
+        address authorizedSigner_,
+        uint96 maxRewardPerCompletion_,
+        uint32 maxCompletionsPerCampaign_,
+        uint128 maxCampaignBudget_
+    )
+        CampaignManager(
+            rewardToken_, authorizedSigner_, maxRewardPerCompletion_, maxCompletionsPerCampaign_, maxCampaignBudget_
+        )
+    {}
+
+    function forceBudgetAccounting(uint256 campaignId, uint128 fundedBudget, uint128 paidRewards) external {
+        Campaign storage campaign = campaigns[campaignId];
+        campaign.fundedBudget = fundedBudget;
+        campaign.paidRewards = paidRewards;
+    }
+}
+
 contract CampaignManagerTest {
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -67,7 +86,6 @@ contract CampaignManagerTest {
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
-    uint256 private constant CAMPAIGNS_SLOT = 3;
 
     // Cross-language fixture: apps/api/test/claims.test.ts computes the same
     // value from the viem EIP-712 type definition.
@@ -845,20 +863,22 @@ contract CampaignManagerTest {
         manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, draftRefOf[campaignId]);
     }
 
-    function test_AlreadyFundedRejected() public {
+    function test_AlreadyFundedGuardRejectsForcedFundedDraft() public {
+        CampaignManagerUnreachableStateHarness harness = _replaceManagerWithHarness();
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
         uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
         vm.prank(advertiser);
         token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
-        _setBudgetAccounting(campaignId, 1, 0);
+        harness.forceBudgetAccounting(campaignId, 1, 0);
 
         vm.expectRevert(CampaignManager.AlreadyFunded.selector);
         vm.prank(advertiser);
         manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
     }
 
-    function test_InsufficientCampaignBudgetRejected() public {
+    function test_InsufficientCampaignBudgetGuardRejectsForcedShortBudget() public {
+        CampaignManagerUnreachableStateHarness harness = _replaceManagerWithHarness();
         uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
         vm.warp(startTime);
 
@@ -868,13 +888,13 @@ contract CampaignManagerTest {
 
         uint128 reward = uint128(ONE_USDC);
         uint128 budget = reward * MAX_COMPLETIONS;
-        _setBudgetAccounting(campaignId, budget, budget - reward + 1);
+        harness.forceBudgetAccounting(campaignId, budget, budget - reward + 1);
 
         vm.expectRevert(CampaignManager.InsufficientCampaignBudget.selector);
         vm.prank(claimant);
         manager.claim(authorization, signature);
 
-        _setBudgetAccounting(campaignId, budget, budget - reward);
+        harness.forceBudgetAccounting(campaignId, budget, budget - reward);
         vm.prank(claimant);
         manager.claim(authorization, signature);
     }
@@ -946,12 +966,11 @@ contract CampaignManagerTest {
         return manager.createCampaign(uint96(ONE_USDC), 1, start, end, _nextRef());
     }
 
-    function _setBudgetAccounting(uint256 campaignId, uint128 fundedBudget, uint128 paidRewards) private {
-        bytes32 slot = bytes32(uint256(keccak256(abi.encode(campaignId, CAMPAIGNS_SLOT))) + 1);
-        vm.store(address(manager), slot, bytes32((uint256(paidRewards) << 128) | fundedBudget));
-
-        (, uint128 funded, uint128 paid,,,,,,,) = manager.campaigns(campaignId);
-        require(funded == fundedBudget && paid == paidRewards, "campaign storage layout changed");
+    function _replaceManagerWithHarness() private returns (CampaignManagerUnreachableStateHarness harness) {
+        harness = new CampaignManagerUnreachableStateHarness(
+            address(token), signer, uint96(ONE_USDC), MAX_COMPLETIONS, uint128(ONE_USDC * MAX_COMPLETIONS)
+        );
+        manager = harness;
     }
 
     function _authorization(uint256 campaignId, address recipient, bytes32 nonce)

@@ -32,7 +32,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - deployment script [`DeployCampaignManager.t.sol`: configured limits, wrong chain, missing addresses, token without code, out-of-range limit, deployment JSON fields];
 - exposure limits [`test_InvalidExposureLimitsRejected`, `test_ExposureLimitBoundariesAccepted`], creation event [`test_CampaignCreatedCarriesDraftRef`];
 - signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature), `test_InvalidSignatureVRejected`, `test_SignatureVZeroOrOneAccepted` (a recovery id of 0 or 1 counts as 27 or 28)];
-- `AlreadyFunded` and `InsufficientCampaignBudget` guards [`test_AlreadyFundedRejected`, `test_InsufficientCampaignBudgetRejected`].
+- `AlreadyFunded` and `InsufficientCampaignBudget` guards [`test_AlreadyFundedGuardRejectsForcedFundedDraft`, `test_InsufficientCampaignBudgetGuardRejectsForcedShortBudget`].
 
 ## Fuzz
 
