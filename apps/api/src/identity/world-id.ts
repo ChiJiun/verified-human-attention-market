@@ -43,7 +43,9 @@ export function campaignAction(campaignId: string): string {
 }
 
 const idkitResponseSchema = z.looseObject({
-  protocol_version: z.enum(["3.0", "4.0"]),
+  // One person's 3.0 and 4.0 nullifiers differ, so accepting 3.0 would give
+  // a human a second eligibility per campaign (ADR-0007).
+  protocol_version: z.literal("4.0"),
   action: z.string().min(1),
   environment: z.string().optional(),
   responses: z

@@ -14,16 +14,17 @@ const NULLIFIER_DEC = BigInt(NULLIFIER_HEX).toString(10);
 
 function idkitResponse(overrides: Record<string, unknown> = {}) {
   return {
-    protocol_version: "3.0",
+    protocol_version: "4.0",
     nonce: "0x1234",
     action: ACTION,
     environment: "production",
     responses: [
       {
-        identifier: "orb",
-        proof: "0xproof",
-        merkle_root: "0xroot",
+        identifier: "proof_of_human",
+        issuer_schema_id: 1,
+        proof: ["0x111", "0x222", "0x333", "0x444", "0x555"],
         nullifier: NULLIFIER_HEX,
+        expires_at_min: 1791194400,
       },
     ],
     ...overrides,
@@ -55,7 +56,7 @@ describe("HttpWorldIdVerifier", () => {
         environment: "production",
         results: [
           {
-            identifier: "orb",
+            identifier: "proof_of_human",
             success: true,
             nullifier: NULLIFIER_HEX,
           },
@@ -143,7 +144,7 @@ describe("HttpWorldIdVerifier", () => {
 
   it.each([
     ["not an object", "proof"],
-    ["missing responses", { protocol_version: "3.0", action: ACTION }],
+    ["missing responses", { protocol_version: "4.0", action: ACTION }],
     [
       "session proof without action",
       { protocol_version: "4.0", responses: [] },
