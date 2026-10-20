@@ -3,9 +3,9 @@
 > Status: System Design  
 > Goal: make acceptance criteria executable before mainnet exposure.
 >
-> Reconciled with the implemented suites: 2026-10-19
+> Reconciled with the implemented suites: 2026-10-20
 
-Where a case is implemented, the test name is given in brackets. `[gap]` marks cases the plan still calls for that no suite covers.
+Where a case is implemented, the test name is given in brackets.
 
 Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
 
@@ -13,14 +13,15 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 
 ## Unit
 
-- campaign creation validation [`test_RewardAboveLimitRejected`, `test_CompletionsAboveLimitRejected`, `test_BudgetAboveLimitRejected`, `test_VeryLargeDirectCallsRejected`, `test_ZeroDraftRefRejected`, `test_DuplicateDraftRefReverts`, `test_DraftRefIsScopedToTheAdvertiser`];
-- funding [`test_CreateFundAndClaim`, `test_FundingAfterEndRejected`, `test_FundingForAnotherDraftRejected`, `test_CancelUnfundedDraft`, `test_CannotCancelFundedCampaign`];
+- campaign creation validation [`test_RewardAboveLimitRejected`, `test_CompletionsAboveLimitRejected`, `test_BudgetAboveLimitRejected`, `test_VeryLargeDirectCallsRejected`, `test_ZeroDraftRefRejected`, `test_DuplicateDraftRefReverts`, `test_DraftRefIsScopedToTheAdvertiser`, `test_CampaignWindowEdges`];
+- funding [`test_CreateFundAndClaim`, `test_FundingAfterEndRejected`, `test_FundingForAnotherDraftRejected`, `test_InvalidFundingAmountRejected`, `test_FundingTwiceRejected`, `test_CancelUnfundedDraft`, `test_CannotCancelFundedCampaign`];
 - lifecycle transitions [`test_PreCloseAuthorizationRemainsClaimableAfterClose`, `test_PostCloseAuthorizationRejected`, `test_RefundWaitsForAuthorizationGracePeriod`];
 - valid claim [`test_CreateFundAndClaim`];
 - invalid signer [`test_InvalidSignerRejected`, `test_SignerRotationRevokesOldSignatures`];
 - expired authorization [`test_ExpiredAuthorizationRejected`];
+- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_AuthorizationIssuedBeforeStartRejected`, `test_InvertedAuthorizationWindowRejected`; the `expiresAt <= issuedAt` half of the lifetime guard is redundant, because `AuthorizationNotYetValid` and `AuthorizationExpired` reject every such window first];
 - wrong claimant [`test_WrongClaimantRejected`];
-- wrong reward amount [gap: `InvalidClaimAmount` is enforced but has no dedicated test];
+- wrong reward amount [`test_InvalidClaimAmountRejected`];
 - consumed nonce [`test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`];
 - max completions reached [`test_CompletionLimitReached`];
 - wrong draft [`test_ClaimRejectsAnotherDraftsAuthorization`, `test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign`];
@@ -30,14 +31,15 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - backend/contract agreement [`test_ClaimAuthorizationTypehashMatchesBackend`, `test_EventTopicsMatchIndexer`, `test_FunctionSelectorsMatchIndexer`];
 - deployment script [`DeployCampaignManager.t.sol`: configured limits, wrong chain, missing addresses, token without code, out-of-range limit, deployment JSON fields];
 - exposure limits [`test_InvalidExposureLimitsRejected`, `test_ExposureLimitBoundariesAccepted`], creation event [`test_CampaignCreatedCarriesDraftRef`];
-- [gap] reverts with no dedicated test: `AuthorizationNotYetValid`, `AuthorizationLifetimeTooLong`, `InsufficientCampaignBudget`, `InvalidFundingAmount`, `AlreadyFunded`, `InvalidSignatureS` / `InvalidSignatureV` / `InvalidSignatureLength`.
+- signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature, which `ecrecover` alone accepts), `test_InvalidSignatureVRejected`];
+- guards no public sequence reaches [`test_AlreadyFundedRejected`, `test_InsufficientCampaignBudgetRejected`; both set storage with `vm.store`. Funding writes `fundedBudget` and leaves Draft in one transaction, and each claim adds exactly one reward and one completion to a budget of `rewardPerCompletion * maxCompletions`, so `InvalidCampaignStatus` and `CompletionLimitReached` always fire first. The guards matter only if that accounting breaks, and then they stop a campaign from paying out of the escrow shared by all campaigns].
 
 ## Fuzz
 
 - funding amounts and completion counts [`testFuzz_FundingEqualsMaximumLiability`, `testFuzz_CreateNeverExceedsExposureLimits`];
 - claim order and close/refund timing [stateful handler in `CampaignManager.invariant.t.sol`: `claim`, `close`, `refund`, `advanceTime`];
 - reward amount boundaries [`test_ExposureLimitBoundariesAccepted` plus the fuzz above];
-- campaign timestamps [gap: only fixed windows are tested; `InvalidCampaignWindow` boundaries are not fuzzed].
+- campaign timestamps [`testFuzz_CampaignDurationBounds` (one second below, at and above the minimum and maximum duration), `testFuzz_CampaignStartInThePastRejected`, `test_CampaignWindowEdges`].
 
 ## Invariants
 
