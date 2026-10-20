@@ -258,7 +258,14 @@
 - Advertiser-only endpoints require the session wallet to equal the campaign advertiser.
 - Fail closed: without `SIWE_DOMAIN`, nobody can sign in.
 
-**Residual risk:** the bearer token lives in browser memory and is exposed to XSS. Before beta, keep a strict CSP and consider HttpOnly cookies with CSRF protection. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
+**Mitigation (implemented, #72):**
+
+- The web app signs in with `transport: "cookie"`: the token is an `__Host-vham_session` cookie with `HttpOnly; Secure; SameSite=Strict; Path=/`, never returned in a body, so page scripts cannot read it. Scripts and operators keep the bearer transport.
+- Cookie-authenticated mutations must be same-origin (`Sec-Fetch-Site: same-origin`); when the browser sends no Fetch Metadata, `Origin` must equal `WEB_ORIGIN` (optional, host-bound to `SIWE_DOMAIN`). Anything else is `403 CSRF_REJECTED`. The cookie sign-in itself is subject to the same rule (login CSRF). An `Authorization` header is never mixed with the cookie, and API keys stay header-only.
+- Logout revokes the session and clears the cookie; cookie-authenticated responses are `Cache-Control: no-store`.
+- The web app sets a strict per-request Content-Security-Policy (`script-src 'self' 'nonce-…' 'strict-dynamic'`, `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, with World ID's bridge and font host allowlisted) plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`. Campaign ids taken from the URL are validated as UUIDs before they reach any request path.
+
+**Residual risk:** an XSS that gets past the CSP can still act as the signed-in advertiser while the page is open, because same-origin requests carry the cookie; it cannot read the token or reuse it later. `style-src` keeps `'unsafe-inline'` for IDKit's shadow-root styles. A browser that ignores `SameSite` and sends no Fetch Metadata is covered only by the `Origin` check, which needs `WEB_ORIGIN` set. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
 
 ## T-016 API Key Abuse / Scraping
 

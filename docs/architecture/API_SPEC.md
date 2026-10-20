@@ -17,20 +17,46 @@ idempotency and versioning rules: [API_CONTRACT.md](./API_CONTRACT.md) (#26).
 - Dates/times use RFC 3339 externally.
 - Monetary integer fields use atomic units or explicit decimal strings; never floating-point JSON numbers for settlement.
 
-# Authentication (Sign-In with Ethereum, #37)
+# Authentication (Sign-In with Ethereum, #37; browser sessions, #72)
 
 1. `POST /v1/auth/nonce` → `{ nonce, expiresAt }` (single-use, 10 min).
 2. The wallet signs an EIP-4361 message with that nonce, `domain = SIWE_DOMAIN`,
    `chainId = EVM_CHAIN_ID`, `version = 1` and a current `issuedAt`.
-3. `POST /v1/auth/verify { message, signature }` → `{ token, tokenType: "Bearer", address, chainId, expiresAt }`; `400 INVALID_SIGN_IN_REQUEST` for a malformed body, `401` with `INVALID_MESSAGE` / `WRONG_DOMAIN` / `WRONG_CHAIN` / `MESSAGE_NOT_VALID_NOW` / `INVALID_SIGNATURE` / `NONCE_INVALID_OR_USED`.
+3. `POST /v1/auth/verify { message, signature, transport? }` with `transport`
+   `"bearer"` (default) or `"cookie"`:
+   - `bearer` → `{ token, tokenType: "Bearer", address, chainId, expiresAt }`;
+     the caller then sends `Authorization: Bearer <token>`. For scripts,
+     operators and tests.
+   - `cookie` → `{ transport: "cookie", address, chainId, expiresAt }` with
+     `Set-Cookie: __Host-vham_session=<token>; Path=/; Max-Age=<seconds until expiresAt>; HttpOnly; Secure; SameSite=Strict`
+     and `Cache-Control: no-store`. The token never appears in a body. For the
+     web app, which reaches the API same-origin through `/api/*`. A cookie
+     sign-in is subject to the CSRF rule below (`403 CSRF_REJECTED`) before
+     the nonce is consumed.
+
+   `400 INVALID_SIGN_IN_REQUEST` for a malformed body, `401` with `INVALID_MESSAGE` / `WRONG_DOMAIN` / `WRONG_CHAIN` / `MESSAGE_NOT_VALID_NOW` / `INVALID_SIGNATURE` / `NONCE_INVALID_OR_USED`.
    The server checks domain, chain, time window (`issuedAt` ≤ now + 60 s,
    `expirationTime` / `notBefore`), the signature (EOA offline; ERC-1271/6492
    smart wallets via RPC when configured) and then **atomically consumes** the
    nonce, so replays fail with `NONCE_INVALID_OR_USED`.
-4. Send `Authorization: Bearer <token>`. Sessions last up to 12 h (or the
-   message's `expirationTime` if earlier). `GET /v1/auth/session` →
-   `{ address, chainId, expiresAt }` (`401 UNAUTHENTICATED` otherwise);
-   `POST /v1/auth/logout` → `204` (revokes). Only `sha256(token)` is stored.
+4. Credential precedence: an `Authorization` header, when present, is the only
+   credential read; a malformed one is `401`, never a fallback to the cookie.
+   Otherwise exactly one well-formed `__Host-vham_session` cookie counts; an
+   API-key-shaped value or duplicate session cookies are no credential. API
+   keys (`vhamk_…`) are header-only. Sessions last up to 12 h (or the
+   message's `expirationTime` if earlier). Only `sha256(token)` is stored.
+5. CSRF rule for cookie sessions: a request other than `GET` / `HEAD` /
+   `OPTIONS` that authenticates with the cookie must carry
+   `Sec-Fetch-Site: same-origin`. When the browser sends no Fetch Metadata,
+   `Origin` must equal `WEB_ORIGIN` (optional; validated at startup as an
+   http(s) origin whose host is `SIWE_DOMAIN`; unset = no Origin fallback).
+   Anything else is `403 CSRF_REJECTED`. Header credentials are not subject
+   to it. Responses to cookie-authenticated requests are
+   `Cache-Control: no-store`.
+6. `GET /v1/auth/session` → `{ address, chainId, expiresAt }`
+   (`401 UNAUTHENTICATED` otherwise); the web app restores a cookie session
+   with it after a reload. `POST /v1/auth/logout` → `204`: revokes the
+   session from either transport and always clears the cookie (`Max-Age=0`).
 
 Advertiser-only endpoints return `401 UNAUTHENTICATED` without a session and
 `403 NOT_CAMPAIGN_ADVERTISER` when the signed-in wallet is not the campaign's

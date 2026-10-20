@@ -147,6 +147,8 @@ export NEXT_PUBLIC_CHAIN_ID=84532           # 本機 anvil 用 31337
 pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 ```
 
+登入後的 session 放在 `Secure` cookie 裡（#72）。Safari 不會保留 `http://localhost` 設定的 `Secure` cookie，本機請用 Chrome 或 Firefox，或改用 `next dev --experimental-https`。
+
 頁面流程：
 
 1. 連接瀏覽器錢包；網路不對時會顯示切換按鈕。

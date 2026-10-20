@@ -57,5 +57,5 @@
 
 - [ ] Gas UX: revisit ADR-0003 (wallet-native sponsorship, paymaster or relayer) — the POC makes participants pay gas.
 - [ ] Deployment: multisig owner, KMS signer and signing service, second RPC provider, managed PostgreSQL with PITR (ADR-0008, RUNBOOK).
-- [ ] Web session hardening: CSP and HttpOnly cookies for SIWE sessions (Threat Model T-015).
+- [x] Web session hardening: HttpOnly cookie sessions with CSRF protection and a nonce-based CSP (#72, Threat Model T-015). Set `WEB_ORIGIN` in production.
 - [ ] World ID: wallet-bound `signal` in the proof (ADR-0007 "Not yet covered").

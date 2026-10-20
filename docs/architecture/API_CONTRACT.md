@@ -8,7 +8,7 @@
 | Caller | Credential | Reaches |
 | --- | --- | --- |
 | Participants | none (World ID proof per campaign) | mission, eligibility, submissions, claim authorization, reports |
-| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`) | everything an advertiser can do, including key management |
+| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`): the web app's `__Host-vham_session` cookie (`transport: "cookie"`, CSRF-protected), or a bearer token for scripts | everything an advertiser can do, including key management |
 | Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | the scoped routes below, acting as the advertiser that created the key; also accepted on public routes (where it grants nothing), never on admin, key-management or session routes |
 | Operators | SIWE session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` |
 
@@ -18,7 +18,9 @@ API keys:
   { name, scopes, rateLimitPerMinute? }`. The key is returned **once**; only
   `sha256(key)` and a display prefix are stored. At most 10 active keys per
   advertiser.
-- Sent as `Authorization: Bearer vhamk_…`.
+- Sent as `Authorization: Bearer vhamk_…`, header-only. The session cookie is
+  for browser sessions only and never carries an API key; a request with both
+  is the API key's.
 - Scopes:
 
   | Scope | Routes |
