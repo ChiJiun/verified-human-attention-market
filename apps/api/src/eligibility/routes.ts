@@ -102,12 +102,12 @@ export async function registerEligibilityRoutes(
       );
 
       if (dependencies.worldId.mode === "simulated") {
-        return reply.send({ appId: null, action, signal });
+        return reply.send({ mode: "simulated", action, signal });
       }
 
-      const config = dependencies.worldIdRequest ?? null;
+      const config = dependencies.worldIdRequest;
 
-      if (!config) {
+      if (!config?.appId) {
         return fail(
           503,
           "WORLD_ID_NOT_CONFIGURED",
@@ -118,6 +118,7 @@ export async function registerEligibilityRoutes(
       const signature = await config.signer.sign({ action, now });
 
       return reply.send({
+        mode: "live",
         appId: config.appId,
         action,
         environment: config.environment ?? "production",

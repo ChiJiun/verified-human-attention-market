@@ -190,6 +190,7 @@ Request: `{ "claimant": "0x…" }`, the wallet the proof will be bound to (#71).
 
 ```json
 {
+  "mode": "live",
   "appId": "app_…",
   "action": "vham-campaign-<campaignId>",
   "environment": "production",
@@ -198,9 +199,11 @@ Request: `{ "claimant": "0x…" }`, the wallet the proof will be bound to (#71).
 }
 ```
 
-`signal` is a 32-byte hex value derived by the API from the campaign and the claimant (ADR-0007, update 2026-10-20); the page passes it as the `proof_of_human` credential's signal, and `eligibility/verify` refuses a result made for any other wallet. It names the wallet, not the attempt, so repeating the request returns the same signal with a fresh `rpContext`. With `WORLD_ID_MODE=simulated` (local anvil only) the response is `{ "appId": null, "action", "signal" }`.
+`signal` is a 32-byte hex value derived by the API from the campaign and the claimant (ADR-0007, update 2026-10-20); the page passes it as the `proof_of_human` credential's signal, and `eligibility/verify` refuses a result made for any other wallet. It names the wallet, not the attempt, so repeating the request returns the same signal with a fresh `rpContext`.
 
-`400 INVALID_ELIGIBILITY_REQUEST` (no or malformed `claimant`), `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (needs `PARTICIPANT_KEY_SECRET`, and `WORLD_ID_RP_ID` + `RP_SIGNING_KEY` when live), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
+`mode` names the response shape. A `live` response always has an `appId`. With `WORLD_ID_MODE=simulated` (local anvil only) the response is `{ "mode": "simulated", "action", "signal" }`, with no `appId`, `environment`, or `rpContext`.
+
+`400 INVALID_ELIGIBILITY_REQUEST` (no or malformed `claimant`), `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (needs `PARTICIPANT_KEY_SECRET` in both modes, plus `WORLD_ID_RP_ID`, `RP_SIGNING_KEY`, and `WORLD_ID_APP_ID` in live mode), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
 
 ## POST /v1/campaigns/:id/eligibility/verify
 

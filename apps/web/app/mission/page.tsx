@@ -47,6 +47,7 @@ interface Authorization {
 }
 
 interface LiveWorldIdRequest {
+  mode: "live";
   appId: `app_${string}`;
   action: string;
   environment: "production" | "staging";
@@ -55,7 +56,7 @@ interface LiveWorldIdRequest {
 }
 
 type WorldIdRequest =
-  LiveWorldIdRequest | { appId: null; action: string; signal: Hex };
+  LiveWorldIdRequest | { mode: "simulated"; action: string; signal: Hex };
 
 type Step =
   | { kind: "verify" }
@@ -163,7 +164,12 @@ export default function MissionPage() {
         `/v1/campaigns/${campaignId}/world-id/request`,
         { method: "POST", body: { claimant: wallet.address } },
       );
-      if (WORLD_ID_MODE === "simulated") {
+      if (data.mode !== WORLD_ID_MODE) {
+        throw new Error(
+          `The API runs World ID in ${data.mode} mode, but this page expects ${WORLD_ID_MODE} mode.`,
+        );
+      }
+      if (data.mode === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
         await verifyEligibility(wallet.address, {
           action: data.action,
@@ -173,7 +179,6 @@ export default function MissionPage() {
         setStep({ kind: "answer" });
         return;
       }
-      if (!data.appId) throw new Error("World ID is not configured.");
       setWorldRequest(data);
       setWidgetOpen(true);
     });

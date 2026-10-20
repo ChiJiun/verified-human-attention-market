@@ -96,7 +96,11 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
 
   async function setup(
     configured: boolean,
-    options: { secret?: string | null; worldIdVerifier?: WorldIdVerifier } = {},
+    options: {
+      secret?: string | null;
+      appId?: string | null;
+      worldIdVerifier?: WorldIdVerifier;
+    } = {},
   ) {
     const signer = createRpSigner(KEY);
     const now = new Date("2026-10-05T10:00:00.000Z");
@@ -106,7 +110,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         ? {
             signer,
             rpId: "rp_test123",
-            appId: "app_test123",
+            appId: options.appId === undefined ? "app_test123" : options.appId,
             environment: "staging",
           }
         : null,
@@ -158,6 +162,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json<{
+      mode: string;
       appId: string;
       action: string;
       environment: string;
@@ -171,6 +176,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       signal: string;
     }>();
     expect(body).toMatchObject({
+      mode: "live",
       appId: "app_test123",
       environment: "staging",
       action: `vham-campaign-${id}`,
@@ -228,13 +234,13 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    const { appId, action, signal } = response.json<{
-      appId: string | null;
-      action: string;
-      signal: string;
-    }>();
-    expect(appId).toBeNull();
-    expect(action).toBe(`vham-campaign-${id}`);
+    const body = response.json<{ action: string; signal: string }>();
+    expect(body).toEqual({
+      mode: "simulated",
+      action: `vham-campaign-${id}`,
+      signal: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+    });
+    const { action, signal } = body;
 
     const verify = (claimant: string) =>
       app.inject({
@@ -254,7 +260,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     await app.close();
   });
 
-  it("fails closed when RP signing or the signal secret is not configured", async () => {
+  it("fails closed when RP signing, the app id or the signal secret is not configured", async () => {
     const payload = { claimant: WALLET_A };
     const unsigned = await setup(false);
     const response = await unsigned.app.inject({
@@ -273,6 +279,18 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     });
     expect(missing.statusCode).toBe(404);
     await unsigned.app.close();
+
+    const unnamed = await setup(true, { appId: null });
+    const noAppId = await unnamed.app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${unnamed.id}/world-id/request`,
+      payload,
+    });
+    expect(noAppId.statusCode).toBe(503);
+    expect(noAppId.json()).toMatchObject({
+      error: { code: "WORLD_ID_NOT_CONFIGURED" },
+    });
+    await unnamed.app.close();
 
     const unsalted = await setup(true, { secret: null });
     const noSecret = await unsalted.app.inject({
