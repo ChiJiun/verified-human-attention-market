@@ -1,8 +1,8 @@
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
-  isFundingTarget,
+  isDraftCampaign,
   type Deployment,
-  type FundingTargetExpectation,
+  type DraftCampaignExpectation,
 } from "@vham/shared/deployment";
 import {
   parseClosedAt,
@@ -18,7 +18,7 @@ import {
 
 import type { Wallet } from "./wallet";
 
-export interface SettlementTarget extends FundingTargetExpectation {
+export interface SettlementTarget extends DraftCampaignExpectation {
   draftRef: Hash;
 }
 
@@ -91,7 +91,7 @@ export async function readSettlement(
   ]);
 
   if (
-    !isFundingTarget(
+    !isDraftCampaign(
       {
         mappedCampaignId,
         onchain: {

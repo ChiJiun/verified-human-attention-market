@@ -3,7 +3,7 @@
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   isCurrentDeployment,
-  isFundingTarget,
+  isDraftCampaign,
   type Deployment,
 } from "@vham/shared/deployment";
 import {
@@ -566,7 +566,7 @@ export default function AdvertiserPage() {
         }),
       ]);
       if (
-        !isFundingTarget(
+        !isDraftCampaign(
           {
             mappedCampaignId,
             onchain: {

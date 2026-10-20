@@ -30,10 +30,11 @@ export function isCurrentDeployment(
 }
 
 /**
- * What the advertiser's wallet reads on-chain right before funding: the
- * contract's `campaignIdByDraft(advertiser, draftRef)` and `campaigns(id)`.
+ * What the advertiser's wallet reads on-chain right before it funds, closes or
+ * refunds: the contract's `campaignIdByDraft(advertiser, draftRef)` and
+ * `campaigns(id)`.
  */
-export interface FundingTargetReading {
+export interface DraftCampaignReading {
   mappedCampaignId: bigint;
   onchain: {
     rewardPerCompletion: bigint;
@@ -44,7 +45,7 @@ export interface FundingTargetReading {
 }
 
 /** The draft as the API describes it. */
-export interface FundingTargetExpectation {
+export interface DraftCampaignExpectation {
   onchainCampaignId: string;
   rewardPerCompletion: string;
   maxCompletions: number;
@@ -56,12 +57,12 @@ export interface FundingTargetExpectation {
 /**
  * True only if the on-chain id still belongs to this draft and carries its
  * parameters. After a deep reorg another draft of the same advertiser can
- * hold the same id with the same budget; funding it would send the USDC to
- * the wrong campaign (ADR-0011).
+ * hold the same id with the same budget; funding, closing or refunding it
+ * would act on the wrong campaign (ADR-0011).
  */
-export function isFundingTarget(
-  reading: FundingTargetReading,
-  expected: FundingTargetExpectation,
+export function isDraftCampaign(
+  reading: DraftCampaignReading,
+  expected: DraftCampaignExpectation,
 ): boolean {
   const seconds = (iso: string) => BigInt(Math.floor(Date.parse(iso) / 1000));
   return (
