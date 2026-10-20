@@ -135,8 +135,9 @@ function canonicalAnswers(raw: unknown) {
 
 /**
  * Engagement submission: eligibility (World ID, #9) + deterministic verifier
- * (#15) + idempotent persistence (#8). Claim authorization is issued
- * separately for accepted submissions (#10).
+ * (#15) + idempotent persistence (#8). An accepted completion is signed
+ * inside the transaction that records it (#10, ADR-0011); replays return the
+ * stored result and leave the authorization to `issueAuthorization`.
  */
 export async function submitCompletion(
   dependencies: SubmissionServiceDependencies,
