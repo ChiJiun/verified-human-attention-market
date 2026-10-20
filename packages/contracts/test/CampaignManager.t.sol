@@ -8,6 +8,7 @@ interface Vm {
     function sign(uint256 privateKey, bytes32 digest) external returns (uint8 v, bytes32 r, bytes32 s);
     function prank(address sender) external;
     function warp(uint256 newTimestamp) external;
+    function store(address target, bytes32 slot, bytes32 value) external;
     function expectRevert(bytes4 revertData) external;
     function expectRevert(bytes calldata revertData) external;
     function expectEmit(bool checkTopic1, bool checkTopic2, bool checkTopic3, bool checkData, address emitter) external;
@@ -66,6 +67,8 @@ contract CampaignManagerTest {
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
     uint256 private constant SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    // Storage slot of `CampaignManager.campaigns` (`forge inspect CampaignManager storage-layout`).
+    uint256 private constant CAMPAIGNS_SLOT = 3;
 
     // Cross-language fixture: apps/api/test/claims.test.ts computes the same
     // value from the viem EIP-712 type definition.
@@ -781,6 +784,78 @@ contract CampaignManagerTest {
         }
     }
 
+    function test_InvalidFundingAmountRejected() public {
+        bytes32 ref = _nextRef();
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+
+        uint256 required = ONE_USDC * MAX_COMPLETIONS;
+        vm.prank(advertiser);
+        token.approve(address(manager), required);
+
+        uint256[3] memory wrongAmounts = [required - 1, required + 1, 0];
+        for (uint256 i; i < wrongAmounts.length; ++i) {
+            vm.expectRevert(CampaignManager.InvalidFundingAmount.selector);
+            vm.prank(advertiser);
+            manager.fundCampaign(campaignId, wrongAmounts[i], ref);
+        }
+
+        require(token.balanceOf(address(manager)) == 0, "nothing escrowed");
+        require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Draft, "still a draft");
+
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, required, ref);
+        require(manager.statusOf(campaignId) == CampaignManager.CampaignStatus.Active, "exact amount funds");
+    }
+
+    /// A second funding call is stopped by the status guard before it can reach AlreadyFunded.
+    function test_FundingTwiceRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+
+        vm.expectRevert(CampaignManager.InvalidCampaignStatus.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, draftRefOf[campaignId]);
+    }
+
+    /// No public sequence reaches this guard. Funding sets the budget and leaves Draft in
+    /// the same transaction, so a Draft that already holds a budget cannot exist.
+    function test_AlreadyFundedRejected() public {
+        bytes32 ref = _nextRef();
+        vm.prank(advertiser);
+        uint256 campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, ref);
+        vm.prank(advertiser);
+        token.approve(address(manager), ONE_USDC * MAX_COMPLETIONS);
+        _setBudgetAccounting(campaignId, 1, 0);
+
+        vm.expectRevert(CampaignManager.AlreadyFunded.selector);
+        vm.prank(advertiser);
+        manager.fundCampaign(campaignId, ONE_USDC * MAX_COMPLETIONS, ref);
+    }
+
+    /// No public sequence reaches this guard. Each claim adds exactly one reward and one
+    /// completion to a budget of reward * maxCompletions, so CompletionLimitReached always
+    /// fires first. The guard stops a campaign from paying out of the escrow of other campaigns.
+    function test_InsufficientCampaignBudgetRejected() public {
+        uint256 campaignId = _createAndFund(MAX_COMPLETIONS);
+        vm.warp(startTime);
+
+        CampaignManager.ClaimAuthorization memory authorization =
+            _authorization(campaignId, claimant, keccak256("no-budget"));
+        bytes memory signature = _sign(authorization, SIGNER_KEY);
+
+        uint128 reward = uint128(ONE_USDC);
+        uint128 budget = reward * MAX_COMPLETIONS;
+        _setBudgetAccounting(campaignId, budget, budget - reward + 1);
+
+        vm.expectRevert(CampaignManager.InsufficientCampaignBudget.selector);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+
+        _setBudgetAccounting(campaignId, budget, budget - reward);
+        vm.prank(claimant);
+        manager.claim(authorization, signature);
+    }
+
     function _createAndFund(uint32 maxCompletions) private returns (uint256) {
         bytes32 ref = _nextRef();
         vm.prank(advertiser);
@@ -796,6 +871,17 @@ contract CampaignManagerTest {
         manager.fundCampaign(campaignId, budget, ref);
 
         return campaignId;
+    }
+
+    /// @dev fundedBudget and paidRewards share the second slot of the Campaign struct. The
+    /// values are read back through the getter so a moved slot fails here instead of
+    /// silently exercising a different state.
+    function _setBudgetAccounting(uint256 campaignId, uint128 fundedBudget, uint128 paidRewards) private {
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(campaignId, CAMPAIGNS_SLOT))) + 1);
+        vm.store(address(manager), slot, bytes32((uint256(paidRewards) << 128) | fundedBudget));
+
+        (, uint128 funded, uint128 paid,,,,,,,) = manager.campaigns(campaignId);
+        require(funded == fundedBudget && paid == paidRewards, "campaign storage layout changed");
     }
 
     function _authorization(uint256 campaignId, address recipient, bytes32 nonce)
