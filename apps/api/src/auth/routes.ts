@@ -127,9 +127,7 @@ export async function registerAuthRoutes(
     const { credential, carriesSessionCookie, cookieTokens } =
       presentedCredentials(request.headers);
     const tokens =
-      credential.kind === "session" &&
-      credential.source === "header" &&
-      credential.token !== null
+      credential.kind === "session" && credential.source === "header"
         ? [credential.token, ...cookieTokens]
         : cookieTokens;
     await revokeSessions(tokens);
@@ -145,7 +143,10 @@ export async function registerAuthRoutes(
 export function unauthorized(request: FastifyRequest, reply: FastifyReply) {
   const { credential } = presentedCredentials(request.headers);
 
-  if (credential.kind === "session" && credential.source === "cookie") {
+  if (
+    (credential.kind === "session" || credential.kind === "unreadable") &&
+    credential.source === "cookie"
+  ) {
     reply.header("set-cookie", CLEARED_SESSION_COOKIE);
   }
 

@@ -12,10 +12,13 @@ export const SESSION_COOKIE = "__Host-vham_session";
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
 const HEADER_ONLY_ROUTE = /^\/v1\/(admin|api-clients)(\/|$)/;
 
+type CredentialSource = "header" | "cookie";
+
 export type Credential =
   | { kind: "none" }
   | { kind: "api-key"; key: string }
-  | { kind: "session"; source: "header" | "cookie"; token: string | null };
+  | { kind: "session"; source: CredentialSource; token: string }
+  | { kind: "unreadable"; source: CredentialSource };
 
 export interface PresentedCredentials {
   credential: Credential;
@@ -44,22 +47,26 @@ function credentialFrom(
       : undefined;
     return value?.startsWith("vhamk_")
       ? { kind: "api-key", key: value }
-      : { kind: "session", source: "header", token: sessionToken(value) };
+      : sessionCredential("header", value);
   }
 
   if (sessionCookies.length === 0) {
     return { kind: "none" };
   }
 
-  return {
-    kind: "session",
-    source: "cookie",
-    token: sessionCookies.length === 1 ? sessionToken(sessionCookies[0]) : null,
-  };
+  return sessionCredential(
+    "cookie",
+    sessionCookies.length === 1 ? sessionCookies[0] : undefined,
+  );
 }
 
-function sessionToken(value: string | undefined): string | null {
-  return value !== undefined && SESSION_TOKEN.test(value) ? value : null;
+function sessionCredential(
+  source: CredentialSource,
+  value: string | undefined,
+): Credential {
+  return value !== undefined && SESSION_TOKEN.test(value)
+    ? { kind: "session", source, token: value }
+    : { kind: "unreadable", source };
 }
 
 function sessionCookieValues(header: string | undefined): string[] {
@@ -84,7 +91,7 @@ export function sessionAuthenticator(
 ): Authenticate {
   return async (request) => {
     const { credential } = presentedCredentials(request.headers);
-    return credential.kind === "session" && credential.token !== null
+    return credential.kind === "session"
       ? repository.findSession(hashToken(credential.token), now())
       : null;
   };
