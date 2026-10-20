@@ -413,6 +413,34 @@ describe("session cookie credential", () => {
       ...cookie(cookieToken),
     });
     expect(invalidHeader.statusCode).toBe(401);
+
+    const emptyHeader = await session({
+      authorization: "",
+      ...cookie(cookieToken),
+    });
+    expect(emptyHeader.statusCode).toBe(401);
+  });
+
+  it("never reads an API key from the cookie", async () => {
+    const { app, signIn, session, createCampaign } = setup();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/api-clients",
+      headers: bearer(await signIn(browserAdvertiser)),
+      payload: { name: "integration", scopes: ["campaigns:write"] },
+    });
+    const { key } = created.json<{ key: string }>();
+
+    expect(key).toHaveLength(54);
+    expect((await session(cookie(key))).statusCode).toBe(401);
+    expect(
+      (
+        await createCampaign(
+          { ...cookie(key), "sec-fetch-site": "same-origin" },
+          browserAdvertiser.address,
+        )
+      ).statusCode,
+    ).toBe(401);
   });
 
   it("treats API-key-shaped or ambiguous cookies as no credential", async () => {
@@ -443,6 +471,14 @@ describe("session cookie credential", () => {
       403,
     ],
     ["no Fetch Metadata and no Origin", {}, 403],
+    ["a user-initiated request", { "sec-fetch-site": "none" }, 403],
+    [
+      "a cross-site request that names the web origin",
+      { "sec-fetch-site": "cross-site", origin: WEB_ORIGIN },
+      403,
+    ],
+    ["Origin null without Fetch Metadata", { origin: "null" }, 403],
+    ["the web origin with a trailing slash", { origin: `${WEB_ORIGIN}/` }, 403],
   ])("cookie mutation from %s", async (_label, headers, status) => {
     const { signIn, createCampaign } = setup();
     const token = await signIn(browserAdvertiser);
@@ -460,7 +496,43 @@ describe("session cookie credential", () => {
     }
   });
 
-  it("accepts no Origin fallback without WEB_ORIGIN", async () => {
+  it("refuses a duplicated Sec-Fetch-Site header", async () => {
+    const { app, signIn } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: {
+        ...cookie(token),
+        "sec-fetch-site": ["same-origin", "same-origin"],
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"] as const)(
+    "refuses a cross-site cookie %s",
+    async (method) => {
+      const { app, signIn } = setup();
+      const token = await signIn(browserAdvertiser);
+
+      const response = await app.inject({
+        method,
+        url: "/v1/campaigns",
+        headers: { ...cookie(token), "sec-fetch-site": "cross-site" },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED" },
+      });
+    },
+  );
+
+  it("refuses the Origin fallback without WEB_ORIGIN", async () => {
     const { signIn, createCampaign } = setup({ webOrigin: null });
     const token = await signIn(browserAdvertiser);
 
@@ -538,6 +610,20 @@ describe("cookie transport", () => {
       token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
       tokenType: "Bearer",
     });
+  });
+
+  it("accepts a cookie sign-in through the Origin fallback", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+
+    const response = await verify(
+      text,
+      await browserAdvertiser.signMessage({ message: text }),
+      { transport: "cookie", headers: { origin: WEB_ORIGIN } },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toMatch(/^__Host-vham_session=/);
   });
 
   it("refuses a cross-site cookie sign-in and leaves the nonce usable", async () => {
@@ -660,6 +746,20 @@ describe("logout", () => {
 
     expect((await session(cookie(first))).statusCode).toBe(401);
     expect((await session(cookie(second))).statusCode).toBe(401);
+  });
+
+  it("refuses a cross-site cookie logout and keeps the session", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const response = await logout({
+      ...cookie(token),
+      "sec-fetch-site": "cross-site",
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect((await session(cookie(token))).statusCode).toBe(200);
   });
 
   it("sends no clearing cookie to a request without one", async () => {
