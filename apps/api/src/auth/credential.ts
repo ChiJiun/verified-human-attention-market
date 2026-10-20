@@ -112,6 +112,15 @@ export function provenSameOrigin(
 }
 
 export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
+  // The requesting site is left out: it can name a site the user visited.
+  request.log.warn(
+    {
+      event: "csrf_rejected",
+      secFetchSite: request.headers["sec-fetch-site"] ?? null,
+      hasOrigin: request.headers.origin !== undefined,
+    },
+    "Cookie request refused: not proven same-origin",
+  );
   return reply.status(403).send({
     error: {
       code: "CSRF_REJECTED",
