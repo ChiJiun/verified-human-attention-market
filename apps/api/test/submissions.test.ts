@@ -295,13 +295,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     ],
     [
       "the contract would not pay the campaign",
-      {
-        ok: true as const,
-        payable: false,
-        issue: async () => {
-          throw new Error("not reached");
-        },
-      },
+      { ok: true as const, payable: false, issue: null },
     ],
   ])(
     "records no attempt when %s, before the answers are evaluated",
