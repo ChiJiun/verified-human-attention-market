@@ -31,6 +31,7 @@ import {
 } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
+import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
@@ -146,6 +147,7 @@ describeE2e("POC economic loop on a local chain", () => {
     return hash;
   }
 
+  /** What the mission page posts to eligibility/verify, minus the claimant. */
   async function simulatedProof(
     campaignId: string,
     claimant: Address,
@@ -154,14 +156,18 @@ describeE2e("POC economic loop on a local chain", () => {
     const requested = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/world-id/request`,
-      payload: { claimant },
     });
     expect(requested.statusCode).toBe(200);
-    const { action, signal } = requested.json<{
-      action: string;
-      signal: Hex;
-    }>();
-    return { action, simulatedHuman: human, signal };
+    const { action } = requested.json<{ action: string }>();
+    const signalSalt = newWorldIdSignalSalt();
+    return {
+      signalSalt,
+      idkitResponse: {
+        action,
+        simulatedHuman: human,
+        signal: worldIdSignal({ campaignId, claimant, salt: signalSalt }),
+      },
+    };
   }
 
   async function signIn(account: typeof deployer) {
@@ -563,7 +569,7 @@ describeE2e("POC economic loop on a local chain", () => {
     const verified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: { claimant: alice.address, idkitResponse: aliceProof },
+      payload: { claimant: alice.address, ...aliceProof },
     });
     expect(verified.statusCode).toBe(201);
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
@@ -572,7 +578,7 @@ describeE2e("POC economic loop on a local chain", () => {
     const relayed = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: { claimant: bob.address, idkitResponse: aliceProof },
+      payload: { claimant: bob.address, ...aliceProof },
     });
     expect(relayed.statusCode).toBe(403);
     expect(relayed.json()).toMatchObject({
@@ -736,7 +742,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: bob.address,
-        idkitResponse: await simulatedProof(campaignId, bob.address, "bob"),
+        ...(await simulatedProof(campaignId, bob.address, "bob")),
       },
     });
     expect(bobVerified.statusCode).toBe(201);
@@ -791,7 +797,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: carol.address,
-        idkitResponse: await simulatedProof(campaignId, carol.address, "carol"),
+        ...(await simulatedProof(campaignId, carol.address, "carol")),
       },
     });
     expect(carolVerified.statusCode).toBe(201);

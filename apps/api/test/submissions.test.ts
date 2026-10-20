@@ -19,6 +19,7 @@ const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
 const WALLET_A = "0x" + "a".repeat(40);
 const WALLET_B = "0x" + "b".repeat(40);
+const SIGNAL_SALT = `0x${"11".repeat(32)}`;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -116,6 +117,7 @@ async function setup() {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: { action: campaignAction(campaignId), human },
       },
     });

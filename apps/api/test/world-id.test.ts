@@ -1,4 +1,4 @@
-import type { Hex } from "viem";
+import { worldIdSignal, type WorldIdSignalSalt } from "@vham/shared/world-id";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -9,13 +9,17 @@ import {
 } from "../src/identity/world-id.js";
 import { signalHash } from "../src/identity/world-id-signal.js";
 
-const ACTION = campaignAction("00000000-0000-4000-8000-000000000001");
+const CAMPAIGN_ID = "00000000-0000-4000-8000-000000000001";
+const ACTION = campaignAction(CAMPAIGN_ID);
 const NULLIFIER_HEX =
   "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8";
 const NULLIFIER_DEC = BigInt(NULLIFIER_HEX).toString(10);
-const SIGNAL: Hex = `0x${"11".repeat(32)}`;
-const SIGNAL_HASH =
-  "0x00b569321de72d0af89c2fb48a484de3fc9343f31600ae1f3e13d633cb48cbf8";
+const WALLET_A = `0x${"a".repeat(40)}`;
+const WALLET_B = `0x${"b".repeat(40)}`;
+const SALT = `0x${"11".repeat(32)}` as WorldIdSignalSalt;
+const BOUND = { campaignId: CAMPAIGN_ID, claimant: WALLET_A, salt: SALT };
+const SIGNAL = worldIdSignal(BOUND);
+const SIGNAL_HASH = signalHash(SIGNAL);
 const EMPTY_SIGNAL_HASH =
   "0x00c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a4";
 
@@ -128,7 +132,39 @@ describe("HttpWorldIdVerifier", () => {
     ],
     [
       "another wallet's signal",
-      [responseItem({ signal_hash: signalHash(`0x${"22".repeat(32)}`) })],
+      [
+        responseItem({
+          signal_hash: signalHash(
+            worldIdSignal({ ...BOUND, claimant: WALLET_B }),
+          ),
+        }),
+      ],
+    ],
+    [
+      "another salt",
+      [
+        responseItem({
+          signal_hash: signalHash(
+            worldIdSignal({
+              ...BOUND,
+              salt: `0x${"22".repeat(32)}` as WorldIdSignalSalt,
+            }),
+          ),
+        }),
+      ],
+    ],
+    [
+      "another campaign's signal",
+      [
+        responseItem({
+          signal_hash: signalHash(
+            worldIdSignal({
+              ...BOUND,
+              campaignId: "00000000-0000-4000-8000-000000000002",
+            }),
+          ),
+        }),
+      ],
     ],
     [
       "one bound and one unbound credential",
@@ -442,13 +478,13 @@ describe("LocalSimulatedWorldIdVerifier", () => {
     ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
   });
 
-  it("refuses a simulated proof made for another wallet's signal", async () => {
+  it("refuses a simulated proof whose signal is another wallet's, missing or malformed", async () => {
     const verifier = new LocalSimulatedWorldIdVerifier(31337);
 
     expect(
       await verifier.verify({
         action: ACTION,
-        signal: `0x${"22".repeat(32)}`,
+        signal: worldIdSignal({ ...BOUND, claimant: WALLET_B }),
         idkitResponse: alice,
       }),
     ).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
@@ -459,5 +495,12 @@ describe("LocalSimulatedWorldIdVerifier", () => {
         idkitResponse: { action: ACTION, simulatedHuman: "alice" },
       }),
     ).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        signal: SIGNAL,
+        idkitResponse: { ...alice, signal: "0x1234" },
+      }),
+    ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
   });
 });

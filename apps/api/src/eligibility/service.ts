@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { Deployment } from "@vham/shared/deployment";
+import { worldIdSignal, type WorldIdSignalSalt } from "@vham/shared/world-id";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
 import {
@@ -9,7 +10,6 @@ import {
   type WorldIdFailureCode,
   type WorldIdVerifier,
 } from "../identity/world-id.js";
-import { worldIdSignal } from "../identity/world-id-signal.js";
 import { deriveParticipantKey } from "../privacy/participant-key.js";
 import {
   EligibilityConflictError,
@@ -65,6 +65,7 @@ export async function verifyEligibility(
   input: {
     campaignId: string;
     claimantAddress: string;
+    signalSalt: WorldIdSignalSalt;
     idkitResponse: unknown;
   },
 ): Promise<EligibilityOutcome> {
@@ -94,11 +95,11 @@ export async function verifyEligibility(
 
   const verification = await dependencies.worldId.verify({
     action: campaignAction(campaign.id),
-    signal: worldIdSignal(
-      dependencies.participantKeySecret,
-      campaign.id,
-      input.claimantAddress,
-    ),
+    signal: worldIdSignal({
+      campaignId: campaign.id,
+      claimant: input.claimantAddress,
+      salt: input.signalSalt,
+    }),
     idkitResponse: input.idkitResponse,
   });
 

@@ -1,4 +1,8 @@
-import type { Hex } from "viem";
+import {
+  worldIdSignal,
+  type WorldIdSignal,
+  type WorldIdSignalSalt,
+} from "@vham/shared/world-id";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
@@ -10,24 +14,26 @@ import {
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
-import { worldIdSignal } from "../src/identity/world-id-signal.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const now = new Date("2026-10-05T10:00:00.000Z");
 const SECRET = "eligibility-test-secret-0123456789abcdef";
 const WALLET_A = "0x" + "a".repeat(40);
 const WALLET_B = "0x" + "b".repeat(40);
+const SALT = `0x${"11".repeat(32)}` as WorldIdSignalSalt;
+const OTHER_SALT = `0x${"22".repeat(32)}` as WorldIdSignalSalt;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
 class FakeWorldId implements WorldIdVerifier {
-  calls: { action: string; signal: Hex; idkitResponse: unknown }[] = [];
+  calls: { action: string; signal: WorldIdSignal; idkitResponse: unknown }[] =
+    [];
 
   async verify(request: {
     action: string;
-    signal: Hex;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     this.calls.push(request);
@@ -112,20 +118,29 @@ async function setup(
     setNow: (value: Date) => {
       current = value;
     },
-    verify: (body: unknown) =>
+    verify: (body: {
+      claimant: string;
+      idkitResponse?: unknown;
+      signalSalt?: unknown;
+    }) =>
       app.inject({
         method: "POST",
         url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-        payload: body as Record<string, unknown>,
+        payload: { signalSalt: SALT, ...body },
       }),
   };
 }
 
-function proof(campaignId: string, human: string, claimant = WALLET_A) {
+function proof(
+  campaignId: string,
+  human: string,
+  claimant = WALLET_A,
+  salt: WorldIdSignalSalt = SALT,
+) {
   return {
     action: campaignAction(campaignId),
     human,
-    signal: worldIdSignal(SECRET, campaignId, claimant),
+    signal: worldIdSignal({ campaignId, claimant, salt }),
   };
 }
 
@@ -180,7 +195,7 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
     });
   });
 
-  it("refuses a proof made for another wallet and writes nothing", async () => {
+  it("refuses a proof made for another wallet or another salt, and writes nothing", async () => {
     const { campaignId, verify } = await setup();
 
     const relayed = await verify({
@@ -193,11 +208,44 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
       error: { code: "SIGNAL_MISMATCH" },
     });
 
+    const otherSalt = await verify({
+      claimant: WALLET_B,
+      signalSalt: OTHER_SALT,
+      idkitResponse: proof(campaignId, "h", WALLET_B),
+    });
+    expect(otherSalt.statusCode).toBe(403);
+    expect(otherSalt.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+
     const own = await verify({
       claimant: WALLET_B,
       idkitResponse: proof(campaignId, "h", WALLET_B),
     });
     expect(own.statusCode).toBe(201);
+  });
+
+  it("refuses a missing or malformed signal salt without calling World", async () => {
+    const { campaignId, verify, worldId } = await setup();
+
+    for (const signalSalt of [
+      undefined,
+      "0x1234",
+      `0x${"11".repeat(31)}zz`,
+      "11".repeat(32),
+      11,
+    ]) {
+      const response = await verify({
+        claimant: WALLET_A,
+        signalSalt,
+        idkitResponse: proof(campaignId, "h"),
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "INVALID_ELIGIBILITY_REQUEST" },
+      });
+    }
+    expect(worldId.calls).toHaveLength(0);
   });
 
   it("rejects one wallet being used by a second human", async () => {
@@ -294,7 +342,7 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
       const response = await app.inject({
         method: "POST",
         url: `/v1/campaigns/${id}/eligibility/verify`,
-        payload: { claimant: WALLET_A, idkitResponse: {} },
+        payload: { claimant: WALLET_A, signalSalt: SALT, idkitResponse: {} },
       });
       expect(response.statusCode).toBe(404);
     }

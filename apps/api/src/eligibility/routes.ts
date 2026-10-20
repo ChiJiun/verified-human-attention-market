@@ -1,3 +1,4 @@
+import { worldIdSignalSaltSchema } from "@vham/shared/world-id";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -6,7 +7,6 @@ import {
   campaignAction,
   type WorldIdEnvironment,
 } from "../identity/world-id.js";
-import { worldIdSignal } from "../identity/world-id-signal.js";
 import type { RpSigner } from "../identity/rp-signature.js";
 import {
   verifyEligibility,
@@ -20,10 +20,9 @@ const claimantSchema = z
   .string()
   .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address");
 
-const worldIdRequestSchema = z.object({ claimant: claimantSchema });
-
 const verifyEligibilitySchema = z.object({
   claimant: claimantSchema,
+  signalSalt: worldIdSignalSaltSchema,
   // Forwarded to World ID unchanged; validated by the verifier.
   idkitResponse: z.unknown(),
 });
@@ -57,16 +56,6 @@ export async function registerEligibilityRoutes(
         return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
       }
 
-      const parsed = worldIdRequestSchema.safeParse(request.body);
-
-      if (!parsed.success) {
-        return fail(
-          400,
-          "INVALID_ELIGIBILITY_REQUEST",
-          "claimant must be an EVM address",
-        );
-      }
-
       const campaign = await dependencies.campaigns.getById(request.params.id);
 
       if (!campaign) {
@@ -93,7 +82,7 @@ export async function registerEligibilityRoutes(
 
       const config = dependencies.worldIdRequest;
 
-      if (!config || !dependencies.participantKeySecret) {
+      if (!config) {
         return fail(
           503,
           "WORLD_ID_NOT_CONFIGURED",
@@ -102,14 +91,9 @@ export async function registerEligibilityRoutes(
       }
 
       const action = campaignAction(campaign.id);
-      const signal = worldIdSignal(
-        dependencies.participantKeySecret,
-        campaign.id,
-        parsed.data.claimant,
-      );
 
       if (config.mode === "simulated") {
-        return reply.send({ mode: "simulated", action, signal });
+        return reply.send({ mode: "simulated", action });
       }
 
       const signature = await config.signer.sign({ action, now });
@@ -126,7 +110,6 @@ export async function registerEligibilityRoutes(
           expires_at: signature.expiresAt,
           signature: signature.sig,
         },
-        signal,
       });
     },
   );
@@ -150,7 +133,7 @@ export async function registerEligibilityRoutes(
         return reply.status(400).send({
           error: {
             code: "INVALID_ELIGIBILITY_REQUEST",
-            message: "claimant and idkitResponse are required",
+            message: "claimant, signalSalt and idkitResponse are required",
             requestId: request.id,
           },
         });
@@ -159,6 +142,7 @@ export async function registerEligibilityRoutes(
       const outcome = await verifyEligibility(dependencies, {
         campaignId: request.params.id,
         claimantAddress: parsed.data.claimant,
+        signalSalt: parsed.data.signalSalt,
         idkitResponse: parsed.data.idkitResponse,
       });
 

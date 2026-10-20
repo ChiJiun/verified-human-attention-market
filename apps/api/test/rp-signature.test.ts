@@ -1,3 +1,4 @@
+import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
 import { bytesToHex, hexToBytes, stringToBytes, verifyMessage } from "viem";
 import { describe, expect, it } from "vitest";
 
@@ -94,7 +95,6 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   const SECRET = "rp-request-test-secret-0123456789abcdef";
   const WALLET_A = `0x${"a".repeat(40)}`;
   const WALLET_B = `0x${"b".repeat(40)}`;
-
   const signer = createRpSigner(KEY);
   const LIVE: WorldIdRequestConfig = {
     mode: "live",
@@ -151,31 +151,30 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     return { app, id: created.json<{ id: string }>().id };
   }
 
-  it("returns the campaign action, a wallet-bound signal and a verifiable rp_context", async () => {
+  it("returns the campaign action and a verifiable rp_context, with no body and no signal", async () => {
     const { app, id } = await setup(LIVE);
-    const request = (claimant: string) =>
-      app.inject({
-        method: "POST",
-        url: `/v1/campaigns/${id}/world-id/request`,
-        payload: { claimant },
-      });
-    const response = await request(WALLET_A);
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${id}/world-id/request`,
+    });
 
     expect(response.statusCode).toBe(200);
     const body = response.json<{
-      mode: string;
-      appId: string;
       action: string;
-      environment: string;
       rpContext: {
-        rp_id: string;
         nonce: `0x${string}`;
         created_at: number;
         expires_at: number;
         signature: `0x${string}`;
       };
-      signal: string;
     }>();
+    expect(Object.keys(body).sort()).toEqual([
+      "action",
+      "appId",
+      "environment",
+      "mode",
+      "rpContext",
+    ]);
     expect(body).toMatchObject({
       mode: "live",
       appId: "app_test123",
@@ -183,7 +182,6 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       action: `vham-campaign-${id}`,
       rpContext: { rp_id: "rp_test123", expires_at: 1_791_194_400 + 300 },
     });
-    expect(body.signal).toMatch(/^0x[0-9a-f]{64}$/);
     expect(response.body).not.toContain(KEY.slice(2));
     expect(
       await verifyMessage({
@@ -199,32 +197,10 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         signature: body.rpContext.signature,
       }),
     ).toBe(true);
-
-    const again = (await request(WALLET_A)).json<{ signal: string }>();
-    const other = (await request(WALLET_B)).json<{ signal: string }>();
-    expect(again.signal).toBe(body.signal);
-    expect(other.signal).not.toBe(body.signal);
     await app.close();
   });
 
-  it("requires the claimant wallet", async () => {
-    const { app, id } = await setup(LIVE);
-
-    for (const payload of [undefined, {}, { claimant: "nope" }]) {
-      const response = await app.inject({
-        method: "POST",
-        url: `/v1/campaigns/${id}/world-id/request`,
-        ...(payload === undefined ? {} : { payload }),
-      });
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
-        error: { code: "INVALID_ELIGIBILITY_REQUEST" },
-      });
-    }
-    await app.close();
-  });
-
-  it("serves the local simulation the signal its proof must carry", async () => {
+  it("serves the local simulation, whose proof carries the browser-derived signal", async () => {
     const { app, id } = await setup(
       { mode: "simulated" },
       { worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337) },
@@ -232,24 +208,28 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
-      payload: { claimant: WALLET_A },
     });
 
     expect(response.statusCode).toBe(200);
-    const body = response.json<{ action: string; signal: string }>();
-    expect(body).toEqual({
+    expect(response.json()).toEqual({
       mode: "simulated",
       action: `vham-campaign-${id}`,
-      signal: expect.stringMatching(/^0x[0-9a-f]{64}$/),
     });
-    const { action, signal } = body;
+    const { action } = response.json<{ action: string }>();
 
+    const signalSalt = newWorldIdSignalSalt();
+    const signal = worldIdSignal({
+      campaignId: id,
+      claimant: WALLET_A,
+      salt: signalSalt,
+    });
     const verify = (claimant: string) =>
       app.inject({
         method: "POST",
         url: `/v1/campaigns/${id}/eligibility/verify`,
         payload: {
           claimant,
+          signalSalt,
           idkitResponse: { action, simulatedHuman: "alice", signal },
         },
       });
@@ -262,13 +242,11 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     await app.close();
   });
 
-  it("fails closed when the request config or the signal secret is missing, whatever the verifier", async () => {
-    const payload = { claimant: WALLET_A };
+  it("fails closed when the request config is missing, whatever the verifier", async () => {
     const unsigned = await setup(null);
     const response = await unsigned.app.inject({
       method: "POST",
       url: `/v1/campaigns/${unsigned.id}/world-id/request`,
-      payload,
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({
@@ -277,7 +255,6 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     const missing = await unsigned.app.inject({
       method: "POST",
       url: "/v1/campaigns/00000000-0000-4000-8000-000000000999/world-id/request",
-      payload,
     });
     expect(missing.statusCode).toBe(404);
     await unsigned.app.close();
@@ -288,24 +265,11 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     const noConfig = await simulatedVerifierOnly.app.inject({
       method: "POST",
       url: `/v1/campaigns/${simulatedVerifierOnly.id}/world-id/request`,
-      payload,
     });
     expect(noConfig.statusCode).toBe(503);
     expect(noConfig.json()).toMatchObject({
       error: { code: "WORLD_ID_NOT_CONFIGURED" },
     });
     await simulatedVerifierOnly.app.close();
-
-    const unsalted = await setup(LIVE, { secret: null });
-    const noSecret = await unsalted.app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${unsalted.id}/world-id/request`,
-      payload,
-    });
-    expect(noSecret.statusCode).toBe(503);
-    expect(noSecret.json()).toMatchObject({
-      error: { code: "WORLD_ID_NOT_CONFIGURED" },
-    });
-    await unsalted.app.close();
   });
 });

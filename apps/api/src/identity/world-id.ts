@@ -1,4 +1,4 @@
-import type { Hex } from "viem";
+import { worldIdSignalSchema, type WorldIdSignal } from "@vham/shared/world-id";
 import { z } from "zod";
 
 import { signalHash } from "./world-id-signal.js";
@@ -37,7 +37,7 @@ export type WorldIdResult =
 export interface WorldIdVerifier {
   verify(request: {
     action: string;
-    signal: Hex;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult>;
 }
@@ -115,7 +115,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
-    signal: Hex;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const parsed = idkitResponseSchema.safeParse(request.idkitResponse);
@@ -249,14 +249,14 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
-    signal: Hex;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const proof = z
       .object({
         action: z.string(),
         simulatedHuman: z.string().min(1).max(100),
-        signal: z.string().optional(),
+        signal: worldIdSignalSchema.optional(),
       })
       .safeParse(request.idkitResponse);
 

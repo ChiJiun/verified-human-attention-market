@@ -60,6 +60,7 @@ export const LOGGER_REDACT_PATHS = [
   "headers.authorization",
   "headers.cookie",
   "*.idkitResponse",
+  "*.signalSalt",
   "*.proof",
   "*.signature",
   "*.privateKey",
