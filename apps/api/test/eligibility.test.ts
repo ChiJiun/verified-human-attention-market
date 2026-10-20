@@ -23,6 +23,7 @@ afterEach(async () => {
 });
 
 class FakeWorldId implements WorldIdVerifier {
+  readonly mode = "live";
   calls: { action: string; signal: Hex; idkitResponse: unknown }[] = [];
 
   async verify(request: {

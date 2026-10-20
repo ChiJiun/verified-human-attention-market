@@ -35,6 +35,8 @@ class StatusOverrideCampaignRepository extends InMemoryCampaignRepository {
 }
 
 class FakeWorldId implements WorldIdVerifier {
+  readonly mode = "live";
+
   async verify(request: {
     action: string;
     idkitResponse: unknown;

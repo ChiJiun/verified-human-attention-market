@@ -2,10 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
-import {
-  campaignAction,
-  LocalSimulatedWorldIdVerifier,
-} from "../identity/world-id.js";
+import { campaignAction } from "../identity/world-id.js";
 import { worldIdSignal } from "../identity/world-id-signal.js";
 import type { RpSigner } from "../identity/rp-signature.js";
 import {
@@ -104,7 +101,7 @@ export async function registerEligibilityRoutes(
         parsed.data.claimant,
       );
 
-      if (dependencies.worldId instanceof LocalSimulatedWorldIdVerifier) {
+      if (dependencies.worldId.mode === "simulated") {
         return reply.send({ appId: null, action, signal });
       }
 
