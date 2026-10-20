@@ -11,9 +11,11 @@ import {
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
 import type { SignedClaim } from "../src/claims/signer.js";
-import type { SubmissionRecord } from "../src/submissions/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
-import { submitCompletion } from "../src/submissions/service.js";
+import {
+  submitCompletion,
+  type SubmissionServiceDependencies,
+} from "../src/submissions/service.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
@@ -148,13 +150,13 @@ async function setup() {
   };
 }
 
-/** What the claim service returns when it signs for `submission`. */
-function signedFor(submission: SubmissionRecord): SignedClaim {
+/** What the claim service returns when it signs for `claimant`. */
+function signedFor(claimant: string): SignedClaim {
   return {
     payload: {
       campaignId: 1n,
       draftRef: `0x${"11".repeat(32)}`,
-      claimant: submission.claimantAddress as `0x${string}`,
+      claimant: claimant as `0x${string}`,
       amount: 1000000n,
       nonce: `0x${"22".repeat(32)}`,
       issuedAt: 1n,
@@ -163,6 +165,22 @@ function signedFor(submission: SubmissionRecord): SignedClaim {
     signature: `0x${"33".repeat(65)}`,
     chainId: 84532,
     contractAddress: `0x${"44".repeat(20)}`,
+  };
+}
+
+/** Service dependencies over the in-memory stores of `s`, chain stubbed. */
+function serviceDependencies(
+  s: Awaited<ReturnType<typeof setup>>,
+  authorize: SubmissionServiceDependencies["authorize"],
+): SubmissionServiceDependencies {
+  return {
+    campaigns: s.campaigns,
+    deployment: null,
+    chainHalted: async () => false,
+    eligibility: s.eligibility,
+    submissions: s.submissions,
+    now: () => new Date("2026-10-05T10:30:00.000Z"),
+    authorize,
   };
 }
 
@@ -179,25 +197,19 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
       const token = await s.verify("human-1", WALLET_A);
       let refuse = true;
       const authorizations: string[] = [];
-      const dependencies = {
-        campaigns: s.campaigns,
-        deployment: null,
-        chainHalted: async () => false,
-        liveCampaign: null,
-        eligibility: s.eligibility,
-        submissions: s.submissions,
-        now: () => new Date("2026-10-05T10:30:00.000Z"),
-        authorize: async (submission: SubmissionRecord) => {
-          authorizations.push(submission.id);
-          return refuse
-            ? { ok: false as const, status, code }
-            : {
-                ok: true as const,
-                created: true,
-                claim: signedFor(submission),
-              };
-        },
-      };
+      const dependencies = serviceDependencies(
+        s,
+        async (_campaign, claimant) => ({
+          ok: true,
+          payable: true,
+          issue: async (submissionId) => {
+            authorizations.push(submissionId);
+            return refuse
+              ? { ok: false, status, code }
+              : { ok: true, created: true, claim: signedFor(claimant) };
+          },
+        }),
+      );
       const input = {
         campaignId: s.campaignId,
         eligibilityToken: token,
@@ -251,23 +263,14 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     const token = await s.verify("human-2", WALLET_B);
     let calls = 0;
     const outcome = await submitCompletion(
-      {
-        campaigns: s.campaigns,
-        deployment: null,
-        chainHalted: async () => false,
-        liveCampaign: null,
-        eligibility: s.eligibility,
-        submissions: s.submissions,
-        now: () => new Date("2026-10-05T10:30:00.000Z"),
-        authorize: async () => {
+      serviceDependencies(s, async () => ({
+        ok: true,
+        payable: true,
+        issue: async () => {
           calls += 1;
-          return {
-            ok: false as const,
-            status: 503,
-            code: "SIGNER_UNAVAILABLE",
-          };
+          return { ok: false, status: 503, code: "SIGNER_UNAVAILABLE" };
         },
-      },
+      })),
       {
         campaignId: s.campaignId,
         eligibilityToken: token,
@@ -284,6 +287,63 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     expect(calls).toBe(0);
     expect(await s.submissions.countByEligibility(token)).toBe(1);
   });
+
+  it.each([
+    [
+      "the chain cannot be read",
+      { ok: false as const, status: 503, code: "CHAIN_UNAVAILABLE" },
+    ],
+    [
+      "the contract would not pay the campaign",
+      {
+        ok: true as const,
+        payable: false,
+        issue: async () => {
+          throw new Error("not reached");
+        },
+      },
+    ],
+  ])(
+    "records no attempt when %s, before the answers are evaluated",
+    async (_reason, preparation) => {
+      const s = await setup();
+      const token = await s.verify("human-3", WALLET_A);
+      const dependencies = serviceDependencies(s, async () => preparation);
+      const request = {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_A,
+        answers: WRONG,
+      };
+
+      expect(
+        await submitCompletion(dependencies, {
+          ...request,
+          idempotencyKey: "pre-1",
+        }),
+      ).toEqual(
+        preparation.ok
+          ? { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" }
+          : preparation,
+      );
+      expect(await s.submissions.countByEligibility(token)).toBe(0);
+
+      // Once the chain answers, the same participant still has every attempt.
+      const recorded = await submitCompletion(
+        serviceDependencies(s, async () => ({
+          ok: true,
+          payable: true,
+          issue: null,
+        })),
+        { ...request, idempotencyKey: "pre-2" },
+      );
+      expect(recorded).toMatchObject({
+        ok: true,
+        created: true,
+        submission: { result: "rejected" },
+      });
+    },
+  );
 });
 
 describe("POST /v1/campaigns/:id/submissions", () => {

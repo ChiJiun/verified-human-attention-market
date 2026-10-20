@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import type { LiveCampaignState } from "../campaigns/onchain.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
-import type { ClaimOutcome } from "../claims/service.js";
+import type { ClaimIssuer, ClaimPreparation } from "../claims/service.js";
 import type { SignedClaim } from "../claims/signer.js";
-import type { PersistenceScope } from "../db/client.js";
 import type { Deployment } from "@vham/shared/deployment";
 
 import {
@@ -45,31 +43,26 @@ export interface SubmissionServiceDependencies {
    * confirmation depth: no participation until recovery (ADR-0011).
    */
   chainHalted: () => Promise<boolean>;
-  /**
-   * Live on-chain state of the campaign (not the indexed copy): its link is
-   * still this draft's canonical creation with the draft's parameters, and
-   * it is funded, open and within its window. A completion is accepted only
-   * when the contract would pay it, even if the indexer lags or is down.
-   * null = no chain configured (nothing can be paid anyway).
-   */
-  liveCampaign:
-    ((campaign: CampaignRecord) => Promise<LiveCampaignState>) | null;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
   /**
-   * Signs the claim authorization inside the transaction that records an
-   * accepted completion (ADR-0011): either both are persisted or neither,
-   * so no accepted completion can exist that the contract would not pay
-   * (campaign closed between the checks and the signature, signer down,
-   * payout limit reached, cap reached). The participant's attempt is then
-   * not consumed and the same request can be retried. null = no signer
-   * configured (local development without a chain).
+   * Pre-flight for a verified participant's completion (ADR-0011, 12),
+   * run before anything is recorded and outside any transaction: the
+   * contract must still pay this draft's campaign right now (`payable`,
+   * read live rather than from the lagging index), and the returned issuer
+   * signs the claim authorization inside the transaction that records an
+   * acceptance. Either the completion and its authorization are both
+   * persisted or neither is, so no accepted completion exists that the
+   * contract would not pay (closed between the checks and the signature,
+   * signer down, payout limit or cap reached); the attempt is then not
+   * consumed and the same request can be retried. null = no chain
+   * configured (local development: completions stay pending_authorization).
    */
-  authorize?:
+  authorize:
     | ((
-        submission: SubmissionRecord,
-        scope: PersistenceScope,
-      ) => Promise<ClaimOutcome>)
+        campaign: CampaignRecord,
+        claimantAddress: string,
+      ) => Promise<ClaimPreparation>)
     | null;
   now: () => Date;
   maxAttempts?: number;
@@ -237,15 +230,22 @@ export async function submitCompletion(
 
   // Last check before any completion is recorded, and only for a verified
   // participant (no RPC call for unauthenticated requests): the contract
-  // must still pay this draft's campaign right now (ADR-0011, #13).
-  if (campaign.onchainCampaignId !== null && dependencies.liveCampaign) {
-    const live = await dependencies.liveCampaign(campaign);
-    if (live === "unavailable") {
-      return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
+  // must still pay this draft's campaign right now (ADR-0011, #13). The
+  // chain and the signer are consulted here, before the transaction opens.
+  let issue: ClaimIssuer | null = null;
+  if (dependencies.authorize) {
+    const prepared = await dependencies.authorize(campaign, claimantAddress);
+    if (!prepared.ok) {
+      return {
+        ok: false,
+        status: prepared.status,
+        code: prepared.code as SubmissionFailureCode,
+      };
     }
-    if (live !== "payable") {
+    if (!prepared.payable) {
       return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
     }
+    issue = prepared.issue;
   }
 
   const evaluation = evaluateSubmission(mission, input.answers, {
@@ -281,7 +281,6 @@ export async function submitCompletion(
     quality,
   );
 
-  const authorize = dependencies.authorize ?? null;
   let signed: SignedClaim | null = null;
 
   try {
@@ -298,12 +297,12 @@ export async function submitCompletion(
       answers: evaluation.answers,
       qualityFlags,
       createdAt: now,
-      ...(evaluation.result === "accepted" && authorize
+      ...(evaluation.result === "accepted" && issue
         ? {
             // Acceptance means payable: sign in the same transaction and
             // roll the acceptance back if no authorization can be issued.
             beforeCommit: async (submission, scope) => {
-              const outcome = await authorize(submission, scope);
+              const outcome = await issue(submission.id, scope);
               if (!outcome.ok) {
                 throw new AuthorizationRefusedError(outcome);
               }

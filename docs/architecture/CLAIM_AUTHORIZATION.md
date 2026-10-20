@@ -99,9 +99,16 @@ signature and EIP-712 domain are persisted atomically. A concurrent or repeated
 authorization request returns the same active signature.
 
 Before signing, the service reads **live** contract state via `eth_call`: the
-current `authorizedSigner`, `campaigns(id)` (paid completions, `closedAt`,
-`endTime`) and `claimedWallet(id, claimant)`. Indexed events lag by the
-confirmation depth; these reads do not. RPC failures fail closed.
+current `authorizedSigner`, `campaignIdByDraft` and `campaigns(id)` (paid
+completions, `closedAt`, `endTime`) and `claimedWallet(id, claimant)`. Indexed
+events lag by the confirmation depth; these reads do not. RPC failures fail
+closed. These reads, and the lookup of confirmed payouts in the index, run
+before the transaction that records an acceptance opens, and the same
+`campaigns(id)` reading decides whether the completion is accepted at all
+(ADR-0011, decision 12). Inside the transaction only the campaign row lock,
+the cap and payout-limit counts, the signature and the update run, so an
+acceptance holds its pool connection for the database round trips plus at
+most one signer call (bounded by the signer's timeout), never for an RPC.
 
 - **Cap:** under the campaign row lock, a new authorization is issued only if
   `onchain paidCompletions + unexpired authorizations of other submissions <
