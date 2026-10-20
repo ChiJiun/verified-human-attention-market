@@ -5,7 +5,7 @@ import type { ClaimRepository } from "../claims/repository.js";
 import {
   claimRefusal,
   type ClaimPreparation,
-  type ClaimTerms,
+  type ClaimSigning,
 } from "../claims/service.js";
 import type { SignedClaim } from "../claims/signer.js";
 import type { PersistenceScope } from "../db/client.js";
@@ -211,7 +211,7 @@ export async function submitCompletion(
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
-  let terms: ClaimTerms | null = null;
+  let signing: ClaimSigning = { state: "unconfigured" };
   if (dependencies.prepareClaim) {
     const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
     if (!prepared.ok) {
@@ -224,7 +224,7 @@ export async function submitCompletion(
     if (!prepared.payable) {
       return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
     }
-    terms = prepared.terms;
+    signing = prepared.signing;
   }
 
   const evaluation = evaluateSubmission(mission, input.answers, {
@@ -276,14 +276,14 @@ export async function submitCompletion(
       answers: evaluation.answers,
       qualityFlags,
       createdAt: now,
-      ...(evaluation.result === "accepted" && terms
+      ...(evaluation.result === "accepted" && signing.state === "ready"
         ? {
             // Acceptance means payable: sign in the same transaction and
             // roll the acceptance back if no authorization can be issued.
             beforeCommit: async (submission, scope) => {
               const issued = await dependencies.claims
                 .within(scope)
-                .issueOnce({ ...terms, submissionId: submission.id });
+                .issueOnce({ ...signing.terms, submissionId: submission.id });
               signed = issued.claim;
             },
           }

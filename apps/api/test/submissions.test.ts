@@ -184,7 +184,11 @@ const TERMS: ClaimTerms = {
   onchainPaidCompletions: 0,
   sign: async () => signedFor(WALLET_A),
 };
-const SIGNABLE: ClaimPreparation = { ok: true, payable: true, terms: TERMS };
+const SIGNABLE: ClaimPreparation = {
+  ok: true,
+  payable: true,
+  signing: { state: "ready", terms: TERMS },
+};
 
 function serviceDependencies(
   s: Awaited<ReturnType<typeof setup>>,
@@ -335,7 +339,11 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
     ],
     [
       "the contract would not pay the campaign",
-      { ok: true as const, payable: false, terms: null },
+      {
+        ok: true as const,
+        payable: false,
+        signing: { state: "unconfigured" as const },
+      },
     ],
   ])(
     "records no attempt when %s, before the answers are evaluated",
@@ -366,7 +374,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
         serviceDependencies(s, async () => ({
           ok: true,
           payable: true,
-          terms: null,
+          signing: { state: "unconfigured" },
         })),
         { ...request, idempotencyKey: "pre-2" },
       );

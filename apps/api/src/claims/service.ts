@@ -57,8 +57,11 @@ export type ClaimOutcome =
 
 export type ClaimTerms = Omit<ClaimIssueInput, "submissionId">;
 
+export type ClaimSigning =
+  { state: "unconfigured" } | { state: "ready"; terms: ClaimTerms };
+
 export type ClaimPreparation =
-  ClaimRefusal | { ok: true; payable: boolean; terms: ClaimTerms | null };
+  ClaimRefusal | { ok: true; payable: boolean; signing: ClaimSigning };
 
 export function claimRefusal(error: unknown): ClaimRefusal | null {
   if (error instanceof ClaimIssueError) {
@@ -119,7 +122,7 @@ export async function prepareClaim(
   const payable = live.state === "payable";
 
   if (!signer) {
-    return { ok: true, payable, terms: null };
+    return { ok: true, payable, signing: { state: "unconfigured" } };
   }
 
   let onchainSigner: string;
@@ -178,41 +181,39 @@ export async function prepareClaim(
   const onchainCampaignId = campaign.onchainCampaignId;
   const nowSeconds = Math.floor(now.getTime() / 1000);
 
-  return {
-    ok: true,
-    payable,
-    terms: {
-      campaignId: campaign.id,
-      now,
-      canIssue:
-        campaign.status === "active" &&
-        now >= campaign.startAt &&
-        now < campaign.endAt &&
-        // The contract rejects authorizations issued after close/end.
-        onchain.closedAt === 0 &&
-        nowSeconds < onchain.endTime,
-      alreadyClaimed,
-      dailyLimit:
-        dependencies.dailyPayoutLimitAtomic == null
-          ? null
-          : {
-              limitAtomic: dependencies.dailyPayoutLimitAtomic,
-              rewardAtomic: BigInt(campaign.rewardAtomic),
-            },
-      onchainPaidCompletions: onchain.paidCompletions,
-      redeemedNonces,
-      sign: () =>
-        signer.sign({
-          campaignId: BigInt(onchainCampaignId),
-          draftRef: draftRefFor(campaign.id),
-          claimant: claimant as Address,
-          amount: BigInt(campaign.rewardAtomic),
-          chainId: chain.chainId,
-          contractAddress: chain.contractAddress,
-          issuedAt: BigInt(nowSeconds),
-        }),
-    },
+  const terms: ClaimTerms = {
+    campaignId: campaign.id,
+    now,
+    canIssue:
+      campaign.status === "active" &&
+      now >= campaign.startAt &&
+      now < campaign.endAt &&
+      // The contract rejects authorizations issued after close/end.
+      onchain.closedAt === 0 &&
+      nowSeconds < onchain.endTime,
+    alreadyClaimed,
+    dailyLimit:
+      dependencies.dailyPayoutLimitAtomic == null
+        ? null
+        : {
+            limitAtomic: dependencies.dailyPayoutLimitAtomic,
+            rewardAtomic: BigInt(campaign.rewardAtomic),
+          },
+    onchainPaidCompletions: onchain.paidCompletions,
+    redeemedNonces,
+    sign: () =>
+      signer.sign({
+        campaignId: BigInt(onchainCampaignId),
+        draftRef: draftRefFor(campaign.id),
+        claimant: claimant as Address,
+        amount: BigInt(campaign.rewardAtomic),
+        chainId: chain.chainId,
+        contractAddress: chain.contractAddress,
+        issuedAt: BigInt(nowSeconds),
+      }),
   };
+
+  return { ok: true, payable, signing: { state: "ready", terms } };
 }
 
 export async function authorizeClaim(
@@ -264,13 +265,13 @@ export async function authorizeClaim(
   if (!prepared.ok) {
     return prepared;
   }
-  if (!prepared.terms) {
+  if (prepared.signing.state === "unconfigured") {
     return { ok: false, status: 503, code: "AUTHORIZATION_UNAVAILABLE" };
   }
 
   try {
     const issued = await dependencies.claims.issueOnce({
-      ...prepared.terms,
+      ...prepared.signing.terms,
       submissionId: submission.id,
     });
     return { ok: true, ...issued };
