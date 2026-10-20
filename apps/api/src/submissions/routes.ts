@@ -24,8 +24,7 @@ export async function registerSubmissionRoutes(
     /**
      * Returns the authorization of an accepted completion on a replay (the
      * one signed at acceptance, reissued if it expired). New acceptances are
-     * signed inside their transaction through `authorize` (ADR-0011).
-     * null = no signer.
+     * signed inside their own transaction (ADR-0011). null = no signer.
      */
     issueAuthorization:
       | ((input: {

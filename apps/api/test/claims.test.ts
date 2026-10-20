@@ -67,6 +67,7 @@ function fixture() {
     closedAt: 0,
     endTime: Math.floor(END.getTime() / 1000),
     claimed: false,
+    rewardPerCompletion: 1_000_000,
   };
   let currentCampaign = campaign;
   /** What the contract's campaignIdByDraft says for this campaign's draft. */
@@ -93,7 +94,7 @@ function fixture() {
           word(BigInt(`0x${"aa".repeat(20)}`)),
           word(currentCampaign.maxCompletions * 1_000_000),
           word(chainState.paidCompletions * 1_000_000),
-          word(1_000_000),
+          word(chainState.rewardPerCompletion),
           word(currentCampaign.maxCompletions),
           word(chainState.paidCompletions),
           word(Math.floor(START.getTime() / 1000)),
@@ -319,6 +320,39 @@ describe("EIP-712 claim authorization", () => {
         code: "CAMPAIGN_NOT_ACTIVE",
       });
     }
+  });
+
+  it("never signs while the contract's campaign carries other economics than the draft", async () => {
+    const f = fixture();
+    const { claims } = f.dependencies;
+    const draftReward = Number(campaign.rewardAtomic);
+    let signCalls = 0;
+    const counting = {
+      ...f.dependencies,
+      signer: {
+        address: signer.address,
+        sign: (request: Parameters<typeof signer.sign>[0]) => {
+          signCalls += 1;
+          return signer.sign(request);
+        },
+      },
+    };
+    f.chainState.rewardPerCompletion = 2 * draftReward;
+
+    expect(await authorizeClaim(counting, f.input)).toMatchObject({
+      ok: false,
+      status: 409,
+      code: "CAMPAIGN_NOT_ACTIVE",
+    });
+    expect(signCalls).toBe(0);
+    expect(await claims.listIssuedClaims(campaign.id)).toEqual([]);
+
+    f.chainState.rewardPerCompletion = draftReward;
+    expect(await authorizeClaim(counting, f.input)).toMatchObject({
+      ok: true,
+      created: true,
+    });
+    expect(signCalls).toBe(1);
   });
 
   it("never signs for a campaign linked on another deployment (ADR-0011)", async () => {

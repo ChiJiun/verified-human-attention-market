@@ -107,7 +107,7 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
-- #19 closed 2026-10-15: `CampaignManager` is deployed on Base Sepolia and recorded in `packages/contracts/deployments/84532.json`
+- #19 closed 2026-10-15: `CampaignManager` was deployed on Base Sepolia; that pre-ADR-0011 record is archived at `packages/contracts/deployments/archive/84532-2026-10-14-pre-adr-0011.json`, and a new `packages/contracts/deployments/84532.json` appears with the ADR-0011 redeploy
 
 Next, in dependency order:
 

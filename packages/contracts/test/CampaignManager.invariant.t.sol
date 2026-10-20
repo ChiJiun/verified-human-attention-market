@@ -52,6 +52,7 @@ contract CampaignInvariantHandler {
     InvariantUSDC public immutable token;
 
     uint256 public immutable campaignId;
+    bytes32 public immutable draftRef;
     uint256 public immutable signerKey;
     address public immutable advertiser;
 
@@ -61,12 +62,14 @@ contract CampaignInvariantHandler {
         CampaignManager manager_,
         InvariantUSDC token_,
         uint256 campaignId_,
+        bytes32 draftRef_,
         uint256 signerKey_,
         address advertiser_
     ) {
         manager = manager_;
         token = token_;
         campaignId = campaignId_;
+        draftRef = draftRef_;
         signerKey = signerKey_;
         advertiser = advertiser_;
     }
@@ -90,7 +93,7 @@ contract CampaignInvariantHandler {
 
         CampaignManager.ClaimAuthorization memory authorization = CampaignManager.ClaimAuthorization({
             campaignId: campaignId,
-            draftRef: keccak256("invariant"),
+            draftRef: draftRef,
             claimant: claimant,
             amount: rewardPerCompletion,
             nonce: keccak256(abi.encode(seed, claimant, totalClaimed)),
@@ -136,6 +139,7 @@ contract CampaignManagerInvariantTest {
     uint256 private constant ONE_USDC = 1_000_000;
     uint32 private constant MAX_COMPLETIONS = 10;
     uint256 private constant FUNDED_BUDGET = ONE_USDC * MAX_COMPLETIONS;
+    bytes32 private constant DRAFT_REF = keccak256("invariant");
 
     InvariantUSDC private token;
     CampaignManager private manager;
@@ -160,20 +164,27 @@ contract CampaignManagerInvariantTest {
 
         token.mint(advertiser, FUNDED_BUDGET);
 
-        campaignId =
-            manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, keccak256("invariant"));
+        campaignId = manager.createCampaign(uint96(ONE_USDC), MAX_COMPLETIONS, startTime, endTime, DRAFT_REF);
         token.approve(address(manager), FUNDED_BUDGET);
-        manager.fundCampaign(campaignId, FUNDED_BUDGET, keccak256("invariant"));
+        manager.fundCampaign(campaignId, FUNDED_BUDGET, DRAFT_REF);
+        require(manager.campaignIdByDraft(advertiser, DRAFT_REF) == campaignId, "draft mapping");
 
         vm.warp(startTime);
 
-        handler = new CampaignInvariantHandler(manager, token, campaignId, SIGNER_KEY, advertiser);
+        handler = new CampaignInvariantHandler(manager, token, campaignId, DRAFT_REF, SIGNER_KEY, advertiser);
 
         targetedContracts.push(address(handler));
     }
 
     function targetContracts() public view returns (address[] memory) {
         return targetedContracts;
+    }
+
+    function test_HandlerClaimPays() public {
+        handler.claim(1);
+
+        require(handler.totalClaimed() == ONE_USDC, "handler claim did not pay");
+        require(manager.claimedWallet(campaignId, vm.addr(1 + 100)), "claimant not recorded");
     }
 
     function invariant_BudgetIsConserved() public view {

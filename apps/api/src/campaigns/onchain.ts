@@ -159,19 +159,14 @@ const ONCHAIN_STATUS_ACTIVE = 1;
 
 export type LiveCampaignState =
   /** Canonical creation for this draft, funded, open and within its window. */
-  | "payable"
-  /** The id now belongs to another draft, or the parameters differ. */
-  | "mismatch"
+  | { state: "payable"; onchain: OnchainCampaign }
   /** Canonical, but closed, not funded, outside its window or full. */
-  | "not_payable"
+  | { state: "not_payable"; onchain: OnchainCampaign }
+  /** The id now belongs to another draft, or the parameters differ. */
+  | { state: "mismatch" }
   /** The RPC failed; nothing can be decided. */
-  | "unavailable";
+  | { state: "unavailable" };
 
-/**
- * Reads the campaign's current on-chain state directly (not the indexed
- * copy, which lags by the confirmation depth): a completion is accepted
- * only while the contract would actually pay it (ADR-0011, #13).
- */
 export async function checkLiveCampaign(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: string,
@@ -187,7 +182,7 @@ export async function checkLiveCampaign(
     );
 
     if (canonicalId === null || canonicalId !== campaign.onchainCampaignId) {
-      return "mismatch";
+      return { state: "mismatch" };
     }
 
     const onchain = await readOnchainCampaign(
@@ -197,7 +192,7 @@ export async function checkLiveCampaign(
     );
 
     if (!onchain || !matchesDraft(campaign, onchain)) {
-      return "mismatch";
+      return { state: "mismatch" };
     }
 
     const nowSeconds = Math.floor(now.getTime() / 1000);
@@ -211,9 +206,9 @@ export async function checkLiveCampaign(
       nowSeconds >= onchain.startTime &&
       nowSeconds < onchain.endTime;
 
-    return payable ? "payable" : "not_payable";
+    return { state: payable ? "payable" : "not_payable", onchain };
   } catch {
-    return "unavailable";
+    return { state: "unavailable" };
   }
 }
 

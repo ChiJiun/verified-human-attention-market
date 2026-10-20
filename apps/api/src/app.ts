@@ -76,9 +76,7 @@ import {
   UnconfiguredWorldIdVerifier,
   type WorldIdVerifier,
 } from "./identity/world-id.js";
-import { checkLiveCampaign } from "./campaigns/onchain.js";
-import { authorizeClaim } from "./claims/service.js";
-import type { CampaignRecord } from "./campaigns/types.js";
+import { authorizeClaim, prepareClaim } from "./claims/service.js";
 
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
@@ -320,16 +318,6 @@ export function buildApp(dependencies: AppDependencies = {}) {
             dependencies.chain.chain,
           )) !== null
         : false;
-    const chainForLinks = dependencies.chain;
-    const liveCampaign = chainForLinks
-      ? (campaign: CampaignRecord) =>
-          checkLiveCampaign(
-            chainForLinks.rpc,
-            chainForLinks.chain.contractAddress,
-            campaign,
-            now(),
-          )
-      : null;
     const claimDependencies = {
       campaigns: campaignRepository,
       eligibility: eligibilityRepository,
@@ -372,27 +360,14 @@ export function buildApp(dependencies: AppDependencies = {}) {
       campaigns: campaignRepository,
       deployment,
       chainHalted,
-      liveCampaign,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
+      claims: claimRepository,
       now,
-      // Acceptance means payable (ADR-0011): a new acceptance is signed
-      // inside its own transaction, so either the completion and its
-      // authorization are both stored or neither is. Replays return the
-      // stored authorization through issueAuthorization.
-      authorize:
-        claimDependencies.signer && claimDependencies.chain
-          ? (submission, scope) =>
-              authorizeClaim(
-                { ...claimDependencies, claims: claimRepository.within(scope) },
-                {
-                  campaignId: submission.campaignId,
-                  submissionId: submission.id,
-                  eligibilityToken: submission.eligibilityId,
-                  submission,
-                },
-              )
-          : null,
+      prepareClaim: claimDependencies.chain
+        ? (campaign, claimant) =>
+            prepareClaim(claimDependencies, campaign, claimant)
+        : null,
       issueAuthorization:
         claimDependencies.signer && claimDependencies.chain
           ? (input) => authorizeClaim(claimDependencies, input)
