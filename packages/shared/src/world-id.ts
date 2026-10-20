@@ -5,7 +5,6 @@ import {
   keccak256,
   type Hex,
 } from "viem";
-import { z } from "zod";
 
 const DOMAIN = "vham:world-id-signal:v2";
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
@@ -13,15 +12,15 @@ const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 export type WorldIdSignalSalt = Hex & { readonly __brand: "WorldIdSignalSalt" };
 export type WorldIdSignal = Hex & { readonly __brand: "WorldIdSignal" };
 
-const bytes32Schema = <T extends Hex>(name: string) =>
-  z.custom<T>(
-    (value) => typeof value === "string" && BYTES32.test(value),
-    `${name} must be 32 bytes as 0x hex`,
-  );
+export function isWorldIdSignalSalt(
+  value: unknown,
+): value is WorldIdSignalSalt {
+  return typeof value === "string" && BYTES32.test(value);
+}
 
-export const worldIdSignalSaltSchema =
-  bytes32Schema<WorldIdSignalSalt>("signalSalt");
-export const worldIdSignalSchema = bytes32Schema<WorldIdSignal>("signal");
+export function isWorldIdSignal(value: unknown): value is WorldIdSignal {
+  return typeof value === "string" && BYTES32.test(value);
+}
 
 export function newWorldIdSignalSalt(): WorldIdSignalSalt {
   return bytesToHex(

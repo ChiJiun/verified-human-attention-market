@@ -1,4 +1,5 @@
-import { worldIdSignalSchema, type WorldIdSignal } from "@vham/shared/world-id";
+import { worldIdSignalSchema } from "@vham/shared";
+import type { WorldIdSignal } from "@vham/shared/world-id";
 import { z } from "zod";
 
 import { signalHash } from "./world-id-signal.js";

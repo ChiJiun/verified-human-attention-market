@@ -9,11 +9,10 @@ import {
 } from "viem";
 import { describe, expect, it } from "vitest";
 
+import { worldIdSignalSaltSchema, worldIdSignalSchema } from "../src/index.js";
 import {
   newWorldIdSignalSalt,
   worldIdSignal,
-  worldIdSignalSaltSchema,
-  worldIdSignalSchema,
   type WorldIdSignalSalt,
 } from "../src/world-id.js";
 

@@ -1,4 +1,4 @@
-import { worldIdSignalSaltSchema } from "@vham/shared/world-id";
+import { worldIdSignalSaltSchema } from "@vham/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
