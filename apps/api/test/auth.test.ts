@@ -416,7 +416,7 @@ describe("session cookie credential", () => {
   });
 
   it("treats API-key-shaped or ambiguous cookies as no credential", async () => {
-    const { signIn, session } = setup();
+    const { signIn, createCampaign } = setup();
     const token = await signIn(browserAdvertiser);
 
     for (const header of [
@@ -424,7 +424,11 @@ describe("session cookie credential", () => {
       `${SESSION_COOKIE}=${token}; ${SESSION_COOKIE}=${token}`,
       `vham_session=${token}`,
     ]) {
-      expect((await session({ cookie: header })).statusCode).toBe(401);
+      const response = await createCampaign(
+        { cookie: header, "sec-fetch-site": "same-origin" },
+        browserAdvertiser.address,
+      );
+      expect(response.statusCode).toBe(401);
     }
   });
 

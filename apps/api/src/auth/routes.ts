@@ -106,6 +106,10 @@ export async function registerAuthRoutes(
   });
 
   app.get("/v1/auth/session", async (request, reply) => {
+    if (presentedCredentials(request.headers).credential.kind === "none") {
+      return reply.status(204).send();
+    }
+
     const session = await dependencies.authenticate(request);
 
     if (!session) {
@@ -139,6 +143,12 @@ export async function registerAuthRoutes(
 }
 
 export function unauthorized(request: FastifyRequest, reply: FastifyReply) {
+  const { credential } = presentedCredentials(request.headers);
+
+  if (credential.kind === "session" && credential.source === "cookie") {
+    reply.header("set-cookie", CLEARED_SESSION_COOKIE);
+  }
+
   return reply.status(401).send({
     error: {
       code: "UNAUTHENTICATED",
