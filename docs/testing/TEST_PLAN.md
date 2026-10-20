@@ -19,7 +19,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - valid claim [`test_CreateFundAndClaim`];
 - invalid signer [`test_InvalidSignerRejected`, `test_SignerRotationRevokesOldSignatures`];
 - expired authorization [`test_ExpiredAuthorizationRejected`];
-- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_IssuedBeforeStartFailsTheIssuanceWindow`, `test_InvertedWindowFailsTimeChecksBeforeLifetimeCheck`];
+- authorization timing [`test_AuthorizationNotYetValidRejected`, `test_AuthorizationLifetimeTooLongRejected`, `test_IssuedBeforeStartFailsTheIssuanceWindow`, `test_InvertedWindowFailsTimeChecksBeforeLifetimeCheck`]. The `expiresAt <= issuedAt` half of the `AuthorizationLifetimeTooLong` check never fires on its own. `claim` reverts with `AuthorizationNotYetValid` or `AuthorizationExpired` for every such authorization before it reaches that check. Issue #80 asks whether to keep that half;
 - wrong claimant [`test_WrongClaimantRejected`];
 - wrong reward amount [`test_InvalidClaimAmountRejected`];
 - consumed nonce [`test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`];
@@ -32,7 +32,7 @@ Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shar
 - deployment script [`DeployCampaignManager.t.sol`: configured limits, wrong chain, missing addresses, token without code, out-of-range limit, deployment JSON fields];
 - exposure limits [`test_InvalidExposureLimitsRejected`, `test_ExposureLimitBoundariesAccepted`], creation event [`test_CampaignCreatedCarriesDraftRef`];
 - signature encoding [`test_InvalidSignatureLengthRejected`, `test_InvalidSignatureSRejected` (the high-s twin of a valid signature), `test_InvalidSignatureVRejected`, `test_SignatureVZeroOrOneAccepted` (a recovery id of 0 or 1 counts as 27 or 28)];
-- `AlreadyFunded` and `InsufficientCampaignBudget` guards [`test_AlreadyFundedGuardRejectsForcedFundedDraft`, `test_InsufficientCampaignBudgetGuardRejectsForcedShortBudget`].
+- `AlreadyFunded` and `InsufficientCampaignBudget` guards, which no public sequence reaches [`test_AlreadyFundedGuardRejectsForcedFundedDraft`, `test_InsufficientCampaignBudgetGuardRejectsForcedShortBudget`]. Both tests set `fundedBudget` and `paidRewards` through `CampaignManagerUnreachableStateHarness`. `fundCampaign` sets `fundedBudget` and moves the campaign out of Draft in one transaction, so a second funding fails the Draft status check (`InvalidCampaignStatus`) before it reaches `AlreadyFunded`. Funding must equal `rewardPerCompletion * maxCompletions` and each `claim` adds exactly one `rewardPerCompletion` to `paidRewards`, so `CompletionLimitReached` fires before the budget can run out. Both guards are defense in depth. They matter only if that budget accounting breaks. Issue #80 asks whether to keep them.
 
 ## Fuzz
 
