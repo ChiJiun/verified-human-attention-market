@@ -4,7 +4,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { AuthSession } from "../auth/repository.js";
-import { bearerToken, type Authenticate } from "../auth/siwe.js";
+import { presentedCredentials } from "../auth/credential.js";
+import type { Authenticate } from "../auth/siwe.js";
 import type { MetricsRegistry } from "../observability/metrics.js";
 import {
   API_SCOPES,
@@ -175,12 +176,14 @@ export function registerApiClientGate(
 
     const route = request.routeOptions.url;
     const key = `${request.method} ${route ?? "unmatched"}`;
-    const token = bearerToken(request);
+    const { credential } = presentedCredentials(request.headers);
     const { rateLimits } = dependencies;
 
-    if (token?.startsWith("vhamk_")) {
-      const client = API_KEY.test(token)
-        ? await dependencies.clients.findActiveByKeyHash(hashApiKey(token))
+    if (credential.kind === "api-key") {
+      const client = API_KEY.test(credential.key)
+        ? await dependencies.clients.findActiveByKeyHash(
+            hashApiKey(credential.key),
+          )
         : null;
 
       if (!client) {

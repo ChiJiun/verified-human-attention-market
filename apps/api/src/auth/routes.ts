@@ -3,9 +3,10 @@ import { z } from "zod";
 
 import {
   CLEARED_SESSION_COOKIE,
-  refuseCrossSiteCookieSignIn,
+  csrfRejected,
+  presentedCredentials,
+  provenSameOrigin,
   sessionCookie,
-  sessionCredential,
 } from "./credential.js";
 import type { AuthSession } from "./repository.js";
 import {
@@ -51,9 +52,9 @@ export async function registerAuthRoutes(
 
     if (
       transport === "cookie" &&
-      refuseCrossSiteCookieSignIn(request, reply, dependencies.webOrigin)
+      !provenSameOrigin(request.headers, dependencies.webOrigin)
     ) {
-      return reply;
+      return csrfRejected(request, reply);
     }
 
     const outcome = await signIn(dependencies, {
@@ -109,9 +110,9 @@ export async function registerAuthRoutes(
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {
-    const credential = sessionCredential(request);
+    const { credential } = presentedCredentials(request.headers);
 
-    if (credential) {
+    if (credential.kind === "session" && credential.token !== null) {
       await dependencies.repository.revokeSession(
         hashToken(credential.token),
         dependencies.now(),

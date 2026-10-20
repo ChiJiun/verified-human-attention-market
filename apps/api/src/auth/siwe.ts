@@ -177,14 +177,3 @@ export async function signIn(
 
   return { ok: true, token, session };
 }
-
-export function bearerToken(request: FastifyRequest): string | null {
-  const header = request.headers.authorization;
-
-  if (typeof header !== "string") {
-    return null;
-  }
-
-  const match = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(header);
-  return match ? match[1]! : null;
-}

@@ -1,12 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { AuthRepository } from "./repository.js";
-import {
-  bearerToken,
-  hashToken,
-  SESSION_TOKEN,
-  type Authenticate,
-} from "./siwe.js";
+import { hashToken, SESSION_TOKEN, type Authenticate } from "./siwe.js";
 
 /**
  * The `__Host-` prefix makes the browser refuse the cookie unless it is
@@ -15,45 +10,74 @@ import {
 export const SESSION_COOKIE = "__Host-vham_session";
 
 const SAFE_METHOD = /^(GET|HEAD|OPTIONS)$/;
+const BEARER = /^Bearer ([A-Za-z0-9_-]{20,200})$/;
 
-export interface SessionCredential {
-  source: "header" | "cookie";
-  token: string;
+/**
+ * What authenticates a request. An Authorization header, when present, is
+ * the only thing read; otherwise the session cookie. `token` is null when the
+ * presented value is not a session token.
+ */
+export type Credential =
+  | { kind: "none" }
+  | { kind: "api-key"; key: string }
+  | { kind: "session"; source: "header" | "cookie"; token: string | null };
+
+export interface PresentedCredentials {
+  credential: Credential;
+  /** Every value sent under the session cookie name. */
+  sessionCookies: string[];
 }
 
-export function sessionCredential(
-  request: FastifyRequest,
-): SessionCredential | null {
-  if (request.headers.authorization !== undefined) {
-    const token = bearerToken(request);
-    return token ? { source: "header", token } : null;
-  }
-
-  const token = sessionCookieValue(request.headers.cookie);
-  return token ? { source: "cookie", token } : null;
+export function presentedCredentials(
+  headers: FastifyRequest["headers"],
+): PresentedCredentials {
+  const sessionCookies = sessionCookieValues(headers.cookie);
+  return {
+    credential: credentialFrom(headers.authorization, sessionCookies),
+    sessionCookies,
+  };
 }
 
-function sessionCookieValue(header: string | undefined): string | null {
-  if (!header) {
-    return null;
+function credentialFrom(
+  authorization: string | undefined,
+  sessionCookies: string[],
+): Credential {
+  if (authorization !== undefined) {
+    const value = BEARER.exec(authorization)?.[1];
+    return value?.startsWith("vhamk_")
+      ? { kind: "api-key", key: value }
+      : { kind: "session", source: "header", token: sessionToken(value) };
   }
 
-  const values = header.split(";").flatMap((pair) => {
+  if (sessionCookies.length === 0) {
+    return { kind: "none" };
+  }
+
+  return {
+    kind: "session",
+    source: "cookie",
+    token: sessionCookies.length === 1 ? sessionToken(sessionCookies[0]) : null,
+  };
+}
+
+function sessionToken(value: string | undefined): string | null {
+  return value !== undefined && SESSION_TOKEN.test(value) ? value : null;
+}
+
+function sessionCookieValues(header: string | undefined): string[] {
+  return (header ?? "").split(";").flatMap((pair) => {
     const separator = pair.indexOf("=");
     return separator !== -1 &&
       pair.slice(0, separator).trim() === SESSION_COOKIE
       ? [pair.slice(separator + 1).trim()]
       : [];
   });
-  const [value] = values;
-
-  return values.length === 1 &&
-    value !== undefined &&
-    SESSION_TOKEN.test(value) &&
-    !value.startsWith("vhamk_")
-    ? value
-    : null;
 }
+
+const authenticatesWithCookie = (credential: Credential) =>
+  credential.kind === "session" &&
+  credential.source === "cookie" &&
+  credential.token !== null;
 
 export function sessionCookie(token: string, maxAgeSeconds: number): string {
   return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
@@ -66,14 +90,14 @@ export function sessionAuthenticator(
   now: () => Date,
 ): Authenticate {
   return async (request) => {
-    const credential = sessionCredential(request);
-    return credential
+    const { credential } = presentedCredentials(request.headers);
+    return credential.kind === "session" && credential.token !== null
       ? repository.findSession(hashToken(credential.token), now())
       : null;
   };
 }
 
-function provenSameOrigin(
+export function provenSameOrigin(
   headers: FastifyRequest["headers"],
   webOrigin: string | null,
 ): boolean {
@@ -86,7 +110,7 @@ function provenSameOrigin(
   return webOrigin !== null && headers.origin === webOrigin;
 }
 
-function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
+export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
   return reply.status(403).send({
     error: {
       code: "CSRF_REJECTED",
@@ -122,7 +146,7 @@ export function registerSessionCookieGuard(
   app.addHook("onRequest", async (request, reply) => {
     if (
       SAFE_METHOD.test(request.method) ||
-      sessionCredential(request)?.source !== "cookie"
+      !authenticatesWithCookie(presentedCredentials(request.headers).credential)
     ) {
       return;
     }
@@ -134,7 +158,9 @@ export function registerSessionCookieGuard(
 
   app.addHook("onSend", async (request, reply, payload) => {
     if (
-      sessionCredential(request)?.source === "cookie" &&
+      authenticatesWithCookie(
+        presentedCredentials(request.headers).credential,
+      ) &&
       !reply.hasHeader("cache-control")
     ) {
       reply.header("cache-control", "no-store");
@@ -142,17 +168,4 @@ export function registerSessionCookieGuard(
 
     return payload;
   });
-}
-
-export function refuseCrossSiteCookieSignIn(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  webOrigin: string | null,
-): boolean {
-  if (provenSameOrigin(request.headers, webOrigin)) {
-    return false;
-  }
-
-  csrfRejected(request, reply);
-  return true;
 }
