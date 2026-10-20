@@ -5,7 +5,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 
 import { buildApp } from "../src/app.js";
-import { SESSION_COOKIE, webOriginFrom } from "../src/auth/credential.js";
+import { SESSION_COOKIE } from "../src/auth/credential.js";
+import { parseWebOrigin } from "../src/auth/web-origin.js";
 
 const DOMAIN = "app.vham.test";
 const WEB_ORIGIN = `https://${DOMAIN}`;
@@ -557,16 +558,26 @@ describe("session cookie credential", () => {
   });
 
   it.each([
-    ["https://app.vham.test", "app.vham.test", "https://app.vham.test"],
-    ["http://localhost:3000", "localhost:3000", "http://localhost:3000"],
-    ["https://app.vham.test/", "app.vham.test", null],
-    ["https://app.vham.test/path", "app.vham.test", null],
-    ["https://other.vham.test", "app.vham.test", null],
-    ["ftp://app.vham.test", "app.vham.test", null],
-    ["app.vham.test", "app.vham.test", null],
-    ["https://app.vham.test", null, null],
-  ])("WEB_ORIGIN %s with SIWE domain %s", (value, domain, expected) => {
-    expect(webOriginFrom(value, domain)).toBe(expected);
+    ["https://app.vham.test", "app.vham.test"],
+    ["http://localhost:3000", "localhost:3000"],
+  ])("accepts WEB_ORIGIN %s with SIWE domain %s", (value, domain) => {
+    expect(parseWebOrigin(value, domain)).toBe(value);
+  });
+
+  it("leaves WEB_ORIGIN unset when it is empty", () => {
+    expect(parseWebOrigin(undefined, "app.vham.test")).toBeNull();
+    expect(parseWebOrigin("", null)).toBeNull();
+  });
+
+  it.each([
+    ["https://app.vham.test/", "app.vham.test", /origin without a path/],
+    ["https://app.vham.test/path", "app.vham.test", /origin without a path/],
+    ["ftp://app.vham.test", "app.vham.test", /origin without a path/],
+    ["app.vham.test", "app.vham.test", /origin without a path/],
+    ["https://other.vham.test", "app.vham.test", /must equal SIWE_DOMAIN/],
+    ["https://app.vham.test", null, /needs SIWE_DOMAIN/],
+  ])("refuses WEB_ORIGIN %s with SIWE domain %s", (value, domain, message) => {
+    expect(() => parseWebOrigin(value, domain)).toThrow(message);
   });
 });
 

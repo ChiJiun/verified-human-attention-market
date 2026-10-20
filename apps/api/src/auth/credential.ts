@@ -121,25 +121,6 @@ export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
   });
 }
 
-export function webOriginFrom(
-  value: string,
-  siweDomain: string | null,
-): string | null {
-  let url: URL;
-
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-
-  return /^https?:$/.test(url.protocol) &&
-    url.origin === value &&
-    url.host === siweDomain
-    ? url.origin
-    : null;
-}
-
 export function registerSessionCookieGuard(
   app: FastifyInstance,
   options: { webOrigin: string | null },
