@@ -18,7 +18,7 @@ export {
   type SupportedChain,
 } from "./chains.js";
 export {
-  CLOSE_MARGIN_SECONDS,
+  CLOSE_INCLUSION_MARGIN_SECONDS,
   closeAvailability,
   parseContractCampaignStatus,
   refundAvailability,
@@ -26,5 +26,7 @@ export {
   type CloseAvailability,
   type ContractCampaignStatus,
   type RefundAvailability,
+  type Seconds,
   type SettlementReading,
+  type UnixSeconds,
 } from "./settlement.js";

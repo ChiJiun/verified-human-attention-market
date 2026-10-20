@@ -11,6 +11,7 @@ import {
   refundAvailability,
   type CloseAvailability,
   type RefundAvailability,
+  type UnixSeconds,
 } from "@vham/shared/settlement";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
@@ -116,7 +117,7 @@ function Countdown({
   availableAt,
   onchain,
 }: {
-  availableAt: bigint;
+  availableAt: UnixSeconds;
   onchain: ChainSettlement;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -126,7 +127,8 @@ function Countdown({
   }, []);
 
   const elapsed = Math.max(0, Math.floor((nowMs - onchain.readAtMs) / 1_000));
-  const remaining = Number(availableAt - onchain.reading.now) - elapsed;
+  const remaining =
+    Number(availableAt - onchain.reading.blockTimestamp) - elapsed;
   return remaining > 0 ? `in ${formatRemaining(remaining)}` : "any moment now";
 }
 
@@ -139,6 +141,9 @@ function SettlementNotes({
   close: CloseAvailability | null;
   refund: RefundAvailability | null;
 }) {
+  const maxAuthorizationMinutes = Number(
+    onchain.reading.maxAuthorizationTtl / 60n,
+  );
   return (
     <>
       {close?.kind === "unavailable" && close.reason === "ending-soon" && (
@@ -153,8 +158,8 @@ function SettlementNotes({
           {new Date(Number(refund.availableAt) * 1_000).toLocaleString()} (
           <Countdown availableAt={refund.availableAt} onchain={onchain} />
           ). A claim authorization issued right before the close or end time
-          stays valid for {Number(onchain.reading.ttl / 60n)} minutes, so the
-          contract holds the unused budget until every one has expired.
+          stays valid for {maxAuthorizationMinutes} minutes, so the contract
+          holds the unused budget until every one has expired.
         </p>
       )}
       {refund?.kind === "unavailable" && refund.reason === "paused" && (

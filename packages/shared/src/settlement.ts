@@ -19,15 +19,18 @@ export function parseContractCampaignStatus(
   return status;
 }
 
-export const CLOSE_MARGIN_SECONDS = 60n;
+export type UnixSeconds = bigint;
+export type Seconds = bigint;
+
+export const CLOSE_INCLUSION_MARGIN_SECONDS: Seconds = 60n;
 
 export interface SettlementReading {
   status: ContractCampaignStatus;
-  endTime: bigint;
-  closedAt: bigint;
-  ttl: bigint;
+  endTime: UnixSeconds;
+  closedAt: UnixSeconds;
+  maxAuthorizationTtl: Seconds;
   paused: boolean;
-  now: bigint;
+  blockTimestamp: UnixSeconds;
 }
 
 export type CloseAvailability =
@@ -36,15 +39,18 @@ export type CloseAvailability =
 
 export type RefundAvailability =
   | { kind: "available" }
-  | { kind: "waiting"; availableAt: bigint }
+  | { kind: "waiting"; availableAt: UnixSeconds }
   | { kind: "unavailable"; reason: "not-active" | "settled" | "paused" };
 
 export function refundAvailableAt(
-  reading: Pick<SettlementReading, "endTime" | "closedAt" | "ttl">,
-): bigint {
+  reading: Pick<
+    SettlementReading,
+    "endTime" | "closedAt" | "maxAuthorizationTtl"
+  >,
+): UnixSeconds {
   const issuanceDeadline =
     reading.closedAt !== 0n ? reading.closedAt : reading.endTime;
-  return issuanceDeadline + reading.ttl + 1n;
+  return issuanceDeadline + reading.maxAuthorizationTtl + 1n;
 }
 
 export function closeAvailability(
@@ -53,10 +59,13 @@ export function closeAvailability(
   if (reading.status !== "active") {
     return { kind: "unavailable", reason: "not-active" };
   }
-  if (reading.now >= reading.endTime) {
+  if (reading.blockTimestamp >= reading.endTime) {
     return { kind: "unavailable", reason: "ended" };
   }
-  if (reading.now + CLOSE_MARGIN_SECONDS >= reading.endTime) {
+  if (
+    reading.blockTimestamp + CLOSE_INCLUSION_MARGIN_SECONDS >=
+    reading.endTime
+  ) {
     return { kind: "unavailable", reason: "ending-soon" };
   }
   return { kind: "available" };
@@ -75,7 +84,7 @@ export function refundAvailability(
     return { kind: "unavailable", reason: "paused" };
   }
   const availableAt = refundAvailableAt(reading);
-  return reading.now >= availableAt
+  return reading.blockTimestamp >= availableAt
     ? { kind: "available" }
     : { kind: "waiting", availableAt };
 }

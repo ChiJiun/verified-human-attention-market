@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import contractSource from "../../contracts/src/CampaignManager.sol?raw";
 import {
-  CLOSE_MARGIN_SECONDS,
+  CLOSE_INCLUSION_MARGIN_SECONDS,
   closeAvailability,
   parseContractCampaignStatus,
   refundAvailability,
@@ -10,13 +10,13 @@ import {
   type SettlementReading,
 } from "../src/settlement.js";
 
-const TTL = 900n;
+const MAX_AUTHORIZATION_TTL = 15n * 60n;
 const START = 1_800_000_000n;
 const END = START + 3_600n;
 const CLOSED_AT = START + 600n;
 
-const REFUND_AFTER_END = END + TTL + 1n;
-const REFUND_AFTER_CLOSE = CLOSED_AT + TTL + 1n;
+const REFUND_AFTER_END = END + MAX_AUTHORIZATION_TTL + 1n;
+const REFUND_AFTER_CLOSE = CLOSED_AT + MAX_AUTHORIZATION_TTL + 1n;
 
 const reading = (
   overrides: Partial<SettlementReading> = {},
@@ -24,9 +24,9 @@ const reading = (
   status: "active",
   endTime: END,
   closedAt: 0n,
-  ttl: TTL,
+  maxAuthorizationTtl: MAX_AUTHORIZATION_TTL,
   paused: false,
-  now: START,
+  blockTimestamp: START,
   ...overrides,
 });
 
@@ -59,7 +59,7 @@ describe("parseContractCampaignStatus", () => {
 });
 
 describe("refundAvailableAt", () => {
-  it("is one second past endTime + ttl for a campaign never closed", () => {
+  it("is one second past endTime + MAX_AUTHORIZATION_TTL for a campaign never closed", () => {
     expect(refundAvailableAt(reading())).toBe(REFUND_AFTER_END);
   });
 
@@ -71,16 +71,18 @@ describe("refundAvailableAt", () => {
 });
 
 describe("refundAvailability", () => {
-  it("waits until one second past endTime + ttl when the campaign was never closed", () => {
-    expect(refundAvailability(reading({ now: REFUND_AFTER_END - 1n }))).toEqual(
-      { kind: "waiting", availableAt: REFUND_AFTER_END },
-    );
-    expect(refundAvailability(reading({ now: REFUND_AFTER_END }))).toEqual({
+  it("waits until one second past endTime + MAX_AUTHORIZATION_TTL when the campaign was never closed", () => {
+    expect(
+      refundAvailability(reading({ blockTimestamp: REFUND_AFTER_END - 1n })),
+    ).toEqual({ kind: "waiting", availableAt: REFUND_AFTER_END });
+    expect(
+      refundAvailability(reading({ blockTimestamp: REFUND_AFTER_END })),
+    ).toEqual({
       kind: "available",
     });
-    expect(refundAvailability(reading({ now: REFUND_AFTER_END + 1n }))).toEqual(
-      { kind: "available" },
-    );
+    expect(
+      refundAvailability(reading({ blockTimestamp: REFUND_AFTER_END + 1n })),
+    ).toEqual({ kind: "available" });
   });
 
   it("counts from the close time, which opens the refund before the end time would", () => {
@@ -88,28 +90,34 @@ describe("refundAvailability", () => {
 
     expect(REFUND_AFTER_CLOSE).toBeLessThan(REFUND_AFTER_END);
     expect(
-      refundAvailability(reading({ ...closed, now: REFUND_AFTER_CLOSE - 1n })),
+      refundAvailability(
+        reading({ ...closed, blockTimestamp: REFUND_AFTER_CLOSE - 1n }),
+      ),
     ).toEqual({ kind: "waiting", availableAt: REFUND_AFTER_CLOSE });
     expect(
-      refundAvailability(reading({ ...closed, now: REFUND_AFTER_CLOSE })),
+      refundAvailability(
+        reading({ ...closed, blockTimestamp: REFUND_AFTER_CLOSE }),
+      ),
     ).toEqual({ kind: "available" });
   });
 
   it("keeps waiting for the end while the campaign is still running", () => {
-    expect(refundAvailability(reading({ now: START }))).toEqual({
+    expect(refundAvailability(reading({ blockTimestamp: START }))).toEqual({
       kind: "waiting",
       availableAt: REFUND_AFTER_END,
     });
   });
 
   it("is blocked while the contract is paused, whatever the time", () => {
-    for (const now of [
+    for (const blockTimestamp of [
       START,
       REFUND_AFTER_END - 1n,
       REFUND_AFTER_END,
       END * 2n,
     ]) {
-      expect(refundAvailability(reading({ paused: true, now }))).toEqual({
+      expect(
+        refundAvailability(reading({ paused: true, blockTimestamp })),
+      ).toEqual({
         kind: "unavailable",
         reason: "paused",
       });
@@ -120,7 +128,9 @@ describe("refundAvailability", () => {
     "is not offered for a %s campaign",
     (status) => {
       expect(
-        refundAvailability(reading({ status, now: REFUND_AFTER_END })),
+        refundAvailability(
+          reading({ status, blockTimestamp: REFUND_AFTER_END }),
+        ),
       ).toEqual({ kind: "unavailable", reason: "not-active" });
     },
   );
@@ -133,7 +143,7 @@ describe("refundAvailability", () => {
             status: "settled",
             closedAt: CLOSED_AT,
             paused,
-            now: REFUND_AFTER_END,
+            blockTimestamp: REFUND_AFTER_END,
           }),
         ),
       ).toEqual({ kind: "unavailable", reason: "settled" });
@@ -143,17 +153,22 @@ describe("refundAvailability", () => {
 
 describe("closeAvailability", () => {
   it("is offered while active and further from the end than the margin", () => {
-    expect(closeAvailability(reading({ now: START }))).toEqual({
+    expect(closeAvailability(reading({ blockTimestamp: START }))).toEqual({
       kind: "available",
     });
     expect(
-      closeAvailability(reading({ now: END - CLOSE_MARGIN_SECONDS - 1n })),
+      closeAvailability(
+        reading({ blockTimestamp: END - CLOSE_INCLUSION_MARGIN_SECONDS - 1n }),
+      ),
     ).toEqual({ kind: "available" });
   });
 
   it("is not offered inside the margin before the end", () => {
-    for (const now of [END - CLOSE_MARGIN_SECONDS, END - 1n]) {
-      expect(closeAvailability(reading({ now }))).toEqual({
+    for (const blockTimestamp of [
+      END - CLOSE_INCLUSION_MARGIN_SECONDS,
+      END - 1n,
+    ]) {
+      expect(closeAvailability(reading({ blockTimestamp }))).toEqual({
         kind: "unavailable",
         reason: "ending-soon",
       });
@@ -161,8 +176,8 @@ describe("closeAvailability", () => {
   });
 
   it("is not offered at or after the end", () => {
-    for (const now of [END, END + 1n]) {
-      expect(closeAvailability(reading({ now }))).toEqual({
+    for (const blockTimestamp of [END, END + 1n]) {
+      expect(closeAvailability(reading({ blockTimestamp }))).toEqual({
         kind: "unavailable",
         reason: "ended",
       });
@@ -195,8 +210,8 @@ describe("closing and refunding", () => {
     const times = [
       START,
       CLOSED_AT,
-      END - CLOSE_MARGIN_SECONDS - 1n,
-      END - CLOSE_MARGIN_SECONDS,
+      END - CLOSE_INCLUSION_MARGIN_SECONDS - 1n,
+      END - CLOSE_INCLUSION_MARGIN_SECONDS,
       END,
       REFUND_AFTER_CLOSE,
       REFUND_AFTER_END - 1n,
@@ -204,9 +219,9 @@ describe("closing and refunding", () => {
     ];
 
     for (const state of legalStates) {
-      for (const now of times) {
+      for (const blockTimestamp of times) {
         for (const paused of [false, true]) {
-          const current = reading({ ...state, now, paused });
+          const current = reading({ ...state, blockTimestamp, paused });
           const both =
             closeAvailability(current).kind === "available" &&
             refundAvailability(current).kind === "available";

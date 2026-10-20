@@ -844,7 +844,7 @@ describeE2e("POC economic loop on a local chain", () => {
     const refundAt = refundAvailableAt({
       endTime: campaign[7],
       closedAt: campaign[8],
-      ttl: await publicClient.readContract({
+      maxAuthorizationTtl: await publicClient.readContract({
         address: managerAddress,
         abi: campaignManagerAbi,
         functionName: "MAX_AUTHORIZATION_TTL",

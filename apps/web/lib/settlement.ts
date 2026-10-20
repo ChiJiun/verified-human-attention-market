@@ -113,9 +113,9 @@ export async function readSettlement(
       status: parseContractCampaignStatus(onchain[9]),
       endTime: onchain[7],
       closedAt: onchain[8],
-      ttl,
+      maxAuthorizationTtl: ttl,
       paused,
-      now: block.timestamp,
+      blockTimestamp: block.timestamp,
     },
     readAtMs: Date.now(),
   };
