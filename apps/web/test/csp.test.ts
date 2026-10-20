@@ -71,6 +71,8 @@ describe("proxy", () => {
     ["/", true],
     ["/advertiser", true],
     ["/mission?campaign=x", true],
+    ["/api-keys", true],
+    ["/apiary", true],
     ["/api", false],
     ["/api/v1/auth/session", false],
     ["/_next/static/chunks/main.js", false],
