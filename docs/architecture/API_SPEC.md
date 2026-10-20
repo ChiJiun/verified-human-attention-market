@@ -31,32 +31,59 @@ idempotency and versioning rules: [API_CONTRACT.md](./API_CONTRACT.md) (#26).
      `Set-Cookie: __Host-vham_session=<token>; Path=/; Max-Age=<seconds until expiresAt>; HttpOnly; Secure; SameSite=Strict`
      and `Cache-Control: no-store`. The token never appears in a body. For the
      web app, which reaches the API same-origin through `/api/*`. A cookie
-     sign-in is subject to the CSRF rule below (`403 CSRF_REJECTED`) before
-     the nonce is consumed.
+     sign-in must pass the CSRF rule below (`403 CSRF_REJECTED`) before the
+     nonce is consumed. A successful cookie sign-in revokes the session of
+     every session cookie the request carried, so the new cookie replaces the
+     old session instead of leaving it valid. The web app then reads
+     `GET /v1/auth/session` to confirm that the browser kept the cookie.
 
    `400 INVALID_SIGN_IN_REQUEST` for a malformed body, `401` with `INVALID_MESSAGE` / `WRONG_DOMAIN` / `WRONG_CHAIN` / `MESSAGE_NOT_VALID_NOW` / `INVALID_SIGNATURE` / `NONCE_INVALID_OR_USED`.
    The server checks domain, chain, time window (`issuedAt` ≤ now + 60 s,
    `expirationTime` / `notBefore`), the signature (EOA offline; ERC-1271/6492
    smart wallets via RPC when configured) and then **atomically consumes** the
-   nonce, so replays fail with `NONCE_INVALID_OR_USED`.
+   nonce, so replays fail with `NONCE_INVALID_OR_USED`. A failed sign-in
+   leaves the current session alone.
 4. Credential precedence: an `Authorization` header, when present, is the only
-   credential read; a malformed one is `401`, never a fallback to the cookie.
-   Otherwise exactly one well-formed `__Host-vham_session` cookie counts; an
-   API-key-shaped value or duplicate session cookies are no credential. API
-   keys (`vhamk_…`) are header-only. Sessions last up to 12 h (or the
-   message's `expirationTime` if earlier). Only `sha256(token)` is stored.
-5. CSRF rule for cookie sessions: a request other than `GET` / `HEAD` /
-   `OPTIONS` that authenticates with the cookie must carry
+   credential read. `Bearer vhamk_…` is an API key, so a malformed key is
+   `401 INVALID_API_KEY` on every `/v1` route. Any other value counts only as
+   `Bearer <session token>` with the exact 43-character token. Anything else
+   is `401` on session routes and never falls back to the cookie. Behind an
+   HTTP Basic gate the browser sends `Authorization: Basic …`, so cookie
+   sessions do not work there. Without the header, exactly one well-formed
+   `__Host-vham_session` cookie counts. An API key, a malformed value or
+   duplicate session cookies are no credential, and API keys are
+   header-only. Sessions last up to 12 h (or the message's `expirationTime`
+   if earlier). Only `sha256(token)` is stored.
+5. CSRF rule for the session cookie: a request other than `GET`, `HEAD` or
+   `OPTIONS` that carries the `__Host-vham_session` cookie name, whatever its
+   value and whatever else the request carries, must carry
    `Sec-Fetch-Site: same-origin`. When the browser sends no Fetch Metadata,
-   `Origin` must equal `WEB_ORIGIN` (optional; validated at startup as an
-   http(s) origin whose host is `SIWE_DOMAIN`; unset = no Origin fallback).
-   Anything else is `403 CSRF_REJECTED`. Header credentials are not subject
-   to it. Responses to cookie-authenticated requests are
-   `Cache-Control: no-store`.
-6. `GET /v1/auth/session` → `{ address, chainId, expiresAt }`
-   (`401 UNAUTHENTICATED` otherwise); the web app restores a cookie session
-   with it after a reload. `POST /v1/auth/logout` → `204`: revokes the
-   session from either transport and always clears the cookie (`Max-Age=0`).
+   `Origin` must equal `WEB_ORIGIN`. Anything else is `403 CSRF_REJECTED`,
+   logged as `event: "csrf_rejected"` with the `Sec-Fetch-Site` value and
+   whether an `Origin` came, never the origin itself. Requests without the
+   session cookie, such as scripts with a bearer token or an API key, are not
+   subject to the rule. Responses to requests that carry the session cookie
+   are `Cache-Control: no-store`. Every API response carries
+   `X-Content-Type-Options: nosniff`.
+
+   `WEB_ORIGIN` is optional. The API validates it at startup as an http(s)
+   origin whose host is `SIWE_DOMAIN`. Without it there is no `Origin`
+   fallback, and off the local chain the API logs a warning at startup.
+6. Key management (`/v1/api-clients*`) and operator routes (`/v1/admin/*`)
+   refuse a credential that comes from the session cookie with
+   `403 COOKIE_SESSION_NOT_ALLOWED`. The web app has no UI for them. Use the
+   bearer transport.
+7. `GET /v1/auth/session` → `{ address, chainId, expiresAt }`, `204` when the
+   request presents no credential, and `401 UNAUTHENTICATED` when it presents
+   one that is not a live session. The web app restores a cookie session with
+   it after a reload. A `401 UNAUTHENTICATED` from this route or from an
+   advertiser-only route clears the cookie (`Max-Age=0`) when the cookie was
+   the credential: expired, revoked or malformed.
+8. `POST /v1/auth/logout` → `204`. It revokes the session of a session token
+   in the `Authorization` header and of every session token among the session
+   cookie values. It sends the clearing `Set-Cookie` (`Max-Age=0`) only when
+   the request carried the session cookie. A cross-site form carries no
+   `SameSite=Strict` cookie, so it cannot sign the browser out.
 
 Advertiser-only endpoints return `401 UNAUTHENTICATED` without a session and
 `403 NOT_CAMPAIGN_ADVERTISER` when the signed-in wallet is not the campaign's
