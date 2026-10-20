@@ -24,7 +24,7 @@ export interface SettlementTarget extends DraftCampaignExpectation {
 
 export interface ChainSettlement {
   reading: SettlementReading;
-  readAtMs: number;
+  readAtLocalMs: number;
 }
 
 export type SettlementAction = "close" | "refund";
@@ -49,8 +49,6 @@ export function formatRemaining(seconds: number): string {
   return minutes > 0 ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
 }
 
-const ttlByContract = new Map<string, bigint>();
-
 export async function readSettlement(
   wallet: Wallet,
   deployment: Deployment,
@@ -65,30 +63,26 @@ export async function readSettlement(
     address: getAddress(deployment.contractAddress),
     abi: campaignManagerAbi,
   } as const;
-  const ttlKey = `${deployment.chainId}:${contract.address}`;
-  let ttl = ttlByContract.get(ttlKey);
-  if (ttl === undefined) {
-    ttl = await publicClient.readContract({
-      ...contract,
-      functionName: "MAX_AUTHORIZATION_TTL",
-    });
-    ttlByContract.set(ttlKey, ttl);
-  }
 
-  const [mappedCampaignId, onchain, paused, block] = await Promise.all([
-    publicClient.readContract({
-      ...contract,
-      functionName: "campaignIdByDraft",
-      args: [wallet.address, target.draftRef],
-    }),
-    publicClient.readContract({
-      ...contract,
-      functionName: "campaigns",
-      args: [BigInt(target.onchainCampaignId)],
-    }),
-    publicClient.readContract({ ...contract, functionName: "paused" }),
-    publicClient.getBlock(),
-  ]);
+  const [maxAuthorizationTtl, mappedCampaignId, onchain, paused, block] =
+    await Promise.all([
+      publicClient.readContract({
+        ...contract,
+        functionName: "MAX_AUTHORIZATION_TTL",
+      }),
+      publicClient.readContract({
+        ...contract,
+        functionName: "campaignIdByDraft",
+        args: [wallet.address, target.draftRef],
+      }),
+      publicClient.readContract({
+        ...contract,
+        functionName: "campaigns",
+        args: [BigInt(target.onchainCampaignId)],
+      }),
+      publicClient.readContract({ ...contract, functionName: "paused" }),
+      publicClient.getBlock(),
+    ]);
 
   if (
     !isDraftCampaign(
@@ -114,11 +108,11 @@ export async function readSettlement(
       storedStatus: parseStoredCampaignStatus(onchain[9]),
       endTime: onchain[7],
       closedAt: parseClosedAt(onchain[8]),
-      maxAuthorizationTtl: ttl,
+      maxAuthorizationTtl,
       paused,
       blockTimestamp: block.timestamp,
     },
-    readAtMs: Date.now(),
+    readAtLocalMs: Date.now(),
   };
 }
 

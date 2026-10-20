@@ -126,7 +126,10 @@ function Countdown({
     return () => clearInterval(timer);
   }, []);
 
-  const elapsed = Math.max(0, Math.floor((nowMs - onchain.readAtMs) / 1_000));
+  const elapsed = Math.max(
+    0,
+    Math.floor((nowMs - onchain.readAtLocalMs) / 1_000),
+  );
   const remaining =
     Number(availableAt - onchain.reading.blockTimestamp) - elapsed;
   return remaining > 0 ? `in ${formatRemaining(remaining)}` : "any moment now";
