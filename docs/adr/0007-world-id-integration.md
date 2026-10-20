@@ -39,7 +39,7 @@ sensitive rate-limit bucket.
 - `apps/web` uses `@worldcoin/idkit` **4.4.0** (pinned) and its `IDKitRequestWidget`.
 - Flow: `POST /v1/campaigns/:id/world-id/request` returns `appId`, `action`, `environment` and a fresh `rpContext`; the widget opens with them; `handleVerify` forwards the IDKit result **unchanged** (plus the claimant wallet) to `POST /v1/campaigns/:id/eligibility/verify` and throws if the API refuses, which puts the widget in its error state (`failed_by_host_app`). The proof is never logged, stored client-side, or echoed; `onError` shows only the error code, never the debug report.
 - `environment` comes from the API (`WORLD_ID_ENVIRONMENT`), so the widget and the backend verifier cannot disagree.
-- Preset `proofOfHuman()` with `allow_legacy_proofs: false`: World ID 4.0 proofs only. v3 and v4 nullifiers for one person differ, so accepting both would let one human obtain two eligibilities for the same campaign unless both were tracked. Revisit only with a dual-nullifier design.
+- The page requests World ID 4.0 proofs only, with `constraints={CredentialRequest("proof_of_human")}` and `allow_legacy_proofs: false`. The API refuses 3.0 results. Until 2026-10-20 the page used the `proofOfHuman()` preset, which still allowed 3.0 proofs (see "Update 2026-10-20"). v3 and v4 nullifiers for one person differ, so accepting both would let one human obtain two eligibilities for the same campaign unless both were tracked. Revisit only with a dual-nullifier design.
 - `NEXT_PUBLIC_WORLD_ID_MODE=simulated` keeps the local anvil stand-in (the API refuses it on any other chain).
 
 ## Per-campaign actions and the Developer Portal (docs checked 2026-10-13, confirmed 2026-10-14)
@@ -47,6 +47,17 @@ sensitive rate-limit bucket.
 The official IDKit, RP-signature and `POST /api/v4/verify/{rp_id}` documentation treats `action` as a free string: it is part of the RP signature (`hash_to_field(action)`), is passed in the request, and is echoed in the verify result. The verify reference lists no "action not found" error (only "App not found or no longer active"), and no page states that each action must be created in the portal first. "Create v4 actions" appears only in the 3.0 → 4.0 migration guide, in the context of migrating existing apps. Conclusion: **no per-campaign pre-registration is required by the documented flow**, and creating one portal action per campaign would not be feasible anyway.
 
 **Confirmed on Base Sepolia, 2026-10-14:** a real World ID proof for `vham-campaign-<id>` verified successfully while the Developer Portal had no actions created. Per-campaign actions need no pre-registration. If World changes this, the fallback is one registered action with the campaign id carried in the signal.
+
+## Update 2026-10-20: World ID 4.0 proofs only
+
+The `proofOfHuman()` preset did not limit the request to 4.0 proofs. In `@worldcoin/idkit-core` 4.4.0, `compileRequest` sets `allowLegacy = true` for the `ProofOfHuman` preset and ignores `allow_legacy_proofs`. The package's type comment describes the preset as a 4.0 credential "with legacy Orb fallback". The API also accepted `protocol_version: "3.0"`. One human could therefore verify once with a 3.0 proof and once with a 4.0 proof, from two wallets, and get two eligibilities for one campaign.
+
+- `apps/web/app/mission/page.tsx` passes `constraints={CredentialRequest("proof_of_human")}` with `allow_legacy_proofs={false}`. The bridge payload now carries `allow_legacy_proofs: false` and the same `proof_of_human` credential request (`issuer_schema_id` 1).
+- `HttpWorldIdVerifier` accepts only `protocol_version: "4.0"`. A 3.0 result fails the payload schema with `INVALID_PROOF_PAYLOAD`, and the verifier never calls World's verify endpoint for it. The page cannot enforce this alone. The RP signature covers the nonce, the timestamps, and the action, but not the requested credential, so any client with a valid `rp_context` can still ask World App for a 3.0 proof.
+- The refusal reuses `INVALID_PROOF_PAYLOAD`. The page no longer asks for 3.0 proofs, so the refusal should reach only clients that bypass the page.
+- The regression test is `refuses a legacy World ID 3.0 result without calling World` in `apps/api/test/world-id.test.ts`.
+
+As of 2026-10-20, the [World ID 4.0 migration guide](https://docs.world.org/world-id/4-0-migration) tells apps to "Track both nullifiers" while they still accept v3 proofs. [Introducing World ID 4.0](https://world.org/blog/engineering/introducing-world-id-4.0) derives the 4.0 nullifier with an oblivious pseudorandom function (OPRF) instead of the 3.0 hash of the user's identity secret. Neither page says in one sentence that the two values differ.
 
 ## Not yet covered
 

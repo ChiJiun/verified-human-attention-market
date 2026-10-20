@@ -212,7 +212,7 @@ See ADR-0007. Request:
 
 Backend:
 
-1. checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
+1. accepts only `idkitResponse.protocol_version == "4.0"` (a legacy 3.0 result returns `400 INVALID_PROOF_PAYLOAD` without a call to World), then checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
 2. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
 3. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
 4. returns an opaque eligibility token.

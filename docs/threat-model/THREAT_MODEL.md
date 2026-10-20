@@ -41,7 +41,7 @@
 - campaign/action-specific replay rules；
 - behavioral fraud signals later。
 
-**Implemented (#9, ADR-0007):** one World ID action per campaign, backend verification against the v4 API, `UNIQUE(campaign_id, participant_key)` and `UNIQUE(campaign_id, claimant_address)`, one accepted completion per human (partial unique index), one paid claim per wallet on-chain.
+**Implemented (#9, ADR-0007):** one World ID action per campaign, World ID 4.0 proofs only (one person's 3.0 and 4.0 nullifiers differ, so the API refuses 3.0 results), backend verification against the v4 API, `UNIQUE(campaign_id, participant_key)` and `UNIQUE(campaign_id, claimant_address)`, one accepted completion per human (partial unique index), one paid claim per wallet on-chain.
 
 **Residual risk:** 真人帳號出租、多人協同、verification market。
 
