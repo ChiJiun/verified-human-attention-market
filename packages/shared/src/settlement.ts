@@ -7,14 +7,19 @@ const CONTRACT_STATUSES = [
   "cancelled",
 ] as const;
 
-export type ContractCampaignStatus = (typeof CONTRACT_STATUSES)[number];
+type ContractCampaignStatus = (typeof CONTRACT_STATUSES)[number];
 
-export function parseContractCampaignStatus(
-  index: number,
-): ContractCampaignStatus {
+export type StoredCampaignStatus = Exclude<ContractCampaignStatus, "expired">;
+
+export function parseStoredCampaignStatus(index: number): StoredCampaignStatus {
   const status = CONTRACT_STATUSES[index];
   if (status === undefined) {
     throw new RangeError(`Unknown CampaignManager status index: ${index}.`);
+  }
+  if (status === "expired") {
+    throw new RangeError(
+      `CampaignManager never stores status index ${index} (expired); statusOf derives it.`,
+    );
   }
   return status;
 }
@@ -25,12 +30,16 @@ export type Seconds = bigint;
 export const CLOSE_INCLUSION_MARGIN_SECONDS: Seconds = 60n;
 
 export interface SettlementReading {
-  status: ContractCampaignStatus;
+  storedStatus: StoredCampaignStatus;
   endTime: UnixSeconds;
-  closedAt: UnixSeconds;
+  closedAt: UnixSeconds | null;
   maxAuthorizationTtl: Seconds;
   paused: boolean;
   blockTimestamp: UnixSeconds;
+}
+
+export function parseClosedAt(raw: bigint): UnixSeconds | null {
+  return raw === 0n ? null : raw;
 }
 
 export type CloseAvailability =
@@ -42,21 +51,24 @@ export type RefundAvailability =
   | { kind: "waiting"; availableAt: UnixSeconds }
   | { kind: "unavailable"; reason: "not-active" | "settled" | "paused" };
 
+function firstSecondAfter(time: UnixSeconds): UnixSeconds {
+  return time + 1n;
+}
+
 export function refundAvailableAt(
   reading: Pick<
     SettlementReading,
     "endTime" | "closedAt" | "maxAuthorizationTtl"
   >,
 ): UnixSeconds {
-  const issuanceDeadline =
-    reading.closedAt !== 0n ? reading.closedAt : reading.endTime;
-  return issuanceDeadline + reading.maxAuthorizationTtl + 1n;
+  const issuanceDeadline = reading.closedAt ?? reading.endTime;
+  return firstSecondAfter(issuanceDeadline + reading.maxAuthorizationTtl);
 }
 
 export function closeAvailability(
   reading: SettlementReading,
 ): CloseAvailability {
-  if (reading.status !== "active") {
+  if (reading.storedStatus !== "active") {
     return { kind: "unavailable", reason: "not-active" };
   }
   if (reading.blockTimestamp >= reading.endTime) {
@@ -74,10 +86,10 @@ export function closeAvailability(
 export function refundAvailability(
   reading: SettlementReading,
 ): RefundAvailability {
-  if (reading.status === "settled") {
+  if (reading.storedStatus === "settled") {
     return { kind: "unavailable", reason: "settled" };
   }
-  if (reading.status !== "active" && reading.status !== "closed") {
+  if (reading.storedStatus !== "active" && reading.storedStatus !== "closed") {
     return { kind: "unavailable", reason: "not-active" };
   }
   if (reading.paused) {

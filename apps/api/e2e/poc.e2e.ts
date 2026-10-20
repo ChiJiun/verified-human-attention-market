@@ -11,7 +11,7 @@
  */
 import { readFileSync } from "node:fs";
 
-import { refundAvailableAt } from "@vham/shared";
+import { parseClosedAt, refundAvailableAt } from "@vham/shared";
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -843,7 +843,7 @@ describeE2e("POC economic loop on a local chain", () => {
     });
     const refundAt = refundAvailableAt({
       endTime: campaign[7],
-      closedAt: campaign[8],
+      closedAt: parseClosedAt(campaign[8]),
       maxAuthorizationTtl: await publicClient.readContract({
         address: managerAddress,
         abi: campaignManagerAbi,

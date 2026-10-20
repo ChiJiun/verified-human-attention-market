@@ -5,7 +5,8 @@ import {
   type FundingTargetExpectation,
 } from "@vham/shared/deployment";
 import {
-  parseContractCampaignStatus,
+  parseClosedAt,
+  parseStoredCampaignStatus,
   type SettlementReading,
 } from "@vham/shared/settlement";
 import {
@@ -110,9 +111,9 @@ export async function readSettlement(
 
   return {
     reading: {
-      status: parseContractCampaignStatus(onchain[9]),
+      storedStatus: parseStoredCampaignStatus(onchain[9]),
       endTime: onchain[7],
-      closedAt: onchain[8],
+      closedAt: parseClosedAt(onchain[8]),
       maxAuthorizationTtl: ttl,
       paused,
       blockTimestamp: block.timestamp,

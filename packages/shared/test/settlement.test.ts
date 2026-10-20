@@ -4,7 +4,8 @@ import contractSource from "../../contracts/src/CampaignManager.sol?raw";
 import {
   CLOSE_INCLUSION_MARGIN_SECONDS,
   closeAvailability,
-  parseContractCampaignStatus,
+  parseClosedAt,
+  parseStoredCampaignStatus,
   refundAvailability,
   refundAvailableAt,
   type SettlementReading,
@@ -21,9 +22,9 @@ const REFUND_AFTER_CLOSE = CLOSED_AT + MAX_AUTHORIZATION_TTL + 1n;
 const reading = (
   overrides: Partial<SettlementReading> = {},
 ): SettlementReading => ({
-  status: "active",
+  storedStatus: "active",
   endTime: END,
-  closedAt: 0n,
+  closedAt: null,
   maxAuthorizationTtl: MAX_AUTHORIZATION_TTL,
   paused: false,
   blockTimestamp: START,
@@ -41,20 +42,43 @@ function declaredStatuses(): string[] {
     .filter((member) => member !== "");
 }
 
-describe("parseContractCampaignStatus", () => {
-  it("names every index the way CampaignManager declares its statuses", () => {
+describe("parseStoredCampaignStatus", () => {
+  it("names every stored index the way CampaignManager declares its statuses", () => {
     const declared = declaredStatuses();
+    const storedIndexes = declared.flatMap((name, index) =>
+      name === "expired" ? [] : [index],
+    );
 
     expect(
-      declared.map((_, index) => parseContractCampaignStatus(index)),
-    ).toEqual(declared);
-    expect(() => parseContractCampaignStatus(declared.length)).toThrow(
+      storedIndexes.map((index) => parseStoredCampaignStatus(index)),
+    ).toEqual(declared.filter((name) => name !== "expired"));
+    expect(() => parseStoredCampaignStatus(declared.length)).toThrow(
       RangeError,
     );
   });
 
+  it("refuses the expired index, because CampaignManager never stores it", () => {
+    const expiredIndex = declaredStatuses().indexOf("expired");
+
+    expect(expiredIndex).toBeGreaterThanOrEqual(0);
+    expect(() => parseStoredCampaignStatus(expiredIndex)).toThrow(RangeError);
+    expect(contractSource).not.toMatch(
+      /\bstatus\s*[:=]\s*CampaignStatus\.Expired\b/,
+    );
+  });
+
   it.each([-1, 1.5, Number.NaN, 255])("rejects index %s", (index) => {
-    expect(() => parseContractCampaignStatus(index)).toThrow(RangeError);
+    expect(() => parseStoredCampaignStatus(index)).toThrow(RangeError);
+  });
+});
+
+describe("parseClosedAt", () => {
+  it("reads the contract's 0 as not closed", () => {
+    expect(parseClosedAt(0n)).toBeNull();
+  });
+
+  it("keeps a close time", () => {
+    expect(parseClosedAt(CLOSED_AT)).toBe(CLOSED_AT);
   });
 });
 
@@ -65,7 +89,9 @@ describe("refundAvailableAt", () => {
 
   it("counts from the close time once the campaign was closed", () => {
     expect(
-      refundAvailableAt(reading({ status: "closed", closedAt: CLOSED_AT })),
+      refundAvailableAt(
+        reading({ storedStatus: "closed", closedAt: CLOSED_AT }),
+      ),
     ).toBe(REFUND_AFTER_CLOSE);
   });
 });
@@ -86,7 +112,7 @@ describe("refundAvailability", () => {
   });
 
   it("counts from the close time, which opens the refund before the end time would", () => {
-    const closed = { status: "closed", closedAt: CLOSED_AT } as const;
+    const closed = { storedStatus: "closed", closedAt: CLOSED_AT } as const;
 
     expect(REFUND_AFTER_CLOSE).toBeLessThan(REFUND_AFTER_END);
     expect(
@@ -124,12 +150,12 @@ describe("refundAvailability", () => {
     }
   });
 
-  it.each(["draft", "expired", "cancelled"] as const)(
+  it.each(["draft", "cancelled"] as const)(
     "is not offered for a %s campaign",
-    (status) => {
+    (storedStatus) => {
       expect(
         refundAvailability(
-          reading({ status, blockTimestamp: REFUND_AFTER_END }),
+          reading({ storedStatus, blockTimestamp: REFUND_AFTER_END }),
         ),
       ).toEqual({ kind: "unavailable", reason: "not-active" });
     },
@@ -140,7 +166,7 @@ describe("refundAvailability", () => {
       expect(
         refundAvailability(
           reading({
-            status: "settled",
+            storedStatus: "settled",
             closedAt: CLOSED_AT,
             paused,
             blockTimestamp: REFUND_AFTER_END,
@@ -190,10 +216,10 @@ describe("closeAvailability", () => {
     });
   });
 
-  it.each(["draft", "closed", "expired", "settled", "cancelled"] as const)(
+  it.each(["draft", "closed", "settled", "cancelled"] as const)(
     "is not offered for a %s campaign",
-    (status) => {
-      expect(closeAvailability(reading({ status }))).toEqual({
+    (storedStatus) => {
+      expect(closeAvailability(reading({ storedStatus }))).toEqual({
         kind: "unavailable",
         reason: "not-active",
       });
@@ -204,8 +230,8 @@ describe("closeAvailability", () => {
 describe("closing and refunding", () => {
   it("are never offered at the same time", () => {
     const legalStates: Partial<SettlementReading>[] = [
-      { status: "active", closedAt: 0n },
-      { status: "closed", closedAt: CLOSED_AT },
+      { storedStatus: "active", closedAt: null },
+      { storedStatus: "closed", closedAt: CLOSED_AT },
     ];
     const times = [
       START,

@@ -20,13 +20,14 @@ export {
 export {
   CLOSE_INCLUSION_MARGIN_SECONDS,
   closeAvailability,
-  parseContractCampaignStatus,
+  parseClosedAt,
+  parseStoredCampaignStatus,
   refundAvailability,
   refundAvailableAt,
   type CloseAvailability,
-  type ContractCampaignStatus,
   type RefundAvailability,
   type Seconds,
   type SettlementReading,
+  type StoredCampaignStatus,
   type UnixSeconds,
 } from "./settlement.js";
