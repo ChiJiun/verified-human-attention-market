@@ -248,6 +248,7 @@ describeE2e("POC economic loop on a local chain", () => {
       authRepository: new PostgresAuthRepository(database.db),
       siwe: { domain: DOMAIN, chainId: anvil.id },
       worldIdVerifier: new LocalSimulatedWorldIdVerifier(anvil.id),
+      worldIdRequest: { mode: "simulated" },
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: {
