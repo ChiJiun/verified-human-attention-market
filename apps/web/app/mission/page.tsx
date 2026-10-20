@@ -2,6 +2,12 @@
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
+  newWorldIdSignalSalt,
+  worldIdSignal,
+  type WorldIdSignal,
+  type WorldIdSignalSalt,
+} from "@vham/shared/world-id";
+import {
   CredentialRequest,
   IDKitRequestWidget,
   type IDKitResult,
@@ -11,7 +17,7 @@ import { useEffect, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
-import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
+import { chain, chainId, isLocalChain, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
 interface Campaign {
@@ -52,11 +58,21 @@ interface LiveWorldIdRequest {
   action: string;
   environment: "production" | "staging";
   rpContext: RpContext;
-  signal: Hex;
 }
 
 type WorldIdRequest =
-  LiveWorldIdRequest | { mode: "simulated"; action: string; signal: Hex };
+  LiveWorldIdRequest | { mode: "simulated"; action: string };
+
+/**
+ * One click of "Verify with World ID". The salt exists only here, in
+ * memory, from the click until the proof is posted (ADR-0007).
+ */
+interface PendingVerification {
+  request: LiveWorldIdRequest;
+  claimant: Address;
+  signalSalt: WorldIdSignalSalt;
+  signal: WorldIdSignal;
+}
 
 type Step =
   | { kind: "verify" }
@@ -65,8 +81,6 @@ type Step =
   | { kind: "claim"; submissionId: string }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash | null };
-
-const WORLD_ID_MODE = process.env.NEXT_PUBLIC_WORLD_ID_MODE ?? "live";
 
 /** Per-browser progress so a reload never repeats a completed step. */
 function store<T>(key: string, value?: T | null): T | null {
@@ -93,9 +107,7 @@ export default function MissionPage() {
   const [step, setStep] = useState<Step>({ kind: "verify" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [worldRequest, setWorldRequest] = useState<LiveWorldIdRequest | null>(
-    null,
-  );
+  const [pending, setPending] = useState<PendingVerification | null>(null);
   const [widgetOpen, setWidgetOpen] = useState(false);
 
   const key = (name: string) =>
@@ -143,15 +155,16 @@ export default function MissionPage() {
       else if (token) setStep({ kind: "answer" });
     });
 
-  /** Sends the IDKit result, unchanged, with the wallet; never logs it. */
+  /** Sends the IDKit result, unchanged, with the wallet and salt it was made for; never logs it. */
   async function verifyEligibility(
     claimant: Address,
+    signalSalt: WorldIdSignalSalt,
     idkitResponse: unknown,
   ): Promise<void> {
     if (!campaignId) return;
     const { data } = await api<{ eligibilityToken: string }>(
       `/v1/campaigns/${campaignId}/eligibility/verify`,
-      { method: "POST", body: { claimant, idkitResponse } },
+      { method: "POST", body: { claimant, signalSalt, idkitResponse } },
     );
     store(key("eligibility"), data.eligibilityToken);
     setEligibilityToken(data.eligibilityToken);
@@ -159,35 +172,37 @@ export default function MissionPage() {
 
   const verifyHuman = () =>
     run(async () => {
-      if (!wallet || !campaignId) return;
+      if (!wallet || !campaign) return;
       const { data } = await api<WorldIdRequest>(
-        `/v1/campaigns/${campaignId}/world-id/request`,
-        { method: "POST", body: { claimant: wallet.address } },
+        `/v1/campaigns/${campaign.id}/world-id/request`,
+        { method: "POST" },
       );
-      if (data.mode !== WORLD_ID_MODE) {
-        throw new Error(
-          `The API runs World ID in ${data.mode} mode, but this page expects ${WORLD_ID_MODE} mode.`,
-        );
-      }
+      const claimant = wallet.address;
+      const signalSalt = newWorldIdSignalSalt();
+      const signal = worldIdSignal({
+        campaignId: campaign.id,
+        claimant,
+        salt: signalSalt,
+      });
       if (data.mode === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
-        await verifyEligibility(wallet.address, {
+        await verifyEligibility(claimant, signalSalt, {
           action: data.action,
-          simulatedHuman: wallet.address.toLowerCase(),
-          signal: data.signal,
+          simulatedHuman: claimant.toLowerCase(),
+          signal,
         });
         setStep({ kind: "answer" });
         return;
       }
-      setWorldRequest(data);
+      setPending({ request: data, claimant, signalSalt, signal });
       setWidgetOpen(true);
     });
 
   /** Throwing here makes the widget show its error state (host rejected). */
   async function handleWorldIdVerify(result: IDKitResult) {
-    if (!wallet) throw new Error("Connect your wallet first.");
+    if (!pending) throw new Error("Start the verification again.");
     try {
-      await verifyEligibility(wallet.address, result);
+      await verifyEligibility(pending.claimant, pending.signalSalt, result);
     } catch (caught) {
       const message = describeError(caught);
       setError(message);
@@ -330,24 +345,24 @@ export default function MissionPage() {
             Your reward is bound to this wallet. One person, one reward.
           </p>
           <button onClick={verifyHuman} disabled={busy || !active}>
-            {WORLD_ID_MODE === "simulated"
+            {isLocalChain
               ? "Verify (local simulation)"
               : "Verify with World ID"}
           </button>
         </section>
       )}
 
-      {worldRequest && (
+      {pending && (
         <IDKitRequestWidget
           open={widgetOpen}
           onOpenChange={setWidgetOpen}
-          app_id={worldRequest.appId}
-          action={worldRequest.action}
-          rp_context={worldRequest.rpContext}
-          environment={worldRequest.environment}
+          app_id={pending.request.appId}
+          action={pending.request.action}
+          rp_context={pending.request.rpContext}
+          environment={pending.request.environment}
           allow_legacy_proofs={false}
           constraints={CredentialRequest("proof_of_human", {
-            signal: worldRequest.signal,
+            signal: pending.signal,
           })}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
