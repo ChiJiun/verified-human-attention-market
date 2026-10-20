@@ -155,6 +155,12 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 4. 按「Create on-chain」送出 createCampaign，API 驗證交易後完成連結。
 5. 按「Approve & fund」核准並入金。
 6. indexer 確認後，狀態變成 active，頁面會顯示預算與成效。
+7. 想提早結束時按「Close campaign」。關閉後 API 不再發新的領取授權，已發出的授權在到期前仍可在鏈上領取。結束前最後一分鐘不提供這個按鈕，因為交易可能在結束後才上鏈而 revert。
+8. 退款要等到「關閉時間（沒關閉則是結束時間）加 15 分鐘」之後，因為已發出的授權最多還有效 15 分鐘，合約等它們全部過期才放行。這段時間頁面顯示開放時間、倒數和原因。時間到了按「Refund unused budget」，狀態變成 `settled`，未用完的預算回到廣告主錢包。
+
+合約被 owner 暫停時，頁面說明退款要等解除暫停；「Close campaign」不受暫停影響。兩個按鈕送出前都會重新讀鏈並模擬交易，被合約拒絕時直接顯示 custom error 名稱（例如 `RefundNotAvailable`），不會自動重送。
+
+這兩個按鈕只對目前部署的合約（`GET /v1/chain`）上的 campaign 出現。ADR-0011 之前的舊合約上的 campaign，頁面沒有合約位址可用，仍要用 `cast send` 由廣告主錢包送 `closeCampaign(id)` 和 `refundUnusedBudget(id)`。
 
 交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
 
@@ -221,6 +227,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 NEXT_PUBLIC_WORLD_ID_MO
 2. **等到開始時間後**（本機鏈時間跟著真實時間走）：
 3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify（local simulation）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
 4. 回到廣告主頁面，可以看到已付金額和完成數。
+5. **廣告主（anvil #2）：** 按「Close campaign」提早結束，再等「Refund unused budget」出現（關閉後約 15 分鐘，頁面有倒數）並按下，狀態變成 `settled`。想跳過等待，執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。快轉後這條鏈的時間比真實時間快，下一輪請先重啟 anvil。
 
 ### 使用真的 World ID（#12）
 
