@@ -7,7 +7,7 @@
 
 /**
  * `CampaignManager.CampaignStatus` in declaration order. A test pins this
- * list to the Solidity source, so inserting a status there fails the build.
+ * list to the Solidity source, so inserting a status there fails the tests.
  */
 const CONTRACT_STATUSES = [
   "draft",
@@ -40,6 +40,11 @@ export const CLOSE_MARGIN_SECONDS = 60n;
 
 /** What the advertiser's wallet reads from CampaignManager. All times are seconds. */
 export interface SettlementReading {
+  /**
+   * The stored status from `campaigns(id)`, which close and refund check. Not
+   * `statusOf(id)`: that reports `expired` once an active campaign passes its
+   * end time, yet such a campaign can still be refunded.
+   */
   status: ContractCampaignStatus;
   endTime: bigint;
   /** 0n until the campaign is closed. */
