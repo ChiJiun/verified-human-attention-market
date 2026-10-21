@@ -9,8 +9,8 @@ import {
 } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { worldIdSignalSaltSchema, worldIdSignalSchema } from "../src/index.js";
 import {
+  isWorldIdSignalSalt,
   newWorldIdSignalSalt,
   worldIdSignal,
   type WorldIdSignalSalt,
@@ -103,11 +103,12 @@ describe("newWorldIdSignalSalt", () => {
   });
 });
 
-describe("salt and signal schemas", () => {
-  it("accept a 0x 32-byte hex string", () => {
-    const salt: WorldIdSignalSalt = worldIdSignalSaltSchema.parse(SALT);
-    expect(salt).toBe(SALT);
-    expect(worldIdSignalSchema.parse(SIGNAL)).toBe(SIGNAL);
+describe("isWorldIdSignalSalt", () => {
+  it("accepts a 0x 32-byte hex string in either case", () => {
+    expect(isWorldIdSignalSalt(SALT)).toBe(true);
+    expect(isWorldIdSignalSalt(SALT.toUpperCase().replace("0X", "0x"))).toBe(
+      true,
+    );
   });
 
   it.each([
@@ -116,8 +117,7 @@ describe("salt and signal schemas", () => {
     ["no 0x prefix", "11".repeat(32)],
     ["non-hex characters", `0x${"11".repeat(31)}zz`],
     ["not a string", 11],
-  ])("refuse %s", (_label, value) => {
-    expect(worldIdSignalSaltSchema.safeParse(value).success).toBe(false);
-    expect(worldIdSignalSchema.safeParse(value).success).toBe(false);
+  ])("refuses %s", (_label, value) => {
+    expect(isWorldIdSignalSalt(value)).toBe(false);
   });
 });

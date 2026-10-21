@@ -18,10 +18,6 @@ export function isWorldIdSignalSalt(
   return typeof value === "string" && BYTES32.test(value);
 }
 
-export function isWorldIdSignal(value: unknown): value is WorldIdSignal {
-  return typeof value === "string" && BYTES32.test(value);
-}
-
 export function newWorldIdSignalSalt(): WorldIdSignalSalt {
   return bytesToHex(
     crypto.getRandomValues(new Uint8Array(32)),

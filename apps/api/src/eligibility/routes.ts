@@ -1,4 +1,7 @@
-import { worldIdSignalSaltSchema } from "@vham/shared";
+import {
+  isWorldIdSignalSalt,
+  type WorldIdSignalSalt,
+} from "@vham/shared/world-id";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -16,13 +19,12 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const claimantSchema = z
-  .string()
-  .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address");
-
 const verifyEligibilitySchema = z.object({
-  claimant: claimantSchema,
-  signalSalt: worldIdSignalSaltSchema,
+  claimant: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address"),
+  signalSalt: z.custom<WorldIdSignalSalt>(
+    isWorldIdSignalSalt,
+    "signalSalt must be 32 bytes as 0x hex",
+  ),
   // Forwarded to World ID unchanged; validated by the verifier.
   idkitResponse: z.unknown(),
 });

@@ -6,8 +6,8 @@ import {
   HttpWorldIdVerifier,
   LocalSimulatedWorldIdVerifier,
   normalizeFieldElement,
+  signalHash,
 } from "../src/identity/world-id.js";
-import { signalHash } from "../src/identity/world-id-signal.js";
 
 const CAMPAIGN_ID = "00000000-0000-4000-8000-000000000001";
 const ACTION = campaignAction(CAMPAIGN_ID);
@@ -478,7 +478,7 @@ describe("LocalSimulatedWorldIdVerifier", () => {
     ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
   });
 
-  it("refuses a simulated proof whose signal is another wallet's, missing or malformed", async () => {
+  it("refuses a simulated proof whose signal is another wallet's, missing or malformed as a signal mismatch", async () => {
     const verifier = new LocalSimulatedWorldIdVerifier(31337);
 
     expect(
@@ -501,6 +501,21 @@ describe("LocalSimulatedWorldIdVerifier", () => {
         signal: SIGNAL,
         idkitResponse: { ...alice, signal: "0x1234" },
       }),
-    ).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+    ).toEqual({ ok: false, code: "SIGNAL_MISMATCH" });
+  });
+
+  it("accepts the bound signal in either hex case", async () => {
+    const verifier = new LocalSimulatedWorldIdVerifier(31337);
+
+    expect(
+      await verifier.verify({
+        action: ACTION,
+        signal: SIGNAL,
+        idkitResponse: {
+          ...alice,
+          signal: SIGNAL.toUpperCase().replace("0X", "0x"),
+        },
+      }),
+    ).toMatchObject({ ok: true });
   });
 });

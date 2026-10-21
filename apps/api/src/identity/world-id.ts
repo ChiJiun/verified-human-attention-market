@@ -1,8 +1,8 @@
-import { worldIdSignalSchema } from "@vham/shared";
 import type { WorldIdSignal } from "@vham/shared/world-id";
+import { hexToBytes, type Hex } from "viem";
 import { z } from "zod";
 
-import { signalHash } from "./world-id-signal.js";
+import { hashToField } from "./rp-signature.js";
 
 /**
  * World ID backend verification (ADR-0007).
@@ -46,6 +46,15 @@ export interface WorldIdVerifier {
 /** One World ID action per campaign → campaign-scoped nullifiers. */
 export function campaignAction(campaignId: string): string {
   return `vham-campaign-${campaignId}`;
+}
+
+/**
+ * The `signal_hash` IDKit 4.4.0 puts in a result for this signal
+ * (`hashSignal` in @worldcoin/idkit-core): a 0x hex signal is hashed as
+ * bytes, not as text.
+ */
+export function signalHash(signal: WorldIdSignal): Hex {
+  return hashToField(hexToBytes(signal));
 }
 
 const responseItemV4Schema = z.looseObject({
@@ -237,7 +246,8 @@ export class UnconfiguredWorldIdVerifier implements WorldIdVerifier {
 export const LOCAL_DEV_CHAIN_ID = 31337;
 
 /**
- * Local-development stand-in for World ID, for demos on anvil only.
+ * Local-development stand-in for World ID. It proves nothing about a human,
+ * so its constructor refuses every chain but the local anvil chain.
  */
 export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
   constructor(chainId: number) {
@@ -257,7 +267,7 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
       .object({
         action: z.string(),
         simulatedHuman: z.string().min(1).max(100),
-        signal: worldIdSignalSchema.optional(),
+        signal: z.string().optional(),
       })
       .safeParse(request.idkitResponse);
 
@@ -269,7 +279,7 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
       return { ok: false, code: "ACTION_MISMATCH" };
     }
 
-    if (proof.data.signal !== request.signal) {
+    if (proof.data.signal?.toLowerCase() !== request.signal) {
       return { ok: false, code: "SIGNAL_MISMATCH" };
     }
 

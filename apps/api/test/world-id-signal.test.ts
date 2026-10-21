@@ -1,7 +1,8 @@
 import type { WorldIdSignal } from "@vham/shared/world-id";
 import { describe, expect, it } from "vitest";
 
-import { signalHash } from "../src/identity/world-id-signal.js";
+import { signalHash } from "../src/identity/world-id.js";
+
 
 describe("signalHash", () => {
   it("matches @worldcoin/idkit-core 4.4.0 hashSignal for a 0x hex signal", () => {
