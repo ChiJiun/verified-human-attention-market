@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  worldIdSignal,
+  type WorldIdSignal,
+  type WorldIdSignalSalt,
+} from "@vham/shared/world-id";
+import { hashSignal } from "@worldcoin/idkit-core/hashing";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
@@ -6,6 +12,8 @@ import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
   campaignAction,
+  HttpWorldIdVerifier,
+  parseWorldIdRpId,
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
@@ -15,24 +23,38 @@ const now = new Date("2026-10-05T10:00:00.000Z");
 const SECRET = "eligibility-test-secret-0123456789abcdef";
 const WALLET_A = "0x" + "a".repeat(40);
 const WALLET_B = "0x" + "b".repeat(40);
+const SALT = `0x${"11".repeat(32)}` as WorldIdSignalSalt;
+const OTHER_SALT = `0x${"22".repeat(32)}` as WorldIdSignalSalt;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-/** Fake World ID: the "proof" is just { action, human }. */
 class FakeWorldId implements WorldIdVerifier {
-  calls: { action: string; idkitResponse: unknown }[] = [];
+  calls: { action: string; signal: WorldIdSignal; idkitResponse: unknown }[] =
+    [];
 
   async verify(request: {
     action: string;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     this.calls.push(request);
-    const proof = request.idkitResponse as { action?: string; human?: string };
+    const proof = request.idkitResponse as {
+      action?: string;
+      human?: string;
+      signal?: string;
+    };
 
     if (proof.human === "invalid") {
-      return { ok: false, code: "VERIFICATION_FAILED" };
+      return {
+        ok: false,
+        code: "VERIFICATION_FAILED",
+        worldCodes: {
+          code: "all_verifications_failed",
+          resultCodes: ["verification_error"],
+        },
+      };
     }
 
     if (proof.human === "outage") {
@@ -41,6 +63,10 @@ class FakeWorldId implements WorldIdVerifier {
 
     if (proof.action !== request.action) {
       return { ok: false, code: "ACTION_MISMATCH" };
+    }
+
+    if (proof.signal !== request.signal) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
     }
 
     return { ok: true, nullifier: String(proof.human) };
@@ -79,7 +105,7 @@ async function setup(
     authenticate: signedInAs(),
     campaignRepository: new InMemoryCampaignRepository(),
     eligibilityRepository,
-    worldIdVerifier: worldId,
+    worldIdVerifierOverride: worldId,
     participantKeySecret:
       options.secret === undefined ? SECRET : options.secret,
     now: options.clock ?? (() => current),
@@ -102,17 +128,30 @@ async function setup(
     setNow: (value: Date) => {
       current = value;
     },
-    verify: (body: unknown) =>
+    verify: (body: {
+      claimant: string;
+      idkitResponse?: unknown;
+      signalSalt?: unknown;
+    }) =>
       app.inject({
         method: "POST",
         url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-        payload: body as Record<string, unknown>,
+        payload: { signalSalt: SALT, ...body },
       }),
   };
 }
 
-function proof(campaignId: string, human: string) {
-  return { action: campaignAction(campaignId), human };
+function proof(
+  campaignId: string,
+  human: string,
+  claimant = WALLET_A,
+  salt: WorldIdSignalSalt = SALT,
+) {
+  return {
+    action: campaignAction(campaignId),
+    human,
+    signal: worldIdSignal({ campaignId, claimant, salt }),
+  };
 }
 
 describe("POST /v1/campaigns/:id/eligibility/verify", () => {
@@ -157,13 +196,66 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
 
     const response = await verify({
       claimant: WALLET_B,
-      idkitResponse: proof(campaignId, "h"),
+      idkitResponse: proof(campaignId, "h", WALLET_B),
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       error: { code: "PARTICIPANT_WALLET_MISMATCH" },
     });
+  });
+
+  it("refuses a proof made for another wallet or another salt, and writes nothing", async () => {
+    const { campaignId, verify } = await setup();
+
+    const relayed = await verify({
+      claimant: WALLET_B,
+      idkitResponse: proof(campaignId, "h", WALLET_A),
+    });
+
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+
+    const otherSalt = await verify({
+      claimant: WALLET_B,
+      signalSalt: OTHER_SALT,
+      idkitResponse: proof(campaignId, "h", WALLET_B),
+    });
+    expect(otherSalt.statusCode).toBe(403);
+    expect(otherSalt.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+
+    const own = await verify({
+      claimant: WALLET_B,
+      idkitResponse: proof(campaignId, "h", WALLET_B),
+    });
+    expect(own.statusCode).toBe(201);
+  });
+
+  it("refuses a missing or malformed signal salt without calling World", async () => {
+    const { campaignId, verify, worldId } = await setup();
+
+    for (const signalSalt of [
+      undefined,
+      "0x1234",
+      `0x${"11".repeat(31)}zz`,
+      "11".repeat(32),
+      11,
+    ]) {
+      const response = await verify({
+        claimant: WALLET_A,
+        signalSalt,
+        idkitResponse: proof(campaignId, "h"),
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "INVALID_ELIGIBILITY_REQUEST" },
+      });
+    }
+    expect(worldId.calls).toHaveLength(0);
   });
 
   it("rejects one wallet being used by a second human", async () => {
@@ -218,6 +310,34 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
     ).not.toBeNull();
   });
 
+  it("logs World's error codes, and no proof material, when World refuses", async () => {
+    const { app, campaignId, verify } = await setup();
+    const warn = vi.spyOn(app.log, "warn");
+
+    const refused = await verify({
+      claimant: WALLET_A,
+      idkitResponse: proof(campaignId, "invalid"),
+    });
+
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({
+      error: { code: "VERIFICATION_FAILED" },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      {
+        worldIdOutcome: "VERIFICATION_FAILED",
+        worldCodes: {
+          code: "all_verifications_failed",
+          resultCodes: ["verification_error"],
+        },
+      },
+      "World ID refused the proof",
+    );
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain(SALT.slice(2));
+    expect(logged).not.toContain("invalid");
+  });
+
   it("fails closed when the participant key secret is missing", async () => {
     const { campaignId, verify, worldId } = await setup({ secret: null });
 
@@ -260,9 +380,102 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
       const response = await app.inject({
         method: "POST",
         url: `/v1/campaigns/${id}/eligibility/verify`,
-        payload: { claimant: WALLET_A, idkitResponse: {} },
+        payload: { claimant: WALLET_A, signalSalt: SALT, idkitResponse: {} },
       });
       expect(response.statusCode).toBe(404);
     }
+  });
+});
+
+describe("eligibility verify with the HTTP World ID verifier", () => {
+  const NULLIFIER = `0x${"2b".repeat(32)}`;
+
+  async function setupHttp() {
+    const world = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            environment: "production",
+            results: [
+              {
+                identifier: "proof_of_human",
+                success: true,
+                nullifier: NULLIFIER,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const app = buildApp({
+      authenticate: signedInAs(),
+      worldIdVerifierOverride: new HttpWorldIdVerifier({
+        rpId: parseWorldIdRpId("rp_0123456789abcdef")!,
+        environment: "production",
+        fetch: world as unknown as typeof fetch,
+      }),
+      participantKeySecret: SECRET,
+      now: () => now,
+    });
+    apps.push(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: { "idempotency-key": "campaign-http-world-id" },
+      payload: campaignPayload,
+    });
+    const campaignId = created.json<{ id: string }>().id;
+    const idkitResult = (claimant: string, salt: WorldIdSignalSalt) => ({
+      protocol_version: "4.0",
+      nonce: "0x1234",
+      action: campaignAction(campaignId),
+      environment: "production",
+      responses: [
+        {
+          identifier: "proof_of_human",
+          issuer_schema_id: 1,
+          proof: ["0x1", "0x2", "0x3", "0x4", "0x5"],
+          nullifier: NULLIFIER,
+          signal_hash: hashSignal(
+            worldIdSignal({ campaignId, claimant, salt }),
+          ),
+          expires_at_min: 1791194400,
+        },
+      ],
+    });
+    const verify = (
+      claimant: string,
+      signalSalt: WorldIdSignalSalt,
+      idkitResponse: unknown,
+    ) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+        payload: { claimant, signalSalt, idkitResponse },
+      });
+
+    return { world, idkitResult, verify };
+  }
+
+  it("refuses a relayed IDKit result before World and accepts the wallet's own", async () => {
+    const { world, idkitResult, verify } = await setupHttp();
+
+    const relayed = await verify(WALLET_B, SALT, idkitResult(WALLET_A, SALT));
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+    const freshSalt = await verify(
+      WALLET_B,
+      OTHER_SALT,
+      idkitResult(WALLET_A, SALT),
+    );
+    expect(freshSalt.statusCode).toBe(403);
+    expect(world).not.toHaveBeenCalled();
+
+    const own = await verify(WALLET_A, SALT, idkitResult(WALLET_A, SALT));
+    expect(own.statusCode).toBe(201);
+    expect(world).toHaveBeenCalledTimes(1);
   });
 });

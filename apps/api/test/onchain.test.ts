@@ -47,6 +47,7 @@ const CONTRACT = "0x" + "c0".repeat(20);
 const USDC_ADDRESS = "0x" + "d0".repeat(20);
 const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const CLAIMANT = "0x" + "b".repeat(40);
+const SIGNAL_SALT = `0x${"11".repeat(32)}`;
 const USDC = 1_000_000n;
 
 afterEach(async () => {
@@ -102,7 +103,7 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
     submissionRepository: submissions,
     chainId: 84532,
     chain: options.chainConfigured === false ? null : chainDeps,
-    worldIdVerifier: new FakeWorldId(),
+    worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: "onchain-test-secret-0123456789abcdef",
     now: () => now,
   });
@@ -526,6 +527,7 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       await post(`/v1/campaigns/${campaignId}/world-id/request`, {}),
       await post(`/v1/campaigns/${campaignId}/eligibility/verify`, {
         claimant: CLAIMANT,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: { action: `vham-campaign-${campaignId}`, human: "h" },
       }),
       await post(
@@ -720,6 +722,7 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       url: `/v1/campaigns/${draftA}/eligibility/verify`,
       payload: {
         claimant: CLAIMANT,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: { action: `vham-campaign-${draftA}`, human: "closer" },
       },
     });
@@ -763,6 +766,7 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       url: `/v1/campaigns/${id}/eligibility/verify`,
       payload: {
         claimant: CLAIMANT,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: { action: `vham-campaign-${id}`, human: "h1" },
       },
     });
@@ -1000,6 +1004,7 @@ describe("campaigns of a retired deployment (ADR-0011)", () => {
       (
         await post(`/v1/campaigns/${id}/eligibility/verify`, {
           claimant: CLAIMANT,
+          signalSalt: SIGNAL_SALT,
           idkitResponse: { action: `vham-campaign-${id}` },
         })
       ).json(),

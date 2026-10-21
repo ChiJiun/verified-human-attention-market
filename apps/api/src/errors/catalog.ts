@@ -81,6 +81,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   INVALID_PROOF_PAYLOAD: { retryable: false },
   ACTION_MISMATCH: { retryable: false },
   ENVIRONMENT_MISMATCH: { retryable: false },
+  SIGNAL_MISMATCH: { retryable: false },
   INVALID_TRANSITION: { retryable: false },
   REPORT_ALREADY_RESOLVED: { retryable: false },
   REPORT_CAMPAIGN_MISMATCH: { retryable: false },

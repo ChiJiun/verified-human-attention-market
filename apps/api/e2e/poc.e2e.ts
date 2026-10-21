@@ -31,6 +31,7 @@ import {
 } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
+import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
@@ -54,11 +55,6 @@ import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresModerationRepository } from "../src/moderation/repository.js";
-import {
-  campaignAction,
-  type WorldIdResult,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
 
 const RPC_URL = process.env.E2E_RPC_URL ?? "http://127.0.0.1:8545";
@@ -92,24 +88,6 @@ function artifact(path: string): { abi: Abi; bytecode: Hex } {
     ),
   ) as { abi: Abi; bytecode: { object: Hex } };
   return { abi: json.abi, bytecode: json.bytecode.object };
-}
-
-/** World ID needs the World App; the proof is simulated as { action, human }. */
-class SimulatedWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? {
-          ok: true,
-          nullifier: String(
-            BigInt(`0x${Buffer.from(proof.human).toString("hex")}`),
-          ),
-        }
-      : { ok: false, code: "ACTION_MISMATCH" };
-  }
 }
 
 const describeE2e = DATABASE_URL ? describe : describe.skip;
@@ -166,6 +144,28 @@ describeE2e("POC economic loop on a local chain", () => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     expect(receipt.status).toBe("success");
     return hash;
+  }
+
+  async function simulatedVerification(
+    campaignId: string,
+    claimant: Address,
+    human: string,
+  ) {
+    const requested = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/world-id/request`,
+    });
+    expect(requested.statusCode).toBe(200);
+    const { action } = requested.json<{ action: string }>();
+    const signalSalt = newWorldIdSignalSalt();
+    return {
+      signalSalt,
+      idkitResponse: {
+        action,
+        simulatedHuman: human,
+        signal: worldIdSignal({ campaignId, claimant, salt: signalSalt }),
+      },
+    };
   }
 
   async function signIn(account: typeof deployer) {
@@ -245,7 +245,7 @@ describeE2e("POC economic loop on a local chain", () => {
       ),
       authRepository: new PostgresAuthRepository(database.db),
       siwe: { domain: DOMAIN, chainId: anvil.id },
-      worldIdVerifier: new SimulatedWorldId(),
+      worldId: { mode: "simulated" },
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: {
@@ -563,17 +563,29 @@ describeE2e("POC economic loop on a local chain", () => {
 
     // 4. A verified human completes the mission after start.
     await travelTo(seconds(130));
+    const aliceVerification = await simulatedVerification(
+      campaignId,
+      alice.address,
+      "alice",
+    );
     const verified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: {
-        claimant: alice.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "alice" },
-      },
+      payload: { claimant: alice.address, ...aliceVerification },
     });
     expect(verified.statusCode).toBe(201);
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
+
+    const relayed = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: { claimant: bob.address, ...aliceVerification },
+    });
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
 
     const submitted = await app.inject({
       method: "POST",
@@ -732,7 +744,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: bob.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "bob" },
+        ...(await simulatedVerification(campaignId, bob.address, "bob")),
       },
     });
     expect(bobVerified.statusCode).toBe(201);
@@ -787,7 +799,7 @@ describeE2e("POC economic loop on a local chain", () => {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: carol.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "carol" },
+        ...(await simulatedVerification(campaignId, carol.address, "carol")),
       },
     });
     expect(carolVerified.statusCode).toBe(201);

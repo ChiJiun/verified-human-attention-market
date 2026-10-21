@@ -1,3 +1,4 @@
+import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
 import { bytesToHex, hexToBytes, stringToBytes, verifyMessage } from "viem";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +8,10 @@ import {
   hashToField,
   rpSignatureMessage,
 } from "../src/identity/rp-signature.js";
+import {
+  loadWorldIdConfig,
+  type WorldIdConfig,
+} from "../src/identity/world-id-config.js";
 import { signedInAs } from "./support/auth.js";
 
 /** Official vectors: https://docs.world.org/world-id/idkit/signatures (2026-10-13). */
@@ -86,19 +91,27 @@ describe("World ID RP signatures", () => {
 });
 
 describe("POST /v1/campaigns/:id/world-id/request", () => {
-  async function setup(configured: boolean) {
-    const signer = createRpSigner(KEY);
+  const SECRET = "rp-request-test-secret-0123456789abcdef";
+  const WALLET_A = `0x${"a".repeat(40)}`;
+  const WALLET_B = `0x${"b".repeat(40)}`;
+  const signer = createRpSigner(KEY);
+  const LIVE = loadWorldIdConfig(
+    {
+      WORLD_ID_RP_ID: "rp_0123456789abcdef",
+      RP_SIGNING_KEY: KEY,
+      WORLD_ID_APP_ID: "app_test123",
+      WORLD_ID_ENVIRONMENT: "staging",
+    },
+    84532,
+  ).config;
+
+  async function setup(worldId: WorldIdConfig | null, chainId = 84532) {
     const now = new Date("2026-10-05T10:00:00.000Z");
     const app = buildApp({
       authenticate: signedInAs(),
-      worldIdRequest: configured
-        ? {
-            signer,
-            rpId: "rp_test123",
-            appId: "app_test123",
-            environment: "staging",
-          }
-        : null,
+      worldId,
+      chainId,
+      participantKeySecret: SECRET,
       now: () => now,
     });
     const created = await app.inject({
@@ -127,11 +140,11 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         },
       },
     });
-    return { app, signer, id: created.json<{ id: string }>().id };
+    return { app, id: created.json<{ id: string }>().id };
   }
 
-  it("returns the campaign action and a verifiable rp_context", async () => {
-    const { app, signer, id } = await setup(true);
+  it("returns the campaign action and a verifiable rp_context, with no body and no signal", async () => {
+    const { app, id } = await setup(LIVE);
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
@@ -139,22 +152,30 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json<{
-      appId: string;
       action: string;
-      environment: string;
       rpContext: {
-        rp_id: string;
         nonce: `0x${string}`;
         created_at: number;
         expires_at: number;
         signature: `0x${string}`;
       };
     }>();
+    expect(Object.keys(body).sort()).toEqual([
+      "action",
+      "appId",
+      "environment",
+      "mode",
+      "rpContext",
+    ]);
     expect(body).toMatchObject({
+      mode: "live",
       appId: "app_test123",
       environment: "staging",
       action: `vham-campaign-${id}`,
-      rpContext: { rp_id: "rp_test123", expires_at: 1_791_194_400 + 300 },
+      rpContext: {
+        rp_id: "rp_0123456789abcdef",
+        expires_at: 1_791_194_400 + 300,
+      },
     });
     expect(response.body).not.toContain(KEY.slice(2));
     expect(
@@ -174,20 +195,60 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     await app.close();
   });
 
-  it("fails closed when RP signing is not configured", async () => {
-    const { app, id } = await setup(false);
+  it("serves the local simulation, whose proof carries the browser-derived signal", async () => {
+    const { app, id } = await setup({ mode: "simulated" }, 31337);
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
     });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      mode: "simulated",
+      action: `vham-campaign-${id}`,
+    });
+    const { action } = response.json<{ action: string }>();
+
+    const signalSalt = newWorldIdSignalSalt();
+    const signal = worldIdSignal({
+      campaignId: id,
+      claimant: WALLET_A,
+      salt: signalSalt,
+    });
+    const verify = (claimant: string) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${id}/eligibility/verify`,
+        payload: {
+          claimant,
+          signalSalt,
+          idkitResponse: { action, simulatedHuman: "alice", signal },
+        },
+      });
+    expect((await verify(WALLET_A)).statusCode).toBe(201);
+    const relayed = await verify(WALLET_B);
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
+    await app.close();
+  });
+
+  it("fails closed when World ID is not configured", async () => {
+    const unsigned = await setup(null);
+    const response = await unsigned.app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${unsigned.id}/world-id/request`,
+    });
+    expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({
       error: { code: "WORLD_ID_NOT_CONFIGURED" },
     });
-    const missing = await app.inject({
+    const missing = await unsigned.app.inject({
       method: "POST",
       url: "/v1/campaigns/00000000-0000-4000-8000-000000000999/world-id/request",
     });
     expect(missing.statusCode).toBe(404);
-    await app.close();
+    await unsigned.app.close();
   });
 });

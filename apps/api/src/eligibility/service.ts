@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { Deployment } from "@vham/shared/deployment";
+import { worldIdSignal, type WorldIdSignalSalt } from "@vham/shared/world-id";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
+  type WorldRefusalCodes,
   type WorldIdFailureCode,
   type WorldIdVerifier,
 } from "../identity/world-id.js";
@@ -42,7 +44,12 @@ export type EligibilityFailureCode =
 
 export type EligibilityOutcome =
   | { ok: true; eligibility: EligibilityRecord; created: boolean }
-  | { ok: false; status: number; code: EligibilityFailureCode };
+  | {
+      ok: false;
+      status: number;
+      code: EligibilityFailureCode;
+      worldCodes?: WorldRefusalCodes;
+    };
 
 const WORLD_ID_STATUS: Record<WorldIdFailureCode, number> = {
   WORLD_ID_NOT_CONFIGURED: 503,
@@ -50,6 +57,7 @@ const WORLD_ID_STATUS: Record<WorldIdFailureCode, number> = {
   INVALID_PROOF_PAYLOAD: 400,
   ACTION_MISMATCH: 403,
   ENVIRONMENT_MISMATCH: 403,
+  SIGNAL_MISMATCH: 403,
   VERIFICATION_FAILED: 403,
 };
 
@@ -63,6 +71,7 @@ export async function verifyEligibility(
   input: {
     campaignId: string;
     claimantAddress: string;
+    signalSalt: WorldIdSignalSalt;
     idkitResponse: unknown;
   },
 ): Promise<EligibilityOutcome> {
@@ -92,15 +101,16 @@ export async function verifyEligibility(
 
   const verification = await dependencies.worldId.verify({
     action: campaignAction(campaign.id),
+    signal: worldIdSignal({
+      campaignId: campaign.id,
+      claimant: input.claimantAddress,
+      salt: input.signalSalt,
+    }),
     idkitResponse: input.idkitResponse,
   });
 
   if (!verification.ok) {
-    return {
-      ok: false,
-      status: WORLD_ID_STATUS[verification.code],
-      code: verification.code,
-    };
+    return { ...verification, status: WORLD_ID_STATUS[verification.code] };
   }
 
   try {
