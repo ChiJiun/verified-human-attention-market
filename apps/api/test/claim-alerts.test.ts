@@ -62,7 +62,8 @@ const OTHER_SIGNER = `0x${"44".repeat(20)}`;
 const CONTRACT = `0x${"c8".repeat(20)}`;
 const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const CORRECT = [{ questionId: "q1", choiceId: "a" }];
-const wallet = (n: number) => `0x${(0x8900 + n).toString(16).padStart(40, "0")}`;
+const wallet = (n: number) =>
+  `0x${(0x8900 + n).toString(16).padStart(40, "0")}`;
 
 async function setup(options: {
   claimSigner: ClaimSigner;
@@ -81,7 +82,9 @@ async function setup(options: {
     participantKeySecret: "claim-alerts-secret-0123456789abcdef",
     claimSigner: options.claimSigner,
     dailyPayoutLimitAtomic: options.dailyPayoutLimitAtomic ?? null,
-    payoutAnomalies: options.payoutAnomalies,
+    ...(options.payoutAnomalies
+      ? { payoutAnomalies: options.payoutAnomalies }
+      : {}),
     chain: {
       rpc,
       chain: {
@@ -219,7 +222,10 @@ describe("alerts see authorization outcomes on every route (#89)", () => {
         throw new SignerUnavailableError("KMS timeout");
       },
     };
-    const s = await setup({ claimSigner: failing, onchainSigner: REAL.address });
+    const s = await setup({
+      claimSigner: failing,
+      onchainSigner: REAL.address,
+    });
     const { submitted } = await s.participate(2);
     expect(submitted.statusCode).toBe(503);
     expect(await s.series(AUTHORIZATIONS)).toEqual({
@@ -269,7 +275,7 @@ describe("alerts see authorization outcomes on every route (#89)", () => {
         global: 100,
       }),
     });
-    const accepted = [];
+    const accepted: Awaited<ReturnType<typeof s.participate>>[] = [];
     for (const human of [6, 7, 8]) accepted.push(await s.participate(human));
     const idOf = (r: (typeof accepted)[number]) =>
       r.submitted.json<{ submissionId: string }>().submissionId;

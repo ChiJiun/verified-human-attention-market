@@ -70,6 +70,7 @@ import {
   LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "./observability/instrumentation.js";
+import { claimAuthorizationObserver } from "./observability/claim-authorizations.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
 import {
@@ -212,12 +213,17 @@ export function buildApp(dependencies: AppDependencies = {}) {
     now,
   });
 
-  registerInstrumentation(app, {
+  const observeClaim = claimAuthorizationObserver({
     metrics,
     payoutAnomalies:
       dependencies.payoutAnomalies ?? new PayoutAnomalyDetector(),
-    metricsToken: dependencies.metricsToken ?? null,
     now,
+    log: app.log,
+  });
+
+  registerInstrumentation(app, {
+    metrics,
+    metricsToken: dependencies.metricsToken ?? null,
     collect: async () => {
       await chainStatus();
     },
@@ -348,6 +354,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
           }
         : null,
       now,
+      observe: observeClaim,
     };
 
     await registerEligibilityRoutes(instance, {

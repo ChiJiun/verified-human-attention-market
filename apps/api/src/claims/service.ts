@@ -41,6 +41,8 @@ export interface ClaimDependencies {
    * confirmation depth: no participation until recovery (ADR-0011).
    */
   chainHalted: () => Promise<boolean>;
+  /** Called once with the outcome of every authorization attempt (#89). */
+  observe?: (campaignId: string, outcome: ClaimOutcome) => void;
 }
 
 export type ClaimOutcome =
@@ -54,6 +56,15 @@ const SIGNER_SELECTOR = encodeFunctionData({
 });
 
 export async function authorizeClaim(
+  dependencies: ClaimDependencies,
+  input: Parameters<typeof resolveClaim>[1],
+): Promise<ClaimOutcome> {
+  const outcome = await resolveClaim(dependencies, input);
+  dependencies.observe?.(input.campaignId, outcome);
+  return outcome;
+}
+
+async function resolveClaim(
   dependencies: ClaimDependencies,
   input: {
     campaignId: string;

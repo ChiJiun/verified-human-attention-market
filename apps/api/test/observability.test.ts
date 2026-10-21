@@ -1,13 +1,9 @@
-import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
 import type { ChainRpc } from "../src/chain/rpc.js";
-import {
-  generateRequestId,
-  registerInstrumentation,
-} from "../src/observability/instrumentation.js";
+import { generateRequestId } from "../src/observability/instrumentation.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 import { signedInAs } from "./support/auth.js";
@@ -95,7 +91,7 @@ describe("outcome metrics", () => {
     await app.inject({
       method: "POST",
       url: `/v1/campaigns/${CAMPAIGN}/submissions/${CAMPAIGN}/authorization`,
-      payload: {},
+      payload: { eligibilityToken: CAMPAIGN },
     });
     await app.inject({
       method: "POST",
@@ -159,46 +155,6 @@ describe("payout anomaly alert", () => {
     ]);
     // Window slid past the burst.
     expect(detector.record("a", at(120))).toEqual([]);
-  });
-
-  it("increments the alert metric and logs on a burst of issued authorizations", async () => {
-    const logs: Record<string, unknown>[] = [];
-    const app = Fastify({
-      logger: {
-        level: "warn",
-        stream: { write: (line: string) => logs.push(JSON.parse(line)) },
-      },
-    });
-    closers.push(app);
-    const metrics = new MetricsRegistry();
-
-    registerInstrumentation(app, {
-      metrics,
-      payoutAnomalies: new PayoutAnomalyDetector({
-        windowMs: 60_000,
-        perCampaign: 2,
-        global: 100,
-      }),
-      metricsToken: null,
-      now: () => new Date("2026-10-13T00:00:00.000Z"),
-    });
-    app.post(AUTHORIZATION_ROUTE, async (_request, reply) =>
-      reply.status(201).send({ signature: "0xsecret" }),
-    );
-
-    for (let index = 0; index < 3; index += 1) {
-      await app.inject({
-        method: "POST",
-        url: `/v1/campaigns/${CAMPAIGN}/submissions/s${index}/authorization`,
-      });
-    }
-
-    expect(
-      metrics.value("vham_payout_anomalies_total", { scope: "campaign" }),
-    ).toBe(1);
-    const alert = logs.find((line) => line.alert === "payout_anomaly");
-    expect(alert).toMatchObject({ campaignId: CAMPAIGN, count: 3, limit: 2 });
-    expect(JSON.stringify(logs)).not.toContain("0xsecret");
   });
 });
 
