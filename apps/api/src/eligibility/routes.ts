@@ -148,6 +148,13 @@ export async function registerEligibilityRoutes(
       });
 
       if (!outcome.ok) {
+        if (outcome.code === "VERIFICATION_FAILED") {
+          request.log.warn(
+            { worldIdOutcome: outcome.code, worldError: outcome.worldError },
+            "World ID refused the proof",
+          );
+        }
+
         // Never echo proof material back or into logs.
         return reply.status(outcome.status).send({
           error: {

@@ -7,15 +7,15 @@ import { hashToField } from "./rp-signature.js";
 /**
  * World ID backend verification (ADR-0007).
  *
- * Verified against the official docs on 2026-10-12:
- * https://docs.world.org/world-id/idkit/integrate and
- * https://docs.world.org/world-id/reference/api
+ * Re-checked on 2026-10-21 against https://docs.world.org/world-id/idkit/integrate
+ * (forward the IDKit result unchanged; nullifiers are scoped per app and
+ * action, and the backend checks their reuse) and
+ * https://docs.world.org/api-reference/developer-portal/verify
+ * (POST /api/v4/verify/{rp_id}, the 4.0 item fields, the 400 body with
+ * `code`, `detail` and per-result `code`).
  *
- * - The IDKit result is forwarded unchanged to
- *   POST {base}/api/v4/verify/{rp_id}.
- * - Nullifiers are scoped per app + action. Using one action per campaign
- *   gives exactly the campaign-scoped duplicate-human policy we need, without
- *   any cross-campaign identifier.
+ * One action per campaign gives the campaign-scoped duplicate-human policy
+ * without any cross-campaign identifier.
  *
  * Raw proofs are never logged or persisted by this module.
  */
@@ -31,9 +31,15 @@ export type WorldIdFailureCode =
   | "VERIFICATION_FAILED"
   | "PROVIDER_UNAVAILABLE";
 
+/** World's own error codes from a refusal; never its free-text `detail`. */
+export interface WorldError {
+  code: string | null;
+  resultCodes: string[];
+}
+
 export type WorldIdResult =
   | { ok: true; /** Decimal string. Never persisted raw. */ nullifier: string }
-  | { ok: false; code: WorldIdFailureCode };
+  | { ok: false; code: WorldIdFailureCode; worldError?: WorldError };
 
 export interface WorldIdVerifier {
   verify(request: {
@@ -57,9 +63,14 @@ export function signalHash(signal: WorldIdSignal): Hex {
   return hashToField(hexToBytes(signal));
 }
 
+/**
+ * The page requests only proof_of_human, whose issuer schema id is 1 in
+ * IDKit 4.4.0 (`CREDENTIAL_SCHEMA_IDS`, @worldcoin/idkit-core dist/index.js
+ * line 2556). Other credentials may carry other nullifiers per human.
+ */
 const responseItemV4Schema = z.looseObject({
-  identifier: z.string(),
-  issuer_schema_id: z.number().int(),
+  identifier: z.literal("proof_of_human"),
+  issuer_schema_id: z.literal(1),
   nullifier: z.string().min(1),
   expires_at_min: z.number().int(),
   proof: z.array(z.string()).length(5),
@@ -72,6 +83,48 @@ const idkitResponseSchema = z.looseObject({
   environment: z.string().optional(),
   responses: z.array(responseItemV4Schema).min(1).max(10),
 });
+
+const FIELD_HEX = /^0x[0-9a-fA-F]{1,64}$/;
+
+const WORLD_CODE = /^[a-z0-9_]{1,64}$/;
+
+const worldErrorSchema = z.looseObject({
+  code: z.unknown(),
+  results: z.array(z.looseObject({ code: z.unknown() })).optional(),
+});
+
+function worldCode(value: unknown): string | null {
+  return typeof value === "string" && WORLD_CODE.test(value) ? value : null;
+}
+
+async function worldErrorOf(response: Response): Promise<WorldError | null> {
+  try {
+    const body = worldErrorSchema.safeParse(await response.json());
+
+    if (!body.success) {
+      return null;
+    }
+
+    const code = worldCode(body.data.code);
+    const resultCodes = (body.data.results ?? [])
+      .map((result) => worldCode(result.code))
+      .filter((value): value is string => value !== null);
+
+    return code === null && resultCodes.length === 0
+      ? null
+      : { code, resultCodes };
+  } catch {
+    return null;
+  }
+}
+
+async function refusedBy(response: Response): Promise<WorldIdResult> {
+  const worldError = await worldErrorOf(response);
+
+  return worldError === null
+    ? { ok: false, code: "VERIFICATION_FAILED" }
+    : { ok: false, code: "VERIFICATION_FAILED", worldError };
+}
 
 const verifyResponseSchema = z.looseObject({
   success: z.boolean(),
@@ -144,15 +197,14 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
       return { ok: false, code: "ENVIRONMENT_MISMATCH" };
     }
 
-    const expectedSignalHash = normalizeFieldElement(
-      signalHash(request.signal),
-    );
+    const expectedSignalHash = BigInt(signalHash(request.signal));
 
     if (
       !parsed.data.responses.every(
         (response) =>
           response.signal_hash !== undefined &&
-          normalizeFieldElement(response.signal_hash) === expectedSignalHash,
+          FIELD_HEX.test(response.signal_hash) &&
+          BigInt(response.signal_hash) === expectedSignalHash,
       )
     ) {
       return { ok: false, code: "SIGNAL_MISMATCH" };
@@ -182,7 +234,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
     }
 
     if (response.status === 400) {
-      return { ok: false, code: "VERIFICATION_FAILED" };
+      return refusedBy(response);
     }
 
     if (!response.ok) {

@@ -7,6 +7,7 @@ import { worldIdSignal, type WorldIdSignalSalt } from "@vham/shared/world-id";
 import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
+  type WorldError,
   type WorldIdFailureCode,
   type WorldIdVerifier,
 } from "../identity/world-id.js";
@@ -43,7 +44,12 @@ export type EligibilityFailureCode =
 
 export type EligibilityOutcome =
   | { ok: true; eligibility: EligibilityRecord; created: boolean }
-  | { ok: false; status: number; code: EligibilityFailureCode };
+  | {
+      ok: false;
+      status: number;
+      code: EligibilityFailureCode;
+      worldError?: WorldError;
+    };
 
 const WORLD_ID_STATUS: Record<WorldIdFailureCode, number> = {
   WORLD_ID_NOT_CONFIGURED: 503,
@@ -104,11 +110,7 @@ export async function verifyEligibility(
   });
 
   if (!verification.ok) {
-    return {
-      ok: false,
-      status: WORLD_ID_STATUS[verification.code],
-      code: verification.code,
-    };
+    return { ...verification, status: WORLD_ID_STATUS[verification.code] };
   }
 
   try {

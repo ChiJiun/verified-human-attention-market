@@ -3,7 +3,7 @@ import {
   type WorldIdSignal,
   type WorldIdSignalSalt,
 } from "@vham/shared/world-id";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
@@ -44,7 +44,14 @@ class FakeWorldId implements WorldIdVerifier {
     };
 
     if (proof.human === "invalid") {
-      return { ok: false, code: "VERIFICATION_FAILED" };
+      return {
+        ok: false,
+        code: "VERIFICATION_FAILED",
+        worldError: {
+          code: "all_verifications_failed",
+          resultCodes: ["verification_error"],
+        },
+      };
     }
 
     if (proof.human === "outage") {
@@ -298,6 +305,34 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
         ok.json<{ eligibilityToken: string }>().eligibilityToken,
       ),
     ).not.toBeNull();
+  });
+
+  it("logs World's error codes, and no proof material, when World refuses", async () => {
+    const { app, campaignId, verify } = await setup();
+    const warn = vi.spyOn(app.log, "warn");
+
+    const refused = await verify({
+      claimant: WALLET_A,
+      idkitResponse: proof(campaignId, "invalid"),
+    });
+
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({
+      error: { code: "VERIFICATION_FAILED" },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      {
+        worldIdOutcome: "VERIFICATION_FAILED",
+        worldError: {
+          code: "all_verifications_failed",
+          resultCodes: ["verification_error"],
+        },
+      },
+      "World ID refused the proof",
+    );
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain(SALT.slice(2));
+    expect(logged).not.toContain("invalid");
   });
 
   it("fails closed when the participant key secret is missing", async () => {

@@ -107,7 +107,7 @@ describe("HttpWorldIdVerifier", () => {
     expect(JSON.parse(init.body as string)).toEqual(payload);
   });
 
-  it("accepts the signal hash in decimal form", async () => {
+  it("accepts the signal hash as 0x hex in either case", async () => {
     const result = await verifierWith(
       worldAccepting() as unknown as typeof fetch,
     ).verify({
@@ -115,7 +115,9 @@ describe("HttpWorldIdVerifier", () => {
       signal: SIGNAL,
       idkitResponse: idkitResponse({
         responses: [
-          responseItem({ signal_hash: BigInt(SIGNAL_HASH).toString(10) }),
+          responseItem({
+            signal_hash: SIGNAL_HASH.toUpperCase().replace("0X", "0x"),
+          }),
         ],
       }),
     });
@@ -125,6 +127,15 @@ describe("HttpWorldIdVerifier", () => {
 
   it.each([
     ["no signal", [responseItem({ signal_hash: undefined })]],
+    [
+      "the signal hash in decimal",
+      [responseItem({ signal_hash: BigInt(SIGNAL_HASH).toString(10) })],
+    ],
+    [
+      "the signal hash with surrounding spaces",
+      [responseItem({ signal_hash: ` ${SIGNAL_HASH} ` })],
+    ],
+    ["a signal hash that is not a number", [responseItem({ signal_hash: "garbage" })]],
     ["a zero signal hash", [responseItem({ signal_hash: "0x0" })]],
     [
       "the empty-signal default",
@@ -291,6 +302,10 @@ describe("HttpWorldIdVerifier", () => {
     ["no expires_at_min", { expires_at_min: undefined }],
     ["an expires_at_min that is a string", { expires_at_min: "1791194400" }],
     ["a signal_hash that is not a string", { signal_hash: 0 }],
+    ["a passport credential", { identifier: "passport", issuer_schema_id: 9303 }],
+    ["a selfie credential", { identifier: "selfie", issuer_schema_id: 11 }],
+    ["the proof_of_human label on schema 9303", { issuer_schema_id: 9303 }],
+    ["schema 1 under another label", { identifier: "passport" }],
   ])(
     "refuses a 4.0 item with %s without calling World",
     async (_label, overrides) => {
@@ -308,6 +323,26 @@ describe("HttpWorldIdVerifier", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it("refuses a proof_of_human item next to another credential without calling World", async () => {
+    const fetchMock = worldAccepting();
+
+    const result = await verifierWith(
+      fetchMock as unknown as typeof fetch,
+    ).verify({
+      action: ACTION,
+      signal: SIGNAL,
+      idkitResponse: idkitResponse({
+        responses: [
+          responseItem(),
+          responseItem({ identifier: "passport", issuer_schema_id: 9303 }),
+        ],
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
   it("forwards the optional and unknown fields of a 4.0 payload unchanged", async () => {
     const payload = idkitResponse({
@@ -348,12 +383,6 @@ describe("HttpWorldIdVerifier", () => {
   });
 
   it.each([
-    [
-      "400 from World",
-      () =>
-        jsonResponse(400, { success: false, code: "all_verifications_failed" }),
-      "VERIFICATION_FAILED",
-    ],
     ["500 from World", () => jsonResponse(500, {}), "PROVIDER_UNAVAILABLE"],
     ["404 app not found", () => jsonResponse(404, {}), "PROVIDER_UNAVAILABLE"],
     [
@@ -399,6 +428,58 @@ describe("HttpWorldIdVerifier", () => {
     });
 
     expect(result).toEqual({ ok: false, code });
+  });
+
+  it("returns World's error codes on a refusal, without its detail text", async () => {
+    const result = await verifierWith((async () =>
+      jsonResponse(400, {
+        success: false,
+        code: "all_verifications_failed",
+        detail: "All proof verifications failed.",
+        results: [
+          {
+            identifier: "proof_of_human",
+            success: false,
+            code: "verification_error",
+            detail: "On-chain proof verification failed.",
+          },
+        ],
+      })) as unknown as typeof fetch).verify({
+      action: ACTION,
+      signal: SIGNAL,
+      idkitResponse: idkitResponse(),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: "VERIFICATION_FAILED",
+      worldError: {
+        code: "all_verifications_failed",
+        resultCodes: ["verification_error"],
+      },
+    });
+  });
+
+  it.each([
+    ["no body", () => new Response("bad request", { status: 400 })],
+    [
+      "codes that are not plain identifiers",
+      () =>
+        jsonResponse(400, {
+          success: false,
+          code: `echo ${SIGNAL_HASH}`,
+          results: [{ success: false, code: "x".repeat(65) }, { code: 7 }],
+        }),
+    ],
+  ])("keeps no World error codes from a refusal with %s", async (_label, respond) => {
+    const result = await verifierWith((async () =>
+      respond()) as unknown as typeof fetch).verify({
+      action: ACTION,
+      signal: SIGNAL,
+      idkitResponse: idkitResponse(),
+    });
+
+    expect(result).toEqual({ ok: false, code: "VERIFICATION_FAILED" });
   });
 
   it("treats network errors and timeouts as provider unavailability", async () => {
