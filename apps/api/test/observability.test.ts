@@ -6,6 +6,7 @@ import { InMemoryChainEventRepository } from "../src/chain/events-repository.js"
 import type { ChainRpc } from "../src/chain/rpc.js";
 import {
   generateRequestId,
+  LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "../src/observability/instrumentation.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
@@ -50,6 +51,37 @@ describe("MetricsRegistry", () => {
 
   it("rejects invalid metric names", () => {
     expect(() => new MetricsRegistry().counter("bad name", "x")).toThrow();
+  });
+});
+
+describe("log redaction", () => {
+  it("redacts the signal salt and the proof in a logged request body", async () => {
+    const lines: string[] = [];
+    const app = Fastify({
+      logger: {
+        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+        stream: { write: (line: string) => lines.push(line) },
+      },
+    });
+    closers.push(app);
+    const salt = `0x${"5a".repeat(32)}`;
+
+    app.log.info(
+      {
+        body: {
+          claimant: `0x${"a".repeat(40)}`,
+          signalSalt: salt,
+          idkitResponse: { responses: [{ nullifier: "0x2b" }] },
+        },
+      },
+      "eligibility request",
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      body: { signalSalt: "[redacted]", idkitResponse: "[redacted]" },
+    });
+    expect(lines[0]).not.toContain(salt.slice(2));
   });
 });
 
