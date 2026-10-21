@@ -43,7 +43,7 @@ The run needs all of the following:
   - #88 and #90 base on PR #62's branch, so merge them into it first. PR #62 then carries them to `main`.
   - #68 bases on PR #62's branch too. After #62 merges, retarget #68 to `main`, then merge it.
   - #79, #81, and #84 base on #68's branch (`docs/framework-review`). Retarget each to `main` after #68 merges, or the merge lands in #68's branch only.
-- #85 bases on #79's branch and #87 on #84's. Merge #79 before #85 and #84 before #87.
+  - #85 bases on #79's branch and #87 on #84's. Merge #79 before #85 and #84 before #87.
   - The ADR-0007 link in step 15 resolves to the hard condition only after #85 merges.
   - #81 and #92 touch no step of this runbook. Merge them before the run only so that you deploy the commit that CI covered.
   - This runbook (#83) needs none of the code above to merge, but its steps assume all of it.
@@ -245,12 +245,12 @@ The web app's terminal may print `Blocked cross-origin request to Next.js dev re
          }).then((r) =>
            r.json().then((j) => {
              console.log(r.status, j.error?.code ?? "(no error)");
-             if (r.status === 201 && j.data?.eligibilityToken)
+             if (r.status === 201 && j.eligibilityToken)
                sessionStorage.setItem(
                  "vham:<campaign 1 id, lowercase>:" +
                    body.claimant.toLowerCase() +
                    ":eligibility",
-                 JSON.stringify(j.data.eligibilityToken),
+                 JSON.stringify(j.eligibilityToken),
                );
            }),
          );
@@ -290,7 +290,7 @@ The web app's terminal may print `Blocked cross-origin request to Next.js dev re
 
        | Swap                      | Control   | Result                                                                                                                                                                                                   |
        | ------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-       | `403 VERIFICATION_FAILED` | `201`     | Pass. World refused a result whose `signal_hash` was swapped, and the control shows that the proof was valid and unexpired. Mark the #71 row of the table.                                                             |
+       | `403 VERIFICATION_FAILED`, with World's codes logged and none of them an expiry code | `201`     | Pass. World refused a result whose `signal_hash` was swapped, and the control shows that the proof was valid and unexpired. Mark the #71 row of the table.                                                             |
        | `403 VERIFICATION_FAILED` | not `201` | Inconclusive, not a pass. The refusal may come from an expired `rp_context` or an edit mistake, and not from the signal. A swap with `403 VERIFICATION_FAILED` and an expiry code in `worldCodes` is also inconclusive. Leave the #71 row open.                                                         |
        | `201`                     | any       | Failure. World ignored `signal_hash`, so the signal binds nothing. Stop the run, record it, and revisit the 2026-10-21 update in ADR-0007. The API has now stored an eligibility for wallet B.           |
        | any other code            | any       | Failure of this attempt. The test did not run as designed. Record the code. A `409 PARTICIPANT_WALLET_MISMATCH` means an eligibility already existed for this person, or that World accepted the result. |
@@ -301,9 +301,9 @@ The web app's terminal may print `Blocked cross-origin request to Next.js dev re
 
 16. **(owner)** Verify wallet A through the page. Reload the participant link in the same tab and connect wallet A.
 
-    If the control in step 15 returned `201`, the page restores the saved token on **Connect wallet** and moves to **3. Read and answer** without a scan. From the control's captured result, record `idkitResponse.protocol_version`, which must be `4.0`, and whether `idkitResponse.responses[0].signal_hash` is not `0x0` and the body has a `signalSalt`. The page built that request, so it is the request the page sends. Copy nothing else from the payload. If the page shows **Verify with World ID** instead, the key did not match. Check the campaign id and the address for case and typos, and then take the second case.
+    If the control in step 15 returned `201`, the page restores the saved token on **Connect wallet** and moves to **3. Read and answer** without a scan. Record the `protocol_version` you noted in step 15 sub-step 3, which must be `4.0`. The control's `201` already shows that its `signal_hash` was not `0x0` and that the body carried a `signalSalt`, because the API answers `SIGNAL_MISMATCH` or `INVALID_ELIGIBILITY_REQUEST` otherwise. The page built that request, so it is the request the page sends. Copy nothing else from the payload. If the page shows **Verify with World ID** instead, the key did not match. Check the campaign id and the address for case and typos, and then take the second case.
 
-    Otherwise, press **Verify with World ID** and scan. The page moves to **3. Read and answer**, and `eligibility/verify` returns `201`. Read `protocol_version` and `signal_hash` as above and record the status.
+    Otherwise, press **Verify with World ID** and scan. The page moves to **3. Read and answer**, and `eligibility/verify` returns `200` when the control already created wallet A's eligibility (the API replays it), or `201` when it did not. Read `protocol_version` and `signal_hash` from that request and record the status.
 
     Campaign 1 takes three scans in all when the control passes: two in step 15 and one in step 17. Each repeat in step 15 or the second case here adds scans.
 
