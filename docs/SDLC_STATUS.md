@@ -98,7 +98,7 @@ Official references:
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). Close/refund buttons not on `main`; PR #84 (open) adds them |
 | End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
-| World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12) |
+| World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12). Last reviewed 2026-10-21. Issue #74 (legacy 3.0 proofs) is open with its fix in PR #79, and the 2026-10-14 proof may have been a 3.0 proof |
 | Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
 
@@ -137,16 +137,17 @@ Nothing below is merged. Every PR is open and in review, and CI was green on eac
 | #84 | #68 | Closes #69, close and refund buttons |
 | #85 | #79 | Refs #71, wallet-bound World ID signal |
 | #87 | #84 | Closes #72, cookie sessions, CSRF checks, nonce CSP |
+| #93 | #68 | This status update (`docs/SDLC_STATUS.md`, `AGENTS.md`) |
 | #92 | `main` | Fixes #91, generic 500 body; the same handler is needed on #62's branch after both merge |
 
 Owner gates:
 
-- **Merge order.** The bases imply #62 with #88 and #90 first, then #68, then #79, #81, #83 and #84, then #85 and #87 once retargeted. #92 is independent.
+- **Merge order.** The bases imply #62 with #88 and #90 first, then #68, then #79, #81, #83 and #84, then #85 and #87 once retargeted. #93 targets #68's branch, so merge it after #68 or retarget it to `main` first. #92 is independent.
 - **Contract cleanup decision (#80).** Decide before the ADR-0011 redeploy, because the redeploy is the next time `CampaignManager` changes on-chain.
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes, on PR #85's branch.
 
-Open issues with no PR yet: #75, #76, #77, #78, #82, #86.
+Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27 to #30. #80 awaits the owner's decision above.
 
 ## Next SDLC Actions
 
