@@ -16,7 +16,11 @@ import {
   registerApiClientRoutes,
   type RateLimitConfig,
 } from "./api-clients/routes.js";
-import { registerErrorHandlers, registerErrorModel } from "./errors/catalog.js";
+import {
+  frameworkErrors,
+  registerErrorHandlers,
+  registerErrorModel,
+} from "./errors/catalog.js";
 import {
   sessionAuthenticator,
   verifyEoaSignature,
@@ -129,6 +133,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
               stream: dependencies.logStream,
             }),
           },
+    frameworkErrors,
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });

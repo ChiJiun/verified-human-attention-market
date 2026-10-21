@@ -74,18 +74,21 @@ describe("unexpected errors", () => {
     expect(response.json().error.code).toBe("INTERNAL_ERROR");
   });
 
-  it.each([null, undefined])("answer a thrown %s as a generic 500", async (thrown) => {
-    const app = buildApp();
-    closers.push(app);
-    app.get("/test/throws", async () => {
-      throw thrown;
-    });
+  it.each([null, undefined])(
+    "answer a thrown %s as a generic 500",
+    async (thrown) => {
+      const app = buildApp();
+      closers.push(app);
+      app.get("/test/throws", async () => {
+        throw thrown;
+      });
 
-    const response = await app.inject({ method: "GET", url: "/test/throws" });
+      const response = await app.inject({ method: "GET", url: "/test/throws" });
 
-    expect(response.statusCode).toBe(500);
-    expect(response.json().error.code).toBe("INTERNAL_ERROR");
-  });
+      expect(response.statusCode).toBe(500);
+      expect(response.json().error.code).toBe("INTERNAL_ERROR");
+    },
+  );
 
   it("echo a well-formed caller request id", async () => {
     const app = appThatThrows(new Error(SQL_MESSAGE));

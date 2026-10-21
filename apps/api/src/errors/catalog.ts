@@ -1,4 +1,9 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  FastifyServerOptions,
+} from "fastify";
 
 /**
  * Stable, machine-readable error codes (#26). Every error response is
@@ -181,6 +186,17 @@ function sendError(
 }
 
 /**
+ * Errors Fastify raises before routing (an undecodable URL) never reach the
+ * error handler or the onSend hooks, so they get the same body here.
+ */
+export const frameworkErrors: NonNullable<
+  FastifyServerOptions["frameworkErrors"]
+> = (_error, request, reply) => {
+  void reply.header("x-request-id", request.id);
+  return sendError(request, reply, 400, INVALID_REQUEST);
+};
+
+/**
  * Fastify's own 4xx errors keep their status under a fixed message; every
  * other error is logged in full and answered as a generic 500, so query
  * text, parameters and stack-derived messages never leave the process.
@@ -194,7 +210,7 @@ export function registerErrorHandlers(app: FastifyInstance) {
   );
 
   app.setErrorHandler((error, request, reply) => {
-    const statusCode = (error as { statusCode?: unknown }).statusCode;
+    const statusCode = (error as { statusCode?: unknown } | null)?.statusCode;
 
     if (
       typeof statusCode === "number" &&
