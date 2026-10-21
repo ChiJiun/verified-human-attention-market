@@ -77,6 +77,13 @@ metrics endpoints are exempt.
 - Unknown codes: treat 5xx and 429 as retryable, other 4xx as terminal.
 - `requestId` equals the `x-request-id` response header; quote it in
   support requests.
+- Unexpected failures answer `500 INTERNAL_ERROR` with a fixed message and
+  never the thrown message, so SQL text, bound parameters and stack-derived
+  text stay server side, where the full error is logged at `error` with the
+  same `requestId`. Errors Fastify raises itself keep their status with a
+  fixed message: `400 INVALID_REQUEST` (malformed JSON),
+  `413 PAYLOAD_TOO_LARGE`, `415 UNSUPPORTED_MEDIA_TYPE` and
+  `404 ROUTE_NOT_FOUND`.
 
 ## Idempotency
 

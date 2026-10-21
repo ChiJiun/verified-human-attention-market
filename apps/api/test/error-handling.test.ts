@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { registerErrorModel } from "../src/errors/catalog.js";
+import { registerErrorHandlers, registerErrorModel } from "../src/errors/catalog.js";
 import {
   generateRequestId,
   LOGGER_REDACT_PATHS,
@@ -84,7 +84,7 @@ describe("errors Fastify raises itself", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toEqual({
       code: "INVALID_REQUEST",
-      message: "Request could not be parsed",
+      message: "Invalid request",
       requestId: response.headers["x-request-id"],
       retryable: false,
     });
@@ -154,6 +154,7 @@ describe("error logging", () => {
       genReqId: generateRequestId,
       requestIdLogLabel: "requestId",
     });
+    registerErrorHandlers(app);
     registerErrorModel(app);
     closers.push(app);
     return { app, entries: () => lines.map((line) => JSON.parse(line)) };

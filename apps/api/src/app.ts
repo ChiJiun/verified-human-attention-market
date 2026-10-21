@@ -16,7 +16,7 @@ import {
   registerApiClientRoutes,
   type RateLimitConfig,
 } from "./api-clients/routes.js";
-import { registerErrorModel } from "./errors/catalog.js";
+import { registerErrorHandlers, registerErrorModel } from "./errors/catalog.js";
 import {
   sessionAuthenticator,
   verifyEoaSignature,
@@ -190,6 +190,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     return { head, lag };
   }
 
+  registerErrorHandlers(app);
   registerErrorModel(app);
   registerApiClientGate(app, {
     clients: apiClientRepository,
