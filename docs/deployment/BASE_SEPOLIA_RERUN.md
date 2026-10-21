@@ -6,7 +6,7 @@ This runbook deploys the ADR-0011 `CampaignManager` to Base Sepolia, moves the A
 
 Two additions are optional: a campaign 2 that expires instead of closing, and screenshots from a real phone. Each is marked **Optional**.
 
-Plan for about 90 minutes. A refund opens when a block timestamp is more than 900 seconds after the campaign's `closedAt`, or after its `endTime` if nobody closed it. The advertiser page shows the first such second, 901 seconds after that time.
+Plan for about 100 minutes. A refund opens when a block timestamp is more than 900 seconds after the campaign's `closedAt`, or after its `endTime` if nobody closed it. The advertiser page shows the first such second, 901 seconds after that time.
 
 ## Who does what
 
@@ -24,13 +24,30 @@ Run `forge` and `cast` in WSL, where Foundry is installed. The commands use bash
 
 The run needs all of the following:
 
-- These changes merged on `main`, with green CI on the commit you deploy from:
-  - PR #62, the ADR-0011 contract, after the owner's review. This contract is what you deploy.
-  - The fix that makes the API accept only World ID 4.0 proofs and the web app request a 4.0 `proof_of_human` credential with legacy proofs off.
-  - The #71 change, which binds each proof to the claimant wallet through a server-derived signal and refuses a mismatch with `SIGNAL_MISMATCH`.
-  - The #69 change, which adds the **Close campaign** and **Refund unused budget** buttons to the advertiser page.
-  - The #72 change (session cookie and CSP) is optional. The checks marked "If #72 is merged" cover it.
-- A checkout of that commit, after `pnpm install`, which also builds `@vham/shared`.
+- The pull requests below merged, with green CI on the commit you deploy from. The owner decides whether and when each one merges. The order follows the PR bases at the time of writing, so re-read the bases before you merge (`gh pr view <number> --json baseRefName`).
+
+  | Order | PR  | What the run needs from it                                                                                                             | Base now                                         |
+  | ----- | --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+  | 1     | #88 | Acceptance signs at submission without starving the connection pool or deadlocking on a row lock.                                      | `docs/13-base-sepolia-run` (PR #62's branch)     |
+  | 2     | #90 | Every acceptance-time authorization feeds the alert series ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)), and refusals are logged.  | `docs/13-base-sepolia-run` (PR #62's branch)     |
+  | 3     | #62 | The ADR-0011 contract, idempotent creation per draft, and the acceptance that signs the claim authorization. You deploy this contract. | `main`                                           |
+  | 4     | #68 | The reconciled architecture, specs, and test plan that the PRs below build on.                                                         | `docs/13-base-sepolia-run`                       |
+  | 5     | #79 | The API accepts only World ID 4.0 proofs, and the web app requests a 4.0 `proof_of_human` credential with legacy proofs off.           | `docs/framework-review` (PR #68's branch)        |
+  | 6     | #81 | Contract tests for the reverts that no test covered.                                                                                   | `docs/framework-review`                          |
+  | 7     | #84 | The **Close campaign** and **Refund unused budget** buttons on the advertiser page (#69).                                              | `docs/framework-review`                          |
+  | 8     | #85 | The wallet-bound signal with a browser salt (#71), which step 15 tests.                                                                | `fix/world-id-v4-only` (PR #79's branch)         |
+  | 9     | #87 | Cookie sessions, CSRF checks, the CSP, and `WEB_ORIGIN` (#72).                                                                         | `feat/69-close-refund-buttons` (PR #84's branch) |
+  | 10    | #92 | Unexpected API errors answer with a generic `500` and log the cause.                                                                   | `main`                                           |
+
+  Notes on the order:
+  - #88 and #90 base on PR #62's branch, so merge them into it first. PR #62 then carries them to `main`.
+  - #68 bases on PR #62's branch too. After #62 merges, retarget #68 to `main`, then merge it.
+  - #79, #81, and #84 base on #68's branch (`docs/framework-review`). Retarget each to `main` after #68 merges, or the merge lands in #68's branch only.
+  - #85 bases on #79's branch and #87 on #84's. Merge #79 before #85 and #84 before #87.
+  - #81 and #92 touch no step of this runbook. Merge them before the run only so that you deploy the commit that CI covered.
+  - This runbook (#83) needs none of the code above to merge, but its steps assume all of it.
+
+- A checkout of that commit, after `pnpm install`, which also builds `@vham/shared`. Rebuild it with `pnpm --filter @vham/shared build` if you switch commits without reinstalling.
 - These wallets on Base Sepolia:
 
   | Wallet                                                              | Needs                    | Used for                                                           |
@@ -38,13 +55,13 @@ The run needs all of the following:
   | `deployer`, a Foundry keystore in WSL (`cast wallet list` shows it) | test ETH                 | the deploy                                                         |
   | advertiser                                                          | test ETH and 3 test USDC | two campaigns                                                      |
   | participant A                                                       | test ETH                 | the claim                                                          |
-  | participant B, a second account in the participants' browser wallet | nothing                  | negative checks only; it never sends a transaction                 |
+  | participant B, a second account in the participants' browser wallet | nothing                  | steps 15 and 17 only; it never sends a transaction                 |
   | claim signer (`CLAIM_SIGNER_PRIVATE_KEY`)                           | nothing                  | claim signatures; never the deployer key ([Keys](TESTNET.md#keys)) |
 
 - Test USDC from Circle's faucet (https://faucet.circle.com, select **Base Sepolia**) and test ETH from a [Base network faucet](https://docs.base.org/base-chain/network-information/network-faucets).
 - The Developer Portal app with its World ID 4.0 RP registration (`WORLD_ID_APP_ID`, `WORLD_ID_RP_ID`, `RP_SIGNING_KEY`), and World App on the owner's phone.
 - Two browser profiles, each with its own wallet extension: one for the advertiser wallet, one for participant wallets A and B. Both pages run on `localhost:3000`, so a single extension would sign for whichever account is selected.
-- Chrome or Firefox for the advertiser profile. With the #72 change, the session cookie is `__Host-vham_session` with `Secure` and `SameSite=Strict`. Chrome and Firefox keep a `Secure` cookie that `http://localhost` sets. Safari drops it, so the page cannot keep the sign-in.
+- Chrome, or another Chromium browser, for the advertiser profile. The session cookie is `__Host-vham_session` with `HttpOnly`, `Secure`, and `SameSite=Strict` (#72). [DEMO.md](../DEMO.md) confirms only that Chromium keeps a `Secure` cookie that `http://localhost` sets. Other browsers are unverified, and Safari drops such a cookie, so the page cannot keep the sign-in there.
 
 ### Record evidence as you go
 
@@ -58,7 +75,7 @@ Record the evidence in a new section of [DEMO.md](../DEMO.md), in the table form
 
 To read a transaction's block, use the explorer or `cast receipt <hash> blockNumber --rpc-url "$EVM_RPC_URL"`.
 
-Never record the World ID proof, nullifier, signal, or `signal_hash`, the eligibility token, the `rp_context`, a value from `.env`, or an RPC URL that carries an API key.
+Never record the World ID proof, nullifier, signal, `signal_hash`, or `signalSalt`, a captured IDKit result, the eligibility token, the `rp_context`, a value from `.env`, or an RPC URL that carries an API key. The status, the error code, and the World codes of a refusal are safe to record.
 
 ### Wait for the status after a transaction
 
@@ -83,7 +100,7 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
 
    - The Base and Circle values are unchanged.
    - The credentials page, which the 2026-10-13 check did not use, says that the `proofOfHuman` preset falls back to legacy Orb proofs. The 2026-10-14 run used that preset, so its proof may have been 3.0. The 4.0-only fix requests `CredentialRequest("proof_of_human")` with legacy proofs off instead.
-   - The pages above show `CredentialRequest` only with session proofs (`CredentialRequest("selfie")`) and do not list `proof_of_human`. The IDKit 4.4.0 package defines `proof_of_human` (issuer schema ID 1) and a per-credential `signal`, so step 15 is the first live check of that request.
+   - The pages above show `CredentialRequest` only with session proofs (`CredentialRequest("selfie")`) and do not list `proof_of_human`. The IDKit 4.4.0 package defines `proof_of_human` (issuer schema ID 1) and a per-credential `signal`, so steps 15 and 16 are the first live check of that request.
    - The [4.0 migration guide](https://docs.world.org/world-id/4-0-migration) tells apps to create v4 actions in the Developer Portal. The finding that per-campaign actions need no registration (ADR-0007) comes from the 2026-10-14 run, whose protocol version nobody recorded.
    - The verify reference lists a `sandbox` environment next to `production` and `staging`. The API accepts only `production` and `staging`, and this run uses `production`.
 
@@ -132,9 +149,12 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
 8. Set the API environment from the record ([Configure the API](TESTNET.md#configure-the-api), TESTNET.md step 4). For this run, also check these values:
    - `INDEXER_MAX_BLOCK_RANGE=200` with the public RPC;
    - `SIWE_DOMAIN=localhost:3000`;
-   - `WORLD_ID_MODE=live`, `WORLD_ID_ENVIRONMENT=production`, and the World ID values of [DEMO.md](../DEMO.md), including `PARTICIPANT_KEY_SECRET`. In live mode, the World ID request of step 15 answers `503 WORLD_ID_NOT_CONFIGURED` unless `WORLD_ID_APP_ID`, `WORLD_ID_RP_ID`, `RP_SIGNING_KEY`, and `PARTICIPANT_KEY_SECRET` are all set;
+   - `WORLD_ID_MODE=live` (the default) and `WORLD_ID_ENVIRONMENT=production`;
+   - `WORLD_ID_APP_ID` (`app_` followed by the id), `WORLD_ID_RP_ID` (`rp_` followed by 1 to 16 hex digits), and `RP_SIGNING_KEY` (32 bytes of hex, a secret), all three together. With none of them set, the API starts with the warning "World ID is disabled" and answers `503 WORLD_ID_NOT_CONFIGURED` to the World ID request. With only some of them, or with a malformed id or key, the API refuses to start with "Invalid World ID configuration" (step 9);
+   - `PARTICIPANT_KEY_SECRET`, at least 32 characters, which `eligibility/verify` needs for the duplicate check. The World ID request route no longer needs it. Do not rotate it during the run;
    - `ADVERTISER_ALLOWLIST` with the advertiser wallet, so that its drafts start approved. Otherwise an operator approves each draft ([MODERATION.md](../operations/MODERATION.md));
-   - `WEB_ORIGIN`, which the #72 change adds, is optional. Leave it unset, or set it to `http://localhost:3000`. If you set it, its host must equal `SIWE_DOMAIN`, or the API refuses to start.
+   - `WEB_ORIGIN=http://localhost:3000`. Set it, because Base Sepolia is not the local chain, and without it the API logs a warning at startup and has no `Origin` check for browsers that send no Fetch Metadata ([PRODUCTION_READINESS.md](../operations/PRODUCTION_READINESS.md)). It must be an origin without a path, and its host must equal `SIWE_DOMAIN`, or the API refuses to start;
+   - no `NEXT_PUBLIC_WORLD_ID_MODE`. The web app no longer reads it, and it picks the World ID flow from the `mode` in the response of the World ID request. Remove the variable from the web app's shell and `.env` if you set it earlier.
 
 9. Start the API, the indexer worker, and the web app (TESTNET.md step 5), each in its own terminal with `.env` loaded:
 
@@ -144,13 +164,13 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
    API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=84532 pnpm --filter @vham/web dev
    ```
 
-   The API and the worker start only if the chain, the USDC address, and the contract pass their startup checks. Then `curl -si http://localhost:3001/health/ready` shows status `200`, and `curl -s http://localhost:3001/v1/chain` returns chain `84532`, the new `campaignManager`, and the Circle `usdc`. Record the `/v1/chain` response.
+   The API and the worker start only if the chain, the USDC address, and the contract pass their startup checks, and the API also needs a consistent World ID configuration (step 8). Then `curl -si http://localhost:3001/health/ready` shows status `200`, and `curl -s http://localhost:3001/v1/chain` returns chain `84532`, the new `campaignManager`, and the Circle `usdc`. Record the `/v1/chain` response.
 
 ## Create and fund two campaigns
 
 Use the advertiser's browser profile. Create both campaigns before their start time.
 
-10. **(owner)** Open http://localhost:3000/advertiser, connect the advertiser wallet, and press **Sign in with Ethereum**. If #72 is merged, check in devtools that the advertiser requests carry the session cookie and no `Authorization` header.
+10. **(owner)** Open http://localhost:3000/advertiser, connect the advertiser wallet, and press **Sign in with Ethereum**. In devtools, check that the advertiser requests carry the session cookie and no `Authorization` header, and that the cookie `__Host-vham_session` shows `HttpOnly`, `Secure`, and `SameSite=Strict` in the **Application** tab. Record the three flags. Do not copy the cookie value.
 11. **(owner)** Create campaign 1. Enter a public `https` content URL, reward `1`, max completions `2`, a start at least 15 minutes ahead, and an end 2 hours after the start. Add one question with two choices, and mark the correct one. Press **Save draft**, then **Create on-chain**, then **Approve & fund**. If the page says that the creation is not confirmed yet, press **Check again**, which never sends a transaction. The status moves from `draft` to `pending_onchain` to `active`, and the page shows the participant link. Record the campaign id, the on-chain id, and the create, approve, and fund transactions with their blocks.
 12. **(owner)** Open http://localhost:3000/advertiser in a second tab, sign in, and create campaign 2 the same way with max completions `1`. Record the same items.
 
@@ -162,7 +182,7 @@ Use the advertiser's browser profile. Create both campaigns before their start t
 
 Use the participants' browser profile and wait until the start time. Open devtools on the **Network** tab before you press a button, so that you can read each request.
 
-For the phone layout, switch the devtools device toolbar to a width of 375 px and save a screenshot of each participant state. Label these screenshots **emulation**. The toolbar changes the viewport size and the user agent, and the browser engine stays the desktop one. If IDKit shows a button instead of a QR code at that width, switch back to the desktop width before you press **Verify with World ID**. In that case, step 15 has no phone-width screenshot of the World ID widget.
+For the phone layout, switch the devtools device toolbar to a width of 375 px and save a screenshot of each participant state. Label these screenshots **emulation**. The toolbar changes the viewport size and the user agent, and the browser engine stays the desktop one. If IDKit shows a button instead of a QR code at that width, switch back to the desktop width before you press **Verify with World ID**. In that case, steps 15 and 16 have no phone-width screenshot of the World ID widget.
 
 **Optional: real phone.** To add two screenshots from a phone's own browser, put the phone on the laptop's network. Open the `Network:` address that the web app prints when it starts, followed by `/mission?campaign=<campaign 1 id>`. Participants need no sign-in, and the Next rewrite forwards `/api/*` to the API on the laptop. Take the first screenshot before step 14, when the page offers **Connect wallet**, and the second at step 25, when it says the campaign is `closed`. Label both **real phone**.
 
@@ -171,65 +191,119 @@ The phone cannot complete the states after **Connect wallet**, for two reasons:
 - The page reaches a wallet only through `window.ethereum`, which only a wallet extension or a wallet app's in-app browser provides.
 - A `http://` LAN address is not a secure context, so `crypto.randomUUID()` in the **Submit answers** handler (`apps/web/app/mission/page.tsx`) fails there.
 
-Capture those states in the laptop browser and label them **emulation**. Do not press **Verify with World ID** on the phone. If the phone has a wallet other than wallet A, the verification binds your World ID to that wallet for campaign 1, and step 15 then fails the way step 17 does for wallet B.
+Capture those states in the laptop browser and label them **emulation**. Do not press **Verify with World ID** on the phone. If the phone has a wallet other than wallet A, the verification binds your World ID to that wallet for campaign 1. Step 15 then fails its precondition, and step 16 fails the way step 17 does for wallet B.
 
 The web app's terminal may print `Blocked cross-origin request to Next.js dev resource` for the phone. Next.js allows only `localhost` for its dev resources unless `allowedDevOrigins` lists the host. Do not change that config for this pass. If the page does not work on the phone, skip the pass.
 
 14. **(owner)** Open campaign 1's participant link and connect wallet A.
-15. **(owner)** Press **Verify with World ID** and scan the QR code with World App. The page moves to **3. Read and answer**, and `eligibility/verify` returns `201`. In that request's payload, read `idkitResponse.protocol_version`, which must be `4.0`. Also check that `idkitResponse.responses[0].signal_hash` is not `0x0`, which shows that the page sent the #71 signal. Record the status, the protocol version, and whether `signal_hash` was set. Copy nothing else from the payload.
+15. **(owner)** Test that World binds the wallet's signal into the proof (#71, the hard condition in [ADR-0007](../adr/0007-world-id-integration.md)). Run this step before any verification on campaign 1. The campaign must have no eligibility for wallet A's human or for wallet B. If wallet A's human has one already, a swapped proof that World accepts still ends in `409 PARTICIPANT_WALLET_MISMATCH`, which looks like a refusal. The step takes two scans of wallet A. Post each captured result within five minutes of its own call to the `world-id/request` route, which is the `rp_context` lifetime, so prepare everything before the first scan.
 
-    If the page's own request returns `403 SIGNAL_MISMATCH`, the result's `signal_hash` is missing or differs from the API's. That is a wrong signal shape, not a relayed proof. Stop and record it.
+    1. Compute wallet B's salt and `signal_hash` with the shared `worldIdSignal`, the function that the page and the API use. Run this from the repository root, in the shell where you run `pnpm`. Use campaign 1's id as the page's URL shows it, and wallet B's address. IDKit hashes the signal as bytes, and `signal_hash` is the keccak-256 hash of the 32 signal bytes shifted right by 8 bits, written as 32 bytes.
+
+       ```bash
+       cd apps/api
+       CAMPAIGN_ID=<campaign 1 id> CLAIMANT=<wallet B> node --input-type=module <<'EOF'
+       import { keccak256 } from "viem";
+       import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
+
+       const signalSalt = newWorldIdSignalSalt();
+       const signal = worldIdSignal({
+         campaignId: process.env.CAMPAIGN_ID,
+         claimant: process.env.CLAIMANT,
+         salt: signalSalt,
+       });
+       const signalHash =
+         "0x" + (BigInt(keccak256(signal)) >> 8n).toString(16).padStart(64, "0");
+       console.log(JSON.stringify({ signalSalt, signalHash }, null, 2));
+       EOF
+       cd ../..
+       ```
+
+       The output holds a `signalSalt` and a `signalHash` of 66 characters each, and the hash starts with `0x00`. If `node` cannot find `@vham/shared`, run `pnpm --filter @vham/shared build`. `worldIdSignal` throws for a mixed-case address with a wrong checksum. On 2026-10-21 this command's hash matched `hashSignal` of `@worldcoin/idkit-core` 4.4.0 for 20 of 20 random signals. Do not record the output.
+
+    2. In the participants' profile, open campaign 1's participant link, connect wallet A, and open the console. If Chrome asks, type `allow pasting`. Paste this block with the two values from sub-step 1, wallet B's address, and campaign 1's id. It keeps each `eligibility/verify` request that the page makes, so the page cannot send it, and it defines the helper for sub-step 4. Do not reload the page until sub-step 6.
+
+       ```js
+       window.captured = [];
+       const realFetch = window.fetch;
+       window.fetch = (input, init) =>
+         String(input).includes("/eligibility/verify")
+           ? (captured.push(JSON.parse(init.body)),
+             Promise.reject(new TypeError("held by the runbook")))
+           : realFetch(input, init);
+       const B = {
+         claimant: "<wallet B>",
+         signalSalt: "<signalSalt>",
+         signalHash: "<signalHash>",
+       };
+       const post = (body) =>
+         realFetch("/api/v1/campaigns/<campaign 1 id>/eligibility/verify", {
+           method: "POST",
+           headers: { "content-type": "application/json" },
+           body: JSON.stringify(body),
+         }).then((r) =>
+           r
+             .json()
+             .then((j) => console.log(r.status, j.error?.code ?? "(no error)")),
+         );
+       ```
+
+    3. Press **Verify with World ID** and scan. The widget shows an error, which is expected. Close it, press **Verify with World ID** again, and scan again. Each press draws its own salt and its own `rp_context`. Then run `captured.map((c) => [c.claimant, c.signalSalt.slice(0, 10), c.idkitResponse.protocol_version])`. It must list two entries with wallet A's address, two different salts, and `4.0`. If it does not, stop, because the two results are not independent. Record the two `protocol_version` values.
+
+    4. Post both results at once:
+
+       ```js
+       const [a1, a2] = captured;
+       const swap = structuredClone(a1);
+       swap.claimant = B.claimant;
+       swap.signalSalt = B.signalSalt;
+       swap.idkitResponse.responses.forEach(
+         (r) => (r.signal_hash = B.signalHash),
+       );
+       await post(swap);
+       await post({ ...a1, claimant: B.claimant, signalSalt: B.signalSalt });
+       await post(a2);
+       ```
+
+       The console prints three lines, in this order:
+       1. The swap: wallet A's first result with B's salt and B's `signal_hash`. The API's signal check passes, so the API forwards it to World. Expect exactly `403 VERIFICATION_FAILED`.
+       2. The API-only check: wallet A's first result for wallet B, with B's salt and A's own `signal_hash`. The API refuses it before it calls World. Expect `403 SIGNAL_MISMATCH`. This tests only the API's comparison.
+       3. The control: wallet A's second, unmodified result for wallet A with its own salt. Expect `201`. It shows that a valid proof is accepted.
+
+       Read World's codes for the swap from the API log. The line appears only for `403 VERIFICATION_FAILED`, and it holds `worldOutcome` and `worldCodes`, never the proof or World's `detail` text:
+
+       ```bash
+       grep 'World ID refused the proof' "$HOME/vham-rerun/api.log"
+       ```
+
+       Record the status and code of the three lines and the `worldCodes` of the swap.
+
+    5. Read the result. The first two columns are the swap and the control:
+
+       | Swap                      | Control   | Result                                                                                                                                                                                                   |
+       | ------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+       | `403 VERIFICATION_FAILED` | `201`     | Pass. World refused a result whose `signal_hash` was swapped, and the control shows that the proof was valid. Mark the #71 row of the table.                                                             |
+       | `403 VERIFICATION_FAILED` | not `201` | Inconclusive, not a pass. The refusal may come from an expired `rp_context` or an edit mistake, and not from the signal. Leave the #71 row open.                                                         |
+       | `201`                     | any       | Failure. World ignored `signal_hash`, so the signal binds nothing. Stop the run, record it, and revisit the 2026-10-21 update in ADR-0007. The API has now stored an eligibility for wallet B.           |
+       | any other code            | any       | Failure of this attempt. The test did not run as designed. Record the code. A `409 PARTICIPANT_WALLET_MISMATCH` means an eligibility already existed for this person, or that World accepted the result. |
+
+       `SIGNAL_MISMATCH`, `INVALID_PROOF_PAYLOAD`, and `INVALID_ELIGIBILITY_REQUEST` for the swap mean that the request never reached World, so the edit was wrong (a salt or `signal_hash` that is not B's). `503 PROVIDER_UNAVAILABLE` means that World gave no verdict. After either, and after an inconclusive result, you may repeat from sub-step 3 with two new scans, once, while no eligibility exists on the campaign. Record both attempts. Never repeat after a `201` or a `409`.
+
+    6. Clear what the console and the clipboard hold. Run `window.fetch = realFetch; captured.length = 0;`, clear the console, and copy other text to the clipboard. The pasted blocks stay in the console history until step 32. If the control returned `201`, the API has wallet A's eligibility but the page has no token for it, so step 16 runs the normal flow.
+
+16. **(owner)** Verify wallet A through the page. Reload the participant link, connect wallet A, press **Verify with World ID**, and scan. The page moves to **3. Read and answer**, and `eligibility/verify` returns `200` (the replay of the eligibility that the control created) or `201` (when step 15 did not create one). In that request's payload, read `idkitResponse.protocol_version`, which must be `4.0`. Check that `idkitResponse.responses[0].signal_hash` is not `0x0` and that the body has a `signalSalt`. Record the status, the protocol version, and whether `signal_hash` was set. Copy nothing else from the payload. Campaign 1 takes four scans in all: two in step 15, this one, and one in step 17.
+
+    If the page's own request returns `403 SIGNAL_MISMATCH`, the page built a wrong signal or sent the wrong salt. That is a page defect, not a relayed proof. Stop and record it. If the widget does not connect and the console shows a Content-Security-Policy violation, record the blocked URI and stop.
 
     If World App shows "Verification unavailable", scan again with the other scanner. On 2026-10-14 the second scan worked, and the API never received the first one.
 
-16. **(owner)** Replay the same proof for wallet B. Run this step and step 16b right after the scan. The RP signature that opened the request lasts 300 seconds, and the verify reference does not say whether World still accepts an older result. In devtools, copy the `eligibility/verify` request as fetch and paste it in the console. Before the final `;`, append `.then((r) => r.json().then((body) => console.log(r.status, body.error?.code)))`. Then run the request twice:
-
-    1. Unchanged. This is the control for step 16b. The console prints `200 undefined` when World accepts a replay of the proof. Record the status.
-    2. With `claimant` in the body changed to wallet B's address. The API refuses it with `403 SIGNAL_MISMATCH` before it calls World, because the proof's `signal_hash` belongs to wallet A's signal. This tests the API's own check only. Record the status and the code. Any other code means that this check did not prove the wallet binding, so record that code too.
-
-    **16b. (owner)** Test that World binds the signal into the proof. The API cannot show this, because it compares the hashes before it calls World. Replace the proof's `signal_hash` with the hash of wallet B's signal. The API's check then passes and the API forwards the proof to World, which must refuse it, because the scan covered wallet A's signal. Sub-steps 1 and 2 do not depend on the proof, so you can run them before the scan in step 15.
-
-    1. Get wallet B's signal. In the console, run the following with campaign 1's id and wallet B's address. In live mode the response is `{ mode: "live", appId, action, environment, rpContext, signal }`. The snippet copies the `signal` to the clipboard and the console shows a `Promise` line. The signal is `0x` followed by 64 hex digits. If the API answers `503 WORLD_ID_NOT_CONFIGURED` instead, a World ID value from step 8 is missing, and the console prints that code.
-
-       ```js
-       fetch("/api/v1/campaigns/<campaign 1 id>/world-id/request", {
-         method: "POST",
-         headers: { "content-type": "application/json" },
-         body: JSON.stringify({ claimant: "<wallet B>" }),
-       })
-         .then((r) => r.json())
-         .then((j) => (j.signal ? copy(j.signal) : console.log(j.error?.code)));
-       ```
-
-    2. Hash the signal in the WSL terminal. IDKit sets `signal_hash` to the keccak-256 hash of the signal's bytes, shifted right by 8 bits and written as 32 bytes. The shift drops the last byte and puts a `00` byte in front, which `cut` and `printf` do below. `cast keccak` hashes a `0x` argument as bytes. The result is the value that `signalHash` in `apps/api/src/identity/world-id-signal.ts` computes.
-
-       ```bash
-       SIGNAL=<paste the signal>
-       printf '0x00%s\n' "$(cast keccak "$SIGNAL" | cut -c3-64)"
-       ```
-
-       The output has 66 characters and starts with `0x00`. To test the command first, set `SIGNAL` to the made-up value `0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`. The output must be `0x008ae1aa597fa146ebd3aa2ceddf360668dea5e526567e92b0321816a4e895bd`, which is what `hashSignal` in `@worldcoin/idkit-core` 4.4.0 returns for that value.
-
-    3. In the console, press the Up arrow until the request of step 16 appears with `claimant` set to wallet B. Replace the `signal_hash` of every entry in `idkitResponse.responses` with the output of sub-step 2, and run it. The body in the pasted text is one JSON string, so each entry reads `\"signal_hash\":\"<old hash>\"`. Replace the old hash, and keep the backslashes and quotes.
-
-    Read the result of sub-step 3:
-
-    - `403 VERIFICATION_FAILED` means World refused the changed proof. When the control returned `200`, this shows that World binds the signal. Record the status and the code.
-    - `403 SIGNAL_MISMATCH` means an entry still has the old hash, or the new hash is wrong. The request did not reach World. Correct it and run it again.
-    - `503 PROVIDER_UNAVAILABLE` means World gave no verdict. Run it again. If it persists, record the status and treat 16b as unproven.
-    - `409 PARTICIPANT_WALLET_MISMATCH`, `200`, or `201` means World accepted the changed proof, so the signal binds nothing. The `409` appears because the API's own check for a second wallet then runs. Stop the run and record it.
-
-    If the control did not return `200`, World may refuse every replay, and 16b cannot tell that from a refused signal. Record both statuses and leave the #71 row of the table open.
-
-    Then clear the console and copy other text to the clipboard, because the console held the proof and the clipboard held the signal. The pasted requests stay in the console history until you clear it in step 32.
-
-17. **(owner)** Verify the same person with wallet B. Switch the browser wallet to wallet B, open the participant link in a new tab, connect, press **Verify with World ID**, and scan again. The page refuses wallet B with "You already verified for this campaign with a different wallet." (`409 PARTICIPANT_WALLET_MISMATCH`). If World refuses a second proof for the same action, the page says "World ID verification failed." (`403 VERIFICATION_FAILED`) instead. Either way, wallet B gets no eligibility. Record the code and the `protocol_version`. Close the tab and switch back to wallet A.
+17. **(owner)** Verify the same person with wallet B. Switch the browser wallet to wallet B, open the participant link in a new tab, connect, press **Verify with World ID**, and scan again. The page builds a valid signal for wallet B, so World accepts the proof and only the API's own check refuses it. The page refuses wallet B with "You already verified for this campaign with a different wallet." (`409 PARTICIPANT_WALLET_MISMATCH`). If World refuses a second proof for the same action, the page says "World ID verification failed." (`403 VERIFICATION_FAILED`) instead. Either way, wallet B gets no eligibility. Record the code and the `protocol_version`. Close the tab and switch back to wallet A.
 18. **(owner)** In wallet A's tab, choose the wrong answer and press **Submit answers**. Each person has two attempts per campaign, so do this once only. The page says "Not quite. Re-read the content and try once more." The `submissions` response has `status: "rejected"`, `rejectionCode: "COMPREHENSION_FAILED"`, and `claim: null`. Record these fields.
 19. **(owner)** Choose the correct answer and press **Submit answers**. The page moves to **4. Claim your reward**. The `submissions` response has `status: "accepted"` and `claim.status: "authorized"`, and `claim.authorization.expiresAt` is 900 seconds after `issuedAt`. Record the submission id, `issuedAt`, and `expiresAt`.
 
     Steps 20 to 23 must finish before `expiresAt`. After the close in step 21, the API cannot issue a new authorization. If `expiresAt` passes before the claim in step 22, create a new campaign and repeat steps 11 and 14 to 23.
 
-20. **(owner)** Try a second completion with wallet A. Copy the `submissions` request as fetch, set its `Idempotency-Key` header to `crypto.randomUUID()`, append the `.then` from step 16, and run it. The API refuses it with `409 ALREADY_COMPLETED`. Record the code.
+20. **(owner)** Try a second completion with wallet A. Copy the `submissions` request as fetch, set its `Idempotency-Key` header to `crypto.randomUUID()`, append `.then((r) => r.json().then((body) => console.log(r.status, body.error?.code)))` before the final `;`, and run it. The API refuses it with `409 ALREADY_COMPLETED`. Record the code.
 21. **(owner)** Close campaign 1 while wallet A's authorization is still unredeemed. In campaign 1's advertiser tab, press **Close campaign**. The page shows **Campaign closed** when the receipt arrives. The status `closed` follows about a minute later, once the indexer confirms the event ([Wait for the status after a transaction](#wait-for-the-status-after-a-transaction)). The page also shows when the refund opens, with a countdown. Record the close transaction, its block, and `closedAt`, the ninth field of the `campaigns(uint256)` call in step 30.
 22. **(owner)** In wallet A's tab, press **Claim USDC** and confirm in the wallet. The page shows **Claim sent** with the hash, then **Reward paid to your wallet.** The contract pays an authorization issued before the close until it expires ([Issuance and Expiry](../architecture/CLAIM_AUTHORIZATION.md#issuance-and-expiry)). Record the claim transaction and its block. Then read its receipt, which needs no historical state:
 
@@ -308,12 +382,14 @@ Steps 26 to 28 show a campaign that its advertiser closed. This variant shows a 
 
 31. Run `pnpm --filter @vham/api reconcile`. It prints `"findings": []` and `"campaignsChecked": 2`, and exits with code `0`. Record the JSON and the exit code. [VhamReconciliationFinding](../operations/RUNBOOK.md#vhamreconciliationfinding) explains each kind of finding.
 32. Check what the browser and the logs saw:
-    - In the web app's terminal, `env | grep '^NEXT_PUBLIC_'` lists only `NEXT_PUBLIC_CHAIN_ID` and, if set, `NEXT_PUBLIC_WORLD_ID_MODE`. Next.js puts only `NEXT_PUBLIC_` variables in the browser bundle.
-    - `grep -E '"(nullifier|proof|signal|signal_hash|idkitResponse)"' "$HOME/vham-rerun/api.log" | grep -v '\[redacted\]'` prints nothing.
-    - The console of each participant tab shows no proof, nullifier, or signal, except for the requests you pasted in steps 16 and 16b.
-    - If #72 is merged, the console shows no Content-Security-Policy violation during sign-in, the wallet prompts, the World ID widget, or the claim.
+    - In the web app's terminal, `env | grep '^NEXT_PUBLIC_'` lists only `NEXT_PUBLIC_CHAIN_ID`. Next.js puts only `NEXT_PUBLIC_` variables in the browser bundle, and the web app reads no `NEXT_PUBLIC_WORLD_ID_MODE`.
+    - `grep -E '"(nullifier|proof|signal|signal_hash|signalSalt|idkitResponse)"' "$HOME/vham-rerun/api.log" | grep -v '\[redacted\]'` prints nothing.
+    - The API log holds no error-level line with the event `submissions` or `claim_authorizations`. Such a line marks a refusal that points at an operator problem ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)). If one appears, record its request id and stop.
+    - The console of each participant tab shows no proof, nullifier, or signal, except for the blocks you pasted in step 15.
+    - The console shows no Content-Security-Policy violation during sign-in, the wallet prompts, the World ID widget, or the claim.
+    - In the advertiser tab's console, `document.cookie` does not list `__Host-vham_session`, because the cookie is `HttpOnly`.
 
-    Record each result. Then clear the DevTools history, because Chrome keeps console input across sessions and the requests of steps 16 and 16b hold the proof. Open DevTools **Settings**, choose **Preferences**, and press **Restore defaults and reload**. That also resets your other DevTools settings.
+    Record each result. Then clear the DevTools history, because Chrome keeps console input across sessions and the blocks of step 15 hold the proof. Open DevTools **Settings**, choose **Preferences**, and press **Restore defaults and reload**. That also resets your other DevTools settings.
 
 33. Record the URL of the passing `e2e` CI job for the deployed commit. That job runs [`apps/api/e2e/poc.e2e.ts`](../../apps/api/e2e/poc.e2e.ts) on anvil. It loses the `createCampaign` response after broadcast, sends the same draft again from a second client, and creates a same-parameter campaign for another draft. Exactly one campaign is linked to the draft.
 
@@ -325,8 +401,8 @@ After the run, commit the evidence section in DEMO.md and update `docs/SDLC_STAT
 | ------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | #13          | current official Base test environment and test-USDC asset/address are verified and documented | 1, 7, 9                                                     |
 | #13          | advertiser can create/fund the campaign                                                        | 11, 12                                                      |
-| #13          | valid unique human completion is accepted                                                      | 15, 19                                                      |
-| #13          | invalid/duplicate human completion is rejected                                                 | 16, 16b, 17, 18, 20                                         |
+| #13          | valid unique human completion is accepted                                                      | 16, 19                                                      |
+| #13          | invalid/duplicate human completion is rejected                                                 | 15, 17, 18, 20                                              |
 | #13          | valid claimant receives exact expected reward                                                  | 22                                                          |
 | #13          | duplicate on-chain claim is rejected                                                           | 23 (`eth_call`), 24 (API); the chain rejects no transaction |
 | #13          | expired/closed campaign rejects new completion liability                                       | 26, 27, 28; optional variant for expiry                     |
@@ -337,7 +413,7 @@ After the run, commit the evidence section in DEMO.md and update `docs/SDLC_STAT
 | #13          | advertiser analytics match chain + submission evidence                                         | 30                                                          |
 | #13          | E2E evidence/runbook is documented                                                             | this runbook and the DEMO.md evidence section               |
 | #12          | mobile mission page                                                                            | 14 to 28 (emulation); optional real phone                   |
-| #12          | World ID eligibility UX                                                                        | 15, 17, 26                                                  |
+| #12          | World ID eligibility UX                                                                        | 16, 17, 26                                                  |
 | #12          | sponsored content + comprehension questions render from server mission definition              | 13, 18                                                      |
 | #12          | comprehension submission                                                                       | 18, 19                                                      |
 | #12          | accepted/rejected/pending states                                                               | 18, 19, 22                                                  |
@@ -346,9 +422,10 @@ After the run, commit the evidence section in DEMO.md and update `docs/SDLC_STAT
 | #12          | duplicate completion/claim errors handled clearly                                              | 17, 20, 24                                                  |
 | #12          | expired/closed campaign state handled                                                          | 25, 28                                                      |
 | #12          | no answer key or sensitive proof material is exposed in client bundles/logs                    | 13, 32                                                      |
-| #71          | a real World App proof is bound to its wallet and refused for another wallet                   | 15, 16, 16b                                                 |
-| 4.0-only fix | the page's request returns a World ID 4.0 proof                                                | 15, 17, 26                                                  |
+| #71          | a real World App proof is bound to its wallet and refused for another wallet                   | 15 (pass only with a `201` control), 16                     |
+| 4.0-only fix | the page's request returns a World ID 4.0 proof                                                | 15, 16, 17, 26                                              |
 | #69          | the advertiser closes and refunds from the page                                                | 21, 27, 29                                                  |
+| #72          | the advertiser's session is an `HttpOnly` cookie, and the CSP blocks nothing the pages need    | 10, 32                                                      |
 
 ## Abort the run if
 
@@ -359,8 +436,10 @@ Stop, record what you saw, and fix the cause before you continue, if any of thes
 - The API or the indexer worker refuses to start (step 9), for example with "is a CampaignManager from before ADR-0011", "does not match the official USDC", or "has no contract code". Fix the configuration. Never bypass the check.
 - A transaction reverts. Only the `cast call` simulations of steps 23 and 29 are meant to revert.
 - World ID returns `protocol_version` `3.0`, the API answers `INVALID_PROOF_PAYLOAD` to the page's own request, or World App cannot complete the 4.0 request. Do not turn legacy proofs back on.
-- The API answers `403 SIGNAL_MISMATCH` to the page's own request in step 15. The signal has the wrong shape. It is not a relayed proof.
-- Step 16b returns `409 PARTICIPANT_WALLET_MISMATCH`, `200`, or `201`. World accepted a proof with a changed `signal_hash`, so the signal binds nothing. Revisit the #71 update in [ADR-0007](../adr/0007-world-id-integration.md) before you continue.
+- The API answers `403 SIGNAL_MISMATCH` to the page's own request in step 16. The page built a wrong signal. It is not a relayed proof.
+- The swap in step 15 returns `201`, or `409 PARTICIPANT_WALLET_MISMATCH` on a campaign that had no eligibility. World accepted a result with a changed `signal_hash`, so the signal binds nothing. Revisit the 2026-10-21 update in [ADR-0007](../adr/0007-world-id-integration.md) before you continue. A swap refused with `403 VERIFICATION_FAILED` whose control is not `201` is inconclusive. Leave the #71 row open and record both statuses.
+- The API refuses to start with "Invalid World ID configuration" (step 9). Fix the three World ID values together.
+- The console shows a Content-Security-Policy violation while the sign-in, the wallet prompts, the World ID widget, or the claim run (steps 10, 16, 22).
 - World ID verification fails for a new campaign's action. Check whether World now requires v4 actions to be registered in the Developer Portal before you change anything (step 1).
 - The reconciliation reports a finding, or the analytics differ from the chain (steps 30 and 31).
 - The API returns `CHAIN_HALTED`. Follow [VhamReorgBeyondConfirmations](../operations/RUNBOOK.md#vhamreorgbeyondconfirmations).
