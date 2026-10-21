@@ -142,12 +142,12 @@ Nothing below is merged. Every PR is open and in review, and CI was green on eac
 
 Owner gates:
 
-- **Merge order.** The bases imply #62 with #88 and #90 first, then #68, then #79, #81, #83 and #84, then #85 and #87 once retargeted. #93 targets #68's branch, so merge it after #68 or retarget it to `main` first. #92 is independent.
+- **Merge order.** The bases imply #62 with #88 and #90 first, then #68, then #79, #81, #83 and #84, then #85 and #87 once retargeted. #93 targets #68's branch: retarget it to `main` after #68 merges, or it lands in #68's branch only. #92 is independent.
 - **Contract cleanup decision (#80).** Decide before the ADR-0011 redeploy, because the redeploy is the next time `CampaignManager` changes on-chain.
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes, on PR #85's branch.
 
-Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27 to #30. #80 awaits the owner's decision above.
+Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has the x402 design review, PR #66). #80 awaits the owner's decision above.
 
 ## Next SDLC Actions
 

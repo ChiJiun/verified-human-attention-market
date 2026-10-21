@@ -107,7 +107,7 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
-In review, not merged (2026-10-21). The stack is #62 at the root (`main`), with #88 and #90 targeting its branch; #68 on #62; #79, #81, #83 and #84 on #68; #85 on #79; #87 on #84; #93 (this update) on #68; and #92 on `main`. They close or ref #74, #73, #13/#12, #69, #71, #72, #89 and #91. The owner decides the merge order and merges: #62 with #88 and #90, then #68, then the PRs on #68, then #85 and #87 once retargeted. #93 merges after #68 or is retargeted to `main`. Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27 to #30. Details are in `docs/SDLC_STATUS.md`.
+In review, not merged (2026-10-21). The stack is #62 at the root (`main`), with #88 and #90 targeting its branch; #68 on #62; #79, #81, #83 and #84 on #68; #85 on #79; #87 on #84; #93 (this update) on #68; and #92 on `main`. They close or ref #74, #73, #13/#12, #69, #71, #72, #89 and #91. The owner decides the merge order and merges: #62 with #88 and #90, then #68, then the PRs on #68, then #85 and #87 once retargeted. #93 is retargeted to `main` after #68 merges. Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has PR #66). Details are in `docs/SDLC_STATUS.md`.
 
 Next, in dependency order:
 
