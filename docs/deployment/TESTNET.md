@@ -1,8 +1,10 @@
 # Base Sepolia Deployment Runbook
 
-> Issue #19. External facts checked on **2026-10-12**, re-checked **2026-10-13** (chain ID 84532, public RPC, and the Circle USDC address were unchanged). Re-check them immediately before every deployment (AGENTS.md §19).
+> Issue #19. External facts checked on **2026-10-12**, re-checked **2026-10-13** and **2026-10-20** (chain ID 84532, public RPC, explorer, and the Circle USDC address were unchanged). Re-check them immediately before every deployment (AGENTS.md §19).
 
 > **Redeploy required (ADR-0011, 2026-10-15).** `createCampaign` now takes a `draftRef`, so the contract deployed on 2026-10-14 (`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`, run recorded in `docs/DEMO.md`) is incompatible with the current API and web app. Its record is archived in `deployments/archive/`. The API refuses to start against it: it has code, but `campaignIdByDraft` reverts.
+
+> To redeploy and re-run the POC for #12 and #13, follow [BASE_SEPOLIA_RERUN.md](BASE_SEPOLIA_RERUN.md).
 
 ## Moving to a new CampaignManager
 
