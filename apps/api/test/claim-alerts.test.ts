@@ -500,6 +500,7 @@ describe("authorization failures are logged with the request id (#89)", () => {
       claim: { authorization: { signature: string } };
     }>().claim.authorization.signature;
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+    expect((await first.submit()).statusCode).toBe(200);
     s.rpc.onchainSigner = OTHER_SIGNER;
     s.setNow(new Date("2026-10-05T10:46:00.000Z"));
     await first.submit();
