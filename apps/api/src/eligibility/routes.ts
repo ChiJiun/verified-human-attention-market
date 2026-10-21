@@ -6,11 +6,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
-import {
-  campaignAction,
-  type WorldIdEnvironment,
-} from "../identity/world-id.js";
-import type { RpSigner } from "../identity/rp-signature.js";
+import { campaignAction } from "../identity/world-id.js";
+import type { WorldIdConfig } from "../identity/world-id-config.js";
 import {
   verifyEligibility,
   type EligibilityServiceDependencies,
@@ -29,20 +26,10 @@ const verifyEligibilitySchema = z.object({
   idkitResponse: z.unknown(),
 });
 
-export type WorldIdRequestConfig =
-  | {
-      mode: "live";
-      signer: RpSigner;
-      rpId: string;
-      appId: string;
-      environment: WorldIdEnvironment;
-    }
-  | { mode: "simulated" };
-
 export async function registerEligibilityRoutes(
   app: FastifyInstance,
   dependencies: EligibilityServiceDependencies & {
-    worldIdRequest?: WorldIdRequestConfig | null;
+    worldIdConfig: WorldIdConfig | null;
   },
 ) {
   app.post<{ Params: { id: string } }>(
@@ -81,7 +68,7 @@ export async function registerEligibilityRoutes(
         );
       }
 
-      const config = dependencies.worldIdRequest;
+      const config = dependencies.worldIdConfig;
 
       if (!config) {
         return fail(

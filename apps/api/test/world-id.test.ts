@@ -6,6 +6,7 @@ import {
   HttpWorldIdVerifier,
   LocalSimulatedWorldIdVerifier,
   normalizeFieldElement,
+  parseWorldIdRpId,
   signalHash,
 } from "../src/identity/world-id.js";
 
@@ -79,7 +80,7 @@ function worldAccepting() {
 
 function verifierWith(fetchImpl: typeof fetch) {
   return new HttpWorldIdVerifier({
-    rpId: "rp_test123",
+    rpId: parseWorldIdRpId("rp_0123456789abcdef")!,
     environment: "production",
     baseUrl: "https://world.example",
     fetch: fetchImpl,
@@ -102,7 +103,7 @@ describe("HttpWorldIdVerifier", () => {
       string,
       RequestInit,
     ];
-    expect(url).toBe("https://world.example/api/v4/verify/rp_test123");
+    expect(url).toBe("https://world.example/api/v4/verify/rp_0123456789abcdef");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual(payload);
   });
@@ -501,16 +502,6 @@ describe("HttpWorldIdVerifier", () => {
     });
 
     expect(result).toEqual({ ok: false, code: "PROVIDER_UNAVAILABLE" });
-  });
-
-  it("refuses an unexpected rp id format", () => {
-    expect(
-      () =>
-        new HttpWorldIdVerifier({
-          rpId: "../admin",
-          environment: "production",
-        }),
-    ).toThrow();
   });
 });
 

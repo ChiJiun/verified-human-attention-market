@@ -3,16 +3,15 @@ import { bytesToHex, hexToBytes, stringToBytes, verifyMessage } from "viem";
 import { describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import type { WorldIdRequestConfig } from "../src/eligibility/routes.js";
 import {
   createRpSigner,
   hashToField,
   rpSignatureMessage,
 } from "../src/identity/rp-signature.js";
 import {
-  LocalSimulatedWorldIdVerifier,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
+  loadWorldIdConfig,
+  type WorldIdConfig,
+} from "../src/identity/world-id-config.js";
 import { signedInAs } from "./support/auth.js";
 
 /** Official vectors: https://docs.world.org/world-id/idkit/signatures (2026-10-13). */
@@ -96,30 +95,23 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   const WALLET_A = `0x${"a".repeat(40)}`;
   const WALLET_B = `0x${"b".repeat(40)}`;
   const signer = createRpSigner(KEY);
-  const LIVE: WorldIdRequestConfig = {
-    mode: "live",
-    signer,
-    rpId: "rp_test123",
-    appId: "app_test123",
-    environment: "staging",
-  };
+  const LIVE = loadWorldIdConfig(
+    {
+      WORLD_ID_RP_ID: "rp_0123456789abcdef",
+      RP_SIGNING_KEY: KEY,
+      WORLD_ID_APP_ID: "app_test123",
+      WORLD_ID_ENVIRONMENT: "staging",
+    },
+    84532,
+  ).config;
 
-  async function setup(
-    worldIdRequest: WorldIdRequestConfig | null,
-    options: {
-      secret?: string | null;
-      worldIdVerifier?: WorldIdVerifier;
-    } = {},
-  ) {
+  async function setup(worldId: WorldIdConfig | null, chainId = 84532) {
     const now = new Date("2026-10-05T10:00:00.000Z");
     const app = buildApp({
       authenticate: signedInAs(),
-      worldIdRequest,
-      participantKeySecret:
-        options.secret === undefined ? SECRET : options.secret,
-      ...(options.worldIdVerifier
-        ? { worldIdVerifier: options.worldIdVerifier }
-        : {}),
+      worldId,
+      chainId,
+      participantKeySecret: SECRET,
       now: () => now,
     });
     const created = await app.inject({
@@ -180,7 +172,10 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       appId: "app_test123",
       environment: "staging",
       action: `vham-campaign-${id}`,
-      rpContext: { rp_id: "rp_test123", expires_at: 1_791_194_400 + 300 },
+      rpContext: {
+        rp_id: "rp_0123456789abcdef",
+        expires_at: 1_791_194_400 + 300,
+      },
     });
     expect(response.body).not.toContain(KEY.slice(2));
     expect(
@@ -201,10 +196,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
   });
 
   it("serves the local simulation, whose proof carries the browser-derived signal", async () => {
-    const { app, id } = await setup(
-      { mode: "simulated" },
-      { worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337) },
-    );
+    const { app, id } = await setup({ mode: "simulated" }, 31337);
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
@@ -242,7 +234,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     await app.close();
   });
 
-  it("fails closed when the request config is missing, whatever the verifier", async () => {
+  it("fails closed when World ID is not configured", async () => {
     const unsigned = await setup(null);
     const response = await unsigned.app.inject({
       method: "POST",
@@ -258,18 +250,5 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     });
     expect(missing.statusCode).toBe(404);
     await unsigned.app.close();
-
-    const simulatedVerifierOnly = await setup(null, {
-      worldIdVerifier: new LocalSimulatedWorldIdVerifier(31337),
-    });
-    const noConfig = await simulatedVerifierOnly.app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${simulatedVerifierOnly.id}/world-id/request`,
-    });
-    expect(noConfig.statusCode).toBe(503);
-    expect(noConfig.json()).toMatchObject({
-      error: { code: "WORLD_ID_NOT_CONFIGURED" },
-    });
-    await simulatedVerifierOnly.app.close();
   });
 });

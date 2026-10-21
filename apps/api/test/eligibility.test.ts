@@ -13,6 +13,7 @@ import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js"
 import {
   campaignAction,
   HttpWorldIdVerifier,
+  parseWorldIdRpId,
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
@@ -410,7 +411,7 @@ describe("eligibility verify with the HTTP World ID verifier", () => {
     const app = buildApp({
       authenticate: signedInAs(),
       worldIdVerifier: new HttpWorldIdVerifier({
-        rpId: "rp_0123456789abcdef",
+        rpId: parseWorldIdRpId("rp_0123456789abcdef")!,
         environment: "production",
         fetch: world as unknown as typeof fetch,
       }),

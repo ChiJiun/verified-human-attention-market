@@ -55,7 +55,6 @@ import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresModerationRepository } from "../src/moderation/repository.js";
-import { LocalSimulatedWorldIdVerifier } from "../src/identity/world-id.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
 
 const RPC_URL = process.env.E2E_RPC_URL ?? "http://127.0.0.1:8545";
@@ -246,8 +245,7 @@ describeE2e("POC economic loop on a local chain", () => {
       ),
       authRepository: new PostgresAuthRepository(database.db),
       siwe: { domain: DOMAIN, chainId: anvil.id },
-      worldIdVerifier: new LocalSimulatedWorldIdVerifier(anvil.id),
-      worldIdRequest: { mode: "simulated" },
+      worldId: { mode: "simulated" },
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
       chain: {

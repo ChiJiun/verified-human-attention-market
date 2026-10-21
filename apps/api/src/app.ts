@@ -44,10 +44,7 @@ import {
   InMemoryEligibilityRepository,
   type EligibilityRepository,
 } from "./eligibility/repository.js";
-import {
-  registerEligibilityRoutes,
-  type WorldIdRequestConfig,
-} from "./eligibility/routes.js";
+import { registerEligibilityRoutes } from "./eligibility/routes.js";
 import {
   InMemorySubmissionRepository,
   type SubmissionRepository,
@@ -72,10 +69,11 @@ import {
 } from "./observability/instrumentation.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
+import type { WorldIdVerifier } from "./identity/world-id.js";
 import {
-  UnconfiguredWorldIdVerifier,
-  type WorldIdVerifier,
-} from "./identity/world-id.js";
+  worldIdVerifierFor,
+  type WorldIdConfig,
+} from "./identity/world-id-config.js";
 import { checkLiveCampaign } from "./campaigns/onchain.js";
 import { authorizeClaim } from "./claims/service.js";
 import type { CampaignRecord } from "./campaigns/types.js";
@@ -94,9 +92,10 @@ export interface AppDependencies {
   claimSigner?: ClaimSigner | null;
   /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
   dailyPayoutLimitAtomic?: bigint | null;
+  /** Live or simulated World ID (#12, #71); null or absent = disabled. */
+  worldId?: WorldIdConfig | null;
+  /** Tests only: replaces the verifier `worldId` would build. */
   worldIdVerifier?: WorldIdVerifier;
-  /** Live or simulated IDKit requests (#12); null or absent = disabled. */
-  worldIdRequest?: WorldIdRequestConfig | null;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
   /** HMAC secret for participant keys; eligibility fails closed without it. */
@@ -151,12 +150,13 @@ export function buildApp(dependencies: AppDependencies = {}) {
       (id) => submissionRepository.getById(id),
       (id) => campaignRepository.getById(id),
     );
-  const worldIdVerifier =
-    dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
   const now = dependencies.now ?? (() => new Date());
   const authRepository =
     dependencies.authRepository ?? new InMemoryAuthRepository();
   const chainId = dependencies.chainId ?? 84532;
+  const worldIdConfig = dependencies.worldId ?? null;
+  const worldIdVerifier =
+    dependencies.worldIdVerifier ?? worldIdVerifierFor(worldIdConfig, chainId);
   const sessions =
     dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   // API keys (#26) act as their advertiser; otherwise SIWE sessions.
@@ -357,7 +357,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
-      worldIdRequest: dependencies.worldIdRequest ?? null,
+      worldIdConfig,
       now,
     });
 

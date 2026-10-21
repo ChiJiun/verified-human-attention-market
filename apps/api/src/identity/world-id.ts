@@ -22,6 +22,28 @@ import { hashToField } from "./rp-signature.js";
 
 export type WorldIdEnvironment = "production" | "staging";
 
+export type WorldIdRpId = `rp_${string}` & { readonly __brand: "WorldIdRpId" };
+export type WorldIdAppId = `app_${string}` & {
+  readonly __brand: "WorldIdAppId";
+};
+
+/**
+ * Stricter than IDKit 4.4.0's `normalizeRpId` (@worldcoin/idkit-core
+ * dist/index.js lines 2458-2466), which also takes a `+` sign and leading
+ * zeros past 16 digits: every id accepted here is one IDKit accepts.
+ */
+export function parseWorldIdRpId(value: string): WorldIdRpId | null {
+  return /^rp_[0-9a-fA-F]{1,16}$/.test(value) ? (value as WorldIdRpId) : null;
+}
+
+/**
+ * IDKit 4.4.0's `validateConfig` requires `app_id` to start with `app_`
+ * (dist/index.js lines 2528-2530); whitespace is refused as well.
+ */
+export function parseWorldIdAppId(value: string): WorldIdAppId | null {
+  return /^app_\S+$/.test(value) ? (value as WorldIdAppId) : null;
+}
+
 export type WorldIdFailureCode =
   | "WORLD_ID_NOT_CONFIGURED"
   | "INVALID_PROOF_PAYLOAD"
@@ -151,7 +173,7 @@ export function normalizeFieldElement(value: string): string | null {
 }
 
 export interface HttpWorldIdVerifierOptions {
-  rpId: string;
+  rpId: WorldIdRpId;
   environment: WorldIdEnvironment;
   baseUrl?: string;
   timeoutMs?: number;
@@ -164,10 +186,6 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly options: HttpWorldIdVerifierOptions) {
-    if (!/^(rp|app)_[A-Za-z0-9_-]+$/.test(options.rpId)) {
-      throw new Error("World ID rp_id/app_id has an unexpected format");
-    }
-
     this.baseUrl = (options.baseUrl ?? "https://developer.world.org").replace(
       /\/+$/,
       "",
