@@ -35,7 +35,7 @@ API (`/metrics`):
 | `vham_campaign_links_total`                                       | outcome               | On-chain create/fund link (`TX_REVERTED`, `PARAMETERS_MISMATCH`, …). |
 | `vham_eligibility_verifications_total`                            | outcome               | World ID (`PROVIDER_UNAVAILABLE`, `VERIFICATION_FAILED`, …).         |
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
-| `vham_claim_authorizations_total`                                 | outcome               | Every authorization attempt: `success`, or a refusal code (`SIGNER_MISMATCH`, …). |
+| `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
 | `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
 
@@ -56,6 +56,9 @@ route made it: acceptance in `POST .../submissions` (a refusal there answers
 service runs (invalid body, rate limit) appear only in `vham_http_requests_total`.
 `success` covers new and stored authorizations; only newly signed ones feed
 `vham_payout_anomalies_total`.
+Each refusal that points at an operator problem is logged once at error level
+with the request id (`event="submissions"` or `event="claim_authorizations"`),
+and so is the anomaly line.
 
 Claim transaction failures happen in the participant's wallet, not the API;
 they surface as authorizations that expire unredeemed (reissued on retry), i.e.
