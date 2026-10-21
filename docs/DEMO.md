@@ -290,7 +290,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 | 回報 / 連結建立交易 | `POST /v1/campaigns/:id/onchain { txHash }`，或 `{}` 以 `draftRef` 查鏈上建立 | 廣告主 |
 | 任務內容 | `GET /v1/campaigns/:id/mission` | 使用者 |
 | World ID 請求 | `POST /v1/campaigns/:id/world-id/request` | 使用者 |
-| 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, idkitResponse }` | 使用者 |
+| 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, signalSalt, idkitResponse }` | 使用者 |
 | 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 使用者 |
 | 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 使用者 |
 | 鏈上領取 | `CampaignManager.claim(authorization, signature)`，由使用者錢包送出 | 使用者 |
