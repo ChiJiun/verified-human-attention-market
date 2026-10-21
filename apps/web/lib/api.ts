@@ -84,7 +84,7 @@ export function describeError(error: unknown): string {
     WORLD_ID_NOT_CONFIGURED: "World ID is not configured on this API.",
     VERIFICATION_FAILED: "World ID verification failed.",
     SIGNAL_MISMATCH:
-      "This World ID proof was made for a different wallet. Verify again with the connected wallet.",
+      "This World ID result does not match this verification. Start the verification again.",
     CAMPAIGN_NOT_OPEN: "This campaign is no longer open.",
     CAMPAIGN_NOT_ACTIVE: "This campaign is not active right now.",
     CAMPAIGN_NOT_STARTED: "This campaign has not started yet.",

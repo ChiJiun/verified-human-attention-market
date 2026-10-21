@@ -4,7 +4,6 @@ import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   newWorldIdSignalSalt,
   worldIdSignal,
-  type WorldIdSignal,
   type WorldIdSignalInput,
 } from "@vham/shared/world-id";
 import {
@@ -13,7 +12,7 @@ import {
   type IDKitResult,
   type RpContext,
 } from "@worldcoin/idkit";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
@@ -66,7 +65,6 @@ type WorldIdRequest =
 interface PendingVerification {
   request: LiveWorldIdRequest;
   binding: WorldIdSignalInput;
-  signal: WorldIdSignal;
 }
 
 type Step =
@@ -76,6 +74,10 @@ type Step =
   | { kind: "claim"; submissionId: string }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash | null };
+
+function progressKey(campaignId: string, wallet: string, name: string) {
+  return `vham:${campaignId.toLowerCase()}:${wallet.toLowerCase()}:${name}`;
+}
 
 /** Per-browser progress so a reload never repeats a completed step. */
 function store<T>(key: string, value?: T | null): T | null {
@@ -103,10 +105,20 @@ export default function MissionPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PendingVerification | null>(null);
-  const [widgetOpen, setWidgetOpen] = useState(false);
 
   const key = (name: string) =>
-    `vham:${campaignId}:${wallet?.address.toLowerCase()}:${name}`;
+    progressKey(campaignId ?? "", wallet?.address ?? "", name);
+  const constraints = useMemo(
+    () =>
+      pending &&
+      CredentialRequest("proof_of_human", {
+        signal: worldIdSignal(pending.binding),
+      }),
+    [pending],
+  );
+  const closeWidget = useCallback((open: boolean) => {
+    if (!open) setPending(null);
+  }, []);
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get("campaign");
@@ -142,9 +154,10 @@ export default function MissionPage() {
     run(async () => {
       const connected = await connectWallet();
       setWallet(connected);
-      const prefix = `vham:${campaignId}:${connected.address.toLowerCase()}:`;
-      const token = store<string>(`${prefix}eligibility`);
-      const submissionId = store<string>(`${prefix}submission`);
+      const saved = (name: string) =>
+        store<string>(progressKey(campaignId ?? "", connected.address, name));
+      const token = saved("eligibility");
+      const submissionId = saved("submission");
       if (token) setEligibilityToken(token);
       if (submissionId) setStep({ kind: "claim", submissionId });
       else if (token) setStep({ kind: "answer" });
@@ -165,7 +178,10 @@ export default function MissionPage() {
         },
       },
     );
-    store(key("eligibility"), data.eligibilityToken);
+    store(
+      progressKey(binding.campaignId, binding.claimant, "eligibility"),
+      data.eligibilityToken,
+    );
     setEligibilityToken(data.eligibilityToken);
   }
 
@@ -181,19 +197,17 @@ export default function MissionPage() {
         claimant: wallet.address,
         salt: newWorldIdSignalSalt(),
       };
-      const signal = worldIdSignal(binding);
       if (data.mode === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
         await verifyEligibility(binding, {
           action: data.action,
           simulatedHuman: binding.claimant.toLowerCase(),
-          signal,
+          signal: worldIdSignal(binding),
         });
         setStep({ kind: "answer" });
         return;
       }
-      setPending({ request: data, binding, signal });
-      setWidgetOpen(true);
+      setPending({ request: data, binding });
     });
 
   /** Throwing here makes the widget show its error state (host rejected). */
@@ -342,27 +356,25 @@ export default function MissionPage() {
           <p className="note">
             Your reward is bound to this wallet. One person, one reward.
           </p>
-          <button onClick={verifyHuman} disabled={busy || !active}>
+          <button
+            onClick={verifyHuman}
+            disabled={busy || !active || pending !== null}
+          >
             Verify with World ID
           </button>
         </section>
       )}
 
-      {pending && (
+      {pending && constraints && (
         <IDKitRequestWidget
-          open={widgetOpen}
-          onOpenChange={(open) => {
-            setWidgetOpen(open);
-            if (!open) setPending(null);
-          }}
+          open
+          onOpenChange={closeWidget}
           app_id={pending.request.appId}
           action={pending.request.action}
           rp_context={pending.request.rpContext}
           environment={pending.request.environment}
           allow_legacy_proofs={false}
-          constraints={CredentialRequest("proof_of_human", {
-            signal: pending.signal,
-          })}
+          constraints={constraints}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
             setError(null);
