@@ -31,11 +31,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "viem": "2.38.6",
     "zod": "4.6.5"
+  },
+  "peerDependencies": {
+    "viem": "2.38.6"
   },
   "devDependencies": {
     "typescript": "5.9.3",
+    "viem": "2.38.6",
     "vitest": "5.0.3"
   }
 }
