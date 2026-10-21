@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import type { FastifyBaseLogger } from "fastify";
+
 import type { LiveCampaignState } from "../campaigns/onchain.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { ClaimOutcome } from "../claims/service.js";
@@ -69,6 +71,7 @@ export interface SubmissionServiceDependencies {
     | ((
         submission: SubmissionRecord,
         scope: PersistenceScope,
+        log?: FastifyBaseLogger,
       ) => Promise<ClaimOutcome>)
     | null;
   now: () => Date;
@@ -153,6 +156,7 @@ export async function submitCompletion(
     claimantAddress: string;
     idempotencyKey: string;
     answers: unknown;
+    log?: FastifyBaseLogger;
   },
 ): Promise<SubmissionOutcome> {
   const claimantAddress = input.claimantAddress.toLowerCase();
@@ -303,7 +307,7 @@ export async function submitCompletion(
             // Acceptance means payable: sign in the same transaction and
             // roll the acceptance back if no authorization can be issued.
             beforeCommit: async (submission, scope) => {
-              const outcome = await authorize(submission, scope);
+              const outcome = await authorize(submission, scope, input.log);
               if (!outcome.ok) {
                 throw new AuthorizationRefusedError(outcome);
               }

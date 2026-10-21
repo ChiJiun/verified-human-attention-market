@@ -32,6 +32,16 @@ const OUTCOME_METRICS: Record<string, { name: string; help: string }> = {
   },
 };
 
+/**
+ * The authorization route has no series of its own: the claim observer feeds
+ * vham_claim_authorizations_total for every route (#89). The hook still logs
+ * its failures.
+ */
+const LOG_ONLY_EVENTS: Record<string, string> = {
+  "POST /v1/campaigns/:id/submissions/:submissionId/authorization":
+    "claim_authorizations",
+};
+
 /** Outcomes that point at an operator problem rather than a user error. */
 export const OPERATOR_OUTCOMES = new Set([
   "PROVIDER_UNAVAILABLE",
@@ -124,14 +134,21 @@ export function registerInstrumentation(
     });
 
     const outcomeMetric = OUTCOME_METRICS[key];
-    if (outcomeMetric) {
+    const eventName =
+      LOG_ONLY_EVENTS[key] ??
+      outcomeMetric?.name.replace(/^vham_|_total$/g, "");
+    if (eventName) {
       const outcome = outcomeOf(reply.statusCode, payload);
-      metrics.counter(outcomeMetric.name, outcomeMetric.help).inc({ outcome });
+      if (outcomeMetric) {
+        metrics
+          .counter(outcomeMetric.name, outcomeMetric.help)
+          .inc({ outcome });
+      }
 
       if (reply.statusCode >= 400 || outcome === "reconciling") {
         // Identifiers only: never the request body (proofs, answers).
         const event = {
-          event: outcomeMetric.name.replace(/^vham_|_total$/g, ""),
+          event: eventName,
           outcome,
           statusCode: reply.statusCode,
           campaignId: (request.params as { id?: string } | undefined)?.id,
