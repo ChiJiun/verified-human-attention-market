@@ -2,7 +2,10 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { registerErrorHandlers, registerErrorModel } from "../src/errors/catalog.js";
+import {
+  registerErrorHandlers,
+  registerErrorModel,
+} from "../src/errors/catalog.js";
 import {
   generateRequestId,
   LOGGER_REDACT_PATHS,

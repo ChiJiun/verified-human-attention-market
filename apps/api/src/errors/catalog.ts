@@ -194,9 +194,13 @@ export function registerErrorHandlers(app: FastifyInstance) {
   );
 
   app.setErrorHandler((error, request, reply) => {
-    const statusCode = error.statusCode ?? 500;
+    const statusCode = (error as { statusCode?: unknown }).statusCode;
 
-    if (statusCode >= 400 && statusCode < 500) {
+    if (
+      typeof statusCode === "number" &&
+      statusCode >= 400 &&
+      statusCode < 500
+    ) {
       request.log.info({ err: error }, "Request rejected");
       return sendError(
         request,
