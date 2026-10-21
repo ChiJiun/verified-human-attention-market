@@ -131,7 +131,7 @@ pnpm --filter @vham/api indexer    # 鏈上事件索引 + campaign 狀態同步
 
 - **鏈上設定**（`EVM_RPC_URL`、`USDC_ADDRESS`、`CAMPAIGN_MANAGER_ADDRESS`、`CAMPAIGN_MANAGER_DEPLOY_BLOCK`）：只要填了，就必須填完整，而且 API 啟動時會驗證鏈 ID 和合約程式碼。
 - **`SIWE_DOMAIN`**：沒設定時無法登入，廣告主相關端點一律回 401。
-- **`WORLD_ID_RP_ID` + `PARTICIPANT_KEY_SECRET`**：沒設定時，資格驗證一律回 503。
+- **`WORLD_ID_RP_ID` + `RP_SIGNING_KEY` + `WORLD_ID_APP_ID` + `PARTICIPANT_KEY_SECRET`**：前三個要一起設定；都沒設定時，資格驗證一律回 503；只設定一部分或格式錯誤時，API 拒絕啟動。
 - **`CLAIM_SIGNER_PRIVATE_KEY`**（或正式環境的 `CLAIM_SIGNER_URL` + `CLAIM_SIGNER_ADDRESS`，ADR-0008）：沒設定時不會簽授權。簽署位址必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰；明文私鑰只允許在 anvil 與 Base Sepolia 使用。
 - **審核（#24）**：預設 `MODERATION_MODE=review`，新 campaign 要由 `OPERATOR_ADDRESSES` 裡的錢包核准（或廣告主在 `ADVERTISER_ALLOWLIST`）才能發佈、作答。`MODERATION_MODE=open` 只能在本機 anvil 使用。詳見 [docs/operations/MODERATION.md](operations/MODERATION.md)。
 
@@ -231,13 +231,13 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
    | 變數 | 說明 |
    | --- | --- |
    | `WORLD_ID_APP_ID` | `app_…`，回傳給前端開 widget |
-   | `WORLD_ID_RP_ID` | `rp_…`，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
+   | `WORLD_ID_RP_ID` | `rp_` 加 1 到 16 位 hex，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
    | `RP_SIGNING_KEY` | RP 簽章私鑰（32 bytes hex），只在伺服器簽 `rp_context`，是秘密 |
    | `WORLD_ID_ENVIRONMENT` | `production`（預設）或 `staging`（配合 simulator）。同一個值會回傳給 widget，後端也據此拒絕其他環境的 proof |
    | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
 
-   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有，否則 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"` 與 action，沒有 `appId` 與 `rp_context`。
-3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
+   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有。三個都沒設定時 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`；只設定一部分，或 id、私鑰格式不對時，API 啟動就失敗（`loadWorldIdConfig`）。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"` 與 action，沒有 `appId` 與 `rp_context`。
+3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。API 只接受 `proof_of_human` 憑證（`issuer_schema_id` 1）。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
 4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
 5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
 
