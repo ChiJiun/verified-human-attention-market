@@ -88,7 +88,7 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-Status as of 2026-10-18 (verify against GitHub, which is authoritative):
+Status as of 2026-10-21 (verify against GitHub, which is authoritative):
 
 Done on `main`:
 
@@ -107,10 +107,13 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
+In review, not merged (2026-10-21). The stack is #62 at the root (`main`), with #88 and #90 targeting its branch; #68 on #62; #79, #81, #83 and #84 on #68; #85 on #79; #87 on #84; #93 (this update) on #68; and #92 on `main`. They close or ref #74, #73, #13/#12, #69, #71, #72, #89 and #91. The owner decides the merge order and merges: #62 with #88 and #90, then #68, then the PRs on #68, then #85 and #87 once retargeted. #93 is retargeted to `main` after #68 merges. Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has PR #66). Details are in `docs/SDLC_STATUS.md`.
+
 Next, in dependency order:
 
-1. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md, deploy, and re-run the flow (World ID needs the owner's scan). Then close M1 (#12, #13; #19 was closed on 2026-10-15) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Missing UX: close/refund buttons in the advertiser page.
-2. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
+1. **Owner gates before the redeploy**: review and merge the stack, and decide issue #80 (`CampaignManager` cleanup), because the redeploy is the next on-chain change.
+2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md and the runbook in PR #83, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13; #19 was closed on 2026-10-15) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Issue #71 closes only after the #13 swap test passes as written in ADR-0007 on PR #85's branch. Close/refund buttons are in PR #84 (open).
+3. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
@@ -619,7 +622,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is the ADR-0011 redeploy and the Base Sepolia re-run for #12/#13 (see §4), unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is the owner-gated ADR-0011 redeploy and Base Sepolia re-run for #12/#13 (see §4), after the owner reviews and merges the open PR stack, unless GitHub state shows that work has already advanced. Do not merge those PRs.
 
 ---
 
