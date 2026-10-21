@@ -114,14 +114,21 @@ export interface AppDependencies {
   trustProxyHops?: number;
   close?: () => Promise<void>;
   now?: () => Date;
+  logStream?: { write(line: string): void };
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === "test"
+      process.env.NODE_ENV === "test" && !dependencies.logStream
         ? false
-        : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
+        : {
+            redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+            ...(dependencies.logStream && {
+              level: "info",
+              stream: dependencies.logStream,
+            }),
+          },
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });

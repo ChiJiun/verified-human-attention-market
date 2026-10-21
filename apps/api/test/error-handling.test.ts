@@ -1,15 +1,30 @@
-import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import {
-  registerErrorHandlers,
-  registerErrorModel,
-} from "../src/errors/catalog.js";
-import {
-  generateRequestId,
-  LOGGER_REDACT_PATHS,
-} from "../src/observability/instrumentation.js";
+import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
+import { signedInAs } from "./support/auth.js";
+
+const VALID_CAMPAIGN = {
+  advertiser: "0x1234567890ABCDEF1234567890ABCDEF12345678",
+  contentUrl: "https://example.com/sponsored-content",
+  rewardPerCompletion: "1000000",
+  maxCompletions: 10,
+  startAt: "2100-10-05T10:15:00.000Z",
+  endAt: "2100-10-05T11:15:00.000Z",
+  mission: {
+    questions: [
+      {
+        id: "q1",
+        prompt: "Which feature did the article highlight?",
+        choices: [
+          { id: "a", label: "Speed" },
+          { id: "b", label: "Price" },
+        ],
+      },
+    ],
+    answerKey: { q1: "a" },
+  },
+};
 
 const closers: { close(): Promise<unknown> }[] = [];
 
@@ -59,6 +74,19 @@ describe("unexpected errors", () => {
     expect(response.json().error.code).toBe("INTERNAL_ERROR");
   });
 
+  it.each([null, undefined])("answer a thrown %s as a generic 500", async (thrown) => {
+    const app = buildApp();
+    closers.push(app);
+    app.get("/test/throws", async () => {
+      throw thrown;
+    });
+
+    const response = await app.inject({ method: "GET", url: "/test/throws" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().error.code).toBe("INTERNAL_ERROR");
+  });
+
   it("echo a well-formed caller request id", async () => {
     const app = appThatThrows(new Error(SQL_MESSAGE));
 
@@ -73,6 +101,27 @@ describe("unexpected errors", () => {
 });
 
 describe("errors Fastify raises itself", () => {
+  it("answer an undecodable URL in the documented shape without echoing it", async () => {
+    const app = buildApp();
+    closers.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/campaigns/%zz",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: {
+        code: "INVALID_REQUEST",
+        message: "Invalid request",
+        requestId: response.headers["x-request-id"],
+        retryable: false,
+      },
+    });
+    expect(response.body).not.toContain("%zz");
+  });
+
   it("keep 400 for malformed JSON", async () => {
     const app = buildApp();
     closers.push(app);
@@ -146,19 +195,12 @@ describe("errors Fastify raises itself", () => {
 });
 
 describe("error logging", () => {
-  function capture() {
+  function capture(dependencies: Parameters<typeof buildApp>[0] = {}) {
     const lines: string[] = [];
-    const app = Fastify({
-      logger: {
-        level: "info",
-        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
-        stream: { write: (line: string) => void lines.push(line) },
-      },
-      genReqId: generateRequestId,
-      requestIdLogLabel: "requestId",
+    const app = buildApp({
+      ...dependencies,
+      logStream: { write: (line: string) => void lines.push(line) },
     });
-    registerErrorHandlers(app);
-    registerErrorModel(app);
     closers.push(app);
     return { app, entries: () => lines.map((line) => JSON.parse(line)) };
   }
@@ -186,13 +228,47 @@ describe("error logging", () => {
     expect(failures[0].err.signature).toBe("[redacted]");
   });
 
-  it("does not log a client error at error level", async () => {
-    const { app, entries } = capture();
-    app.post("/echo", async (request) => request.body);
+  it("adds one event line without the error on a critical route", async () => {
+    const campaigns = new InMemoryCampaignRepository();
+    campaigns.createIdempotent = async () => {
+      throw new Error(SQL_MESSAGE);
+    };
+    const { app, entries } = capture({
+      authenticate: signedInAs(),
+      campaignRepository: campaigns,
+    });
 
     const response = await app.inject({
       method: "POST",
-      url: "/echo",
+      url: "/v1/campaigns",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "boom-1",
+        "x-request-id": "caller-request-3",
+      },
+      payload: JSON.stringify(VALID_CAMPAIGN),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).not.toContain("Failed query");
+    const failures = entries().filter((entry) => entry.level === 50);
+    expect(failures).toHaveLength(2);
+    expect(failures.filter((entry) => entry.err)).toHaveLength(1);
+    const event = failures.find((entry) => !entry.err);
+    expect(event).toMatchObject({
+      requestId: "caller-request-3",
+      outcome: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
+    expect(JSON.stringify(event)).not.toContain("Failed query");
+  });
+
+  it("does not log a client error at error level", async () => {
+    const { app, entries } = capture();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
       headers: { "content-type": "application/json" },
       payload: "{",
     });
