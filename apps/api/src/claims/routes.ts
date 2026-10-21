@@ -37,6 +37,7 @@ export async function registerClaimRoutes(
         campaignId: request.params.id,
         submissionId: request.params.submissionId,
         eligibilityToken: body.data.eligibilityToken,
+        log: request.log,
       });
       if (!outcome.ok) return fail(outcome.status, outcome.code);
 

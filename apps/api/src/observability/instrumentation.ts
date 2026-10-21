@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { MetricsRegistry } from "./metrics.js";
-import type { PayoutAnomalyDetector } from "./payout-anomaly.js";
 
 /** Business outcome metric per critical route (success or error code). */
 const OUTCOME_METRICS: Record<string, { name: string; help: string }> = {
@@ -31,14 +30,20 @@ const OUTCOME_METRICS: Record<string, { name: string; help: string }> = {
     name: "vham_submissions_total",
     help: "Engagement submissions by outcome",
   },
-  "POST /v1/campaigns/:id/submissions/:submissionId/authorization": {
-    name: "vham_claim_authorizations_total",
-    help: "Claim authorization requests by outcome",
-  },
+};
+
+/**
+ * The authorization route has no series of its own: the claim observer feeds
+ * vham_claim_authorizations_total for every route (#89). The hook still logs
+ * its failures.
+ */
+const LOG_ONLY_EVENTS: Record<string, string> = {
+  "POST /v1/campaigns/:id/submissions/:submissionId/authorization":
+    "claim_authorizations",
 };
 
 /** Outcomes that point at an operator problem rather than a user error. */
-const OPERATOR_OUTCOMES = new Set([
+export const OPERATOR_OUTCOMES = new Set([
   "PROVIDER_UNAVAILABLE",
   "WORLD_ID_NOT_CONFIGURED",
   "SIGNER_MISMATCH",
@@ -105,8 +110,6 @@ export function registerInstrumentation(
   app: FastifyInstance,
   dependencies: {
     metrics: MetricsRegistry;
-    payoutAnomalies: PayoutAnomalyDetector;
-    now: () => Date;
     /** When set, /metrics requires `Authorization: Bearer <token>`. */
     metricsToken: string | null;
     /** Refreshes scrape-time gauges (e.g. indexer lag); errors are ignored. */
@@ -117,10 +120,6 @@ export function registerInstrumentation(
   const requests = metrics.counter(
     "vham_http_requests_total",
     "HTTP requests by route, method and status",
-  );
-  const anomalies = metrics.counter(
-    "vham_payout_anomalies_total",
-    "Claim authorization bursts above the configured thresholds",
   );
 
   app.addHook("onSend", async (request: FastifyRequest, reply, payload) => {
@@ -135,14 +134,21 @@ export function registerInstrumentation(
     });
 
     const outcomeMetric = OUTCOME_METRICS[key];
-    if (outcomeMetric) {
+    const eventName =
+      LOG_ONLY_EVENTS[key] ??
+      outcomeMetric?.name.replace(/^vham_|_total$/g, "");
+    if (eventName) {
       const outcome = outcomeOf(reply.statusCode, payload);
-      metrics.counter(outcomeMetric.name, outcomeMetric.help).inc({ outcome });
+      if (outcomeMetric) {
+        metrics
+          .counter(outcomeMetric.name, outcomeMetric.help)
+          .inc({ outcome });
+      }
 
       if (reply.statusCode >= 400 || outcome === "reconciling") {
         // Identifiers only: never the request body (proofs, answers).
         const event = {
-          event: outcomeMetric.name.replace(/^vham_|_total$/g, ""),
+          event: eventName,
           outcome,
           statusCode: reply.statusCode,
           campaignId: (request.params as { id?: string } | undefined)?.id,
@@ -152,24 +158,6 @@ export function registerInstrumentation(
         } else {
           request.log.warn(event, "Critical path rejected");
         }
-      }
-    }
-
-    if (
-      key ===
-        "POST /v1/campaigns/:id/submissions/:submissionId/authorization" &&
-      reply.statusCode === 201
-    ) {
-      const campaignId = (request.params as { id: string }).id;
-      for (const anomaly of dependencies.payoutAnomalies.record(
-        campaignId,
-        dependencies.now(),
-      )) {
-        anomalies.inc({ scope: anomaly.scope });
-        request.log.error(
-          { alert: "payout_anomaly", ...anomaly },
-          "Claim authorization rate above threshold",
-        );
       }
     }
 

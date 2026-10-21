@@ -1,8 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { serializeClaim } from "../claims/routes.js";
 import type { ClaimOutcome } from "../claims/service.js";
+import { OPERATOR_OUTCOMES } from "../observability/instrumentation.js";
 
 import {
   submitCompletion,
@@ -32,6 +33,7 @@ export async function registerSubmissionRoutes(
           campaignId: string;
           submissionId: string;
           eligibilityToken: string;
+          log?: FastifyBaseLogger;
         }) => Promise<ClaimOutcome>)
       | null;
   },
@@ -78,6 +80,7 @@ export async function registerSubmissionRoutes(
         claimantAddress: parsed.data.claimant,
         idempotencyKey,
         answers: parsed.data.answers,
+        log: request.log,
       });
 
       if (!outcome.ok) {
@@ -101,8 +104,24 @@ export async function registerSubmissionRoutes(
                 campaignId: request.params.id,
                 submissionId: submission.id,
                 eligibilityToken: parsed.data.eligibilityToken,
+                log: request.log,
               })
             : null;
+
+        if (
+          authorization &&
+          !authorization.ok &&
+          OPERATOR_OUTCOMES.has(authorization.code)
+        ) {
+          request.log.error(
+            {
+              event: "claim_authorizations",
+              outcome: authorization.code,
+              campaignId: submission.campaignId,
+            },
+            "Critical path failed",
+          );
+        }
         claim = authorization?.ok
           ? {
               status: "authorized",

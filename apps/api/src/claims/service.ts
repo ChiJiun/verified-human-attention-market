@@ -1,4 +1,5 @@
 import { campaignManagerAbi } from "@vham/shared/contracts";
+import type { FastifyBaseLogger } from "fastify";
 import { encodeFunctionData, type Address } from "viem";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
@@ -41,6 +42,15 @@ export interface ClaimDependencies {
    * confirmation depth: no participation until recovery (ADR-0011).
    */
   chainHalted: () => Promise<boolean>;
+  /**
+   * Called once with the outcome of every authorization attempt (#89), with
+   * the logger of the request that made it.
+   */
+  observe?: (
+    campaignId: string,
+    outcome: ClaimOutcome,
+    log?: FastifyBaseLogger,
+  ) => void;
 }
 
 export type ClaimOutcome =
@@ -55,6 +65,15 @@ const SIGNER_SELECTOR = encodeFunctionData({
 
 export async function authorizeClaim(
   dependencies: ClaimDependencies,
+  input: Parameters<typeof resolveClaim>[1],
+): Promise<ClaimOutcome> {
+  const outcome = await resolveClaim(dependencies, input);
+  dependencies.observe?.(input.campaignId, outcome, input.log);
+  return outcome;
+}
+
+async function resolveClaim(
+  dependencies: ClaimDependencies,
   input: {
     campaignId: string;
     submissionId: string;
@@ -64,6 +83,8 @@ export async function authorizeClaim(
      * inserted in a transaction that is not committed yet (ADR-0011).
      */
     submission?: Awaited<ReturnType<SubmissionRepository["getById"]>>;
+    /** The requesting call's logger, for the observer's log lines. */
+    log?: FastifyBaseLogger;
   },
 ): Promise<ClaimOutcome> {
   const { signer, chain } = dependencies;

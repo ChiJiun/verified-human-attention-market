@@ -70,6 +70,7 @@ import {
   LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "./observability/instrumentation.js";
+import { claimAuthorizationObserver } from "./observability/claim-authorizations.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
 import {
@@ -117,6 +118,8 @@ export interface AppDependencies {
   trustProxyHops?: number;
   close?: () => Promise<void>;
   now?: () => Date;
+  /** Receives the JSON log lines; turns logging on under NODE_ENV=test. */
+  logStream?: { write(line: string): void };
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
@@ -131,9 +134,14 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === "test"
+      process.env.NODE_ENV === "test" && !dependencies.logStream
         ? false
-        : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
+        : {
+            redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+            ...(dependencies.logStream
+              ? { stream: dependencies.logStream }
+              : {}),
+          },
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });
@@ -212,12 +220,17 @@ export function buildApp(dependencies: AppDependencies = {}) {
     now,
   });
 
-  registerInstrumentation(app, {
+  const observeClaim = claimAuthorizationObserver({
     metrics,
     payoutAnomalies:
       dependencies.payoutAnomalies ?? new PayoutAnomalyDetector(),
-    metricsToken: dependencies.metricsToken ?? null,
     now,
+    log: app.log,
+  });
+
+  registerInstrumentation(app, {
+    metrics,
+    metricsToken: dependencies.metricsToken ?? null,
     collect: async () => {
       await chainStatus();
     },
@@ -348,6 +361,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
           }
         : null,
       now,
+      observe: observeClaim,
     };
 
     await registerEligibilityRoutes(instance, {
@@ -382,7 +396,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       // stored authorization through issueAuthorization.
       authorize:
         claimDependencies.signer && claimDependencies.chain
-          ? (submission, scope) =>
+          ? (submission, scope, log) =>
               authorizeClaim(
                 { ...claimDependencies, claims: claimRepository.within(scope) },
                 {
@@ -390,6 +404,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
                   submissionId: submission.id,
                   eligibilityToken: submission.eligibilityId,
                   submission,
+                  ...(log ? { log } : {}),
                 },
               )
           : null,
