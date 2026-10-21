@@ -135,7 +135,10 @@ describe("HttpWorldIdVerifier", () => {
       "the signal hash with surrounding spaces",
       [responseItem({ signal_hash: ` ${SIGNAL_HASH} ` })],
     ],
-    ["a signal hash that is not a number", [responseItem({ signal_hash: "garbage" })]],
+    [
+      "a signal hash that is not a number",
+      [responseItem({ signal_hash: "garbage" })],
+    ],
     ["a zero signal hash", [responseItem({ signal_hash: "0x0" })]],
     [
       "the empty-signal default",
@@ -302,7 +305,10 @@ describe("HttpWorldIdVerifier", () => {
     ["no expires_at_min", { expires_at_min: undefined }],
     ["an expires_at_min that is a string", { expires_at_min: "1791194400" }],
     ["a signal_hash that is not a string", { signal_hash: 0 }],
-    ["a passport credential", { identifier: "passport", issuer_schema_id: 9303 }],
+    [
+      "a passport credential",
+      { identifier: "passport", issuer_schema_id: 9303 },
+    ],
     ["a selfie credential", { identifier: "selfie", issuer_schema_id: 11 }],
     ["the proof_of_human label on schema 9303", { issuer_schema_id: 9303 }],
     ["schema 1 under another label", { identifier: "passport" }],
@@ -471,16 +477,19 @@ describe("HttpWorldIdVerifier", () => {
           results: [{ success: false, code: "x".repeat(65) }, { code: 7 }],
         }),
     ],
-  ])("keeps no World error codes from a refusal with %s", async (_label, respond) => {
-    const result = await verifierWith((async () =>
-      respond()) as unknown as typeof fetch).verify({
-      action: ACTION,
-      signal: SIGNAL,
-      idkitResponse: idkitResponse(),
-    });
+  ])(
+    "keeps no World error codes from a refusal with %s",
+    async (_label, respond) => {
+      const result = await verifierWith((async () =>
+        respond()) as unknown as typeof fetch).verify({
+        action: ACTION,
+        signal: SIGNAL,
+        idkitResponse: idkitResponse(),
+      });
 
-    expect(result).toEqual({ ok: false, code: "VERIFICATION_FAILED" });
-  });
+      expect(result).toEqual({ ok: false, code: "VERIFICATION_FAILED" });
+    },
+  );
 
   it("treats network errors and timeouts as provider unavailability", async () => {
     const result = await verifierWith((async () => {
