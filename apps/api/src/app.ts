@@ -92,10 +92,8 @@ export interface AppDependencies {
   claimSigner?: ClaimSigner | null;
   /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
   dailyPayoutLimitAtomic?: bigint | null;
-  /** Live or simulated World ID (#12, #71); null or absent = disabled. */
   worldId?: WorldIdConfig | null;
-  /** Tests only: replaces the verifier `worldId` would build. */
-  worldIdVerifier?: WorldIdVerifier;
+  worldIdVerifierOverride?: WorldIdVerifier;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
   /** HMAC secret for participant keys; eligibility fails closed without it. */
@@ -156,7 +154,8 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const chainId = dependencies.chainId ?? 84532;
   const worldIdConfig = dependencies.worldId ?? null;
   const worldIdVerifier =
-    dependencies.worldIdVerifier ?? worldIdVerifierFor(worldIdConfig, chainId);
+    dependencies.worldIdVerifierOverride ??
+    worldIdVerifierFor(worldIdConfig, chainId);
   const sessions =
     dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   // API keys (#26) act as their advertiser; otherwise SIWE sessions.

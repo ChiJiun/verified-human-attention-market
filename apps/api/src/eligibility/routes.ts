@@ -137,7 +137,7 @@ export async function registerEligibilityRoutes(
       if (!outcome.ok) {
         if (outcome.code === "VERIFICATION_FAILED") {
           request.log.warn(
-            { worldIdOutcome: outcome.code, worldError: outcome.worldError },
+            { worldIdOutcome: outcome.code, worldCodes: outcome.worldCodes },
             "World ID refused the proof",
           );
         }

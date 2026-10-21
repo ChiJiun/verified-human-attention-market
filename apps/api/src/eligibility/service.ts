@@ -7,7 +7,7 @@ import { worldIdSignal, type WorldIdSignalSalt } from "@vham/shared/world-id";
 import { isRetiredDeployment } from "../campaigns/types.js";
 import {
   campaignAction,
-  type WorldError,
+  type WorldRefusalCodes,
   type WorldIdFailureCode,
   type WorldIdVerifier,
 } from "../identity/world-id.js";
@@ -48,7 +48,7 @@ export type EligibilityOutcome =
       ok: false;
       status: number;
       code: EligibilityFailureCode;
-      worldError?: WorldError;
+      worldCodes?: WorldRefusalCodes;
     };
 
 const WORLD_ID_STATUS: Record<WorldIdFailureCode, number> = {

@@ -96,7 +96,7 @@ async function setup() {
     campaignRepository: campaigns,
     eligibilityRepository: eligibility,
     submissionRepository: submissions,
-    worldIdVerifier: new FakeWorldId(),
+    worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: SECRET,
     now: () => now,
   });

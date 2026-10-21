@@ -12,7 +12,6 @@ import {
   type WorldIdVerifier,
 } from "./world-id.js";
 
-/** null = not configured: requests answer 503 and every proof is refused. */
 export type WorldIdConfig =
   | {
       mode: "live";

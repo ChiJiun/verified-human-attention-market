@@ -103,7 +103,7 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
     submissionRepository: submissions,
     chainId: 84532,
     chain: options.chainConfigured === false ? null : chainDeps,
-    worldIdVerifier: new FakeWorldId(),
+    worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: "onchain-test-secret-0123456789abcdef",
     now: () => now,
   });

@@ -50,7 +50,7 @@ class FakeWorldId implements WorldIdVerifier {
       return {
         ok: false,
         code: "VERIFICATION_FAILED",
-        worldError: {
+        worldCodes: {
           code: "all_verifications_failed",
           resultCodes: ["verification_error"],
         },
@@ -105,7 +105,7 @@ async function setup(
     authenticate: signedInAs(),
     campaignRepository: new InMemoryCampaignRepository(),
     eligibilityRepository,
-    worldIdVerifier: worldId,
+    worldIdVerifierOverride: worldId,
     participantKeySecret:
       options.secret === undefined ? SECRET : options.secret,
     now: options.clock ?? (() => current),
@@ -326,7 +326,7 @@ describe("POST /v1/campaigns/:id/eligibility/verify", () => {
     expect(warn).toHaveBeenCalledWith(
       {
         worldIdOutcome: "VERIFICATION_FAILED",
-        worldError: {
+        worldCodes: {
           code: "all_verifications_failed",
           resultCodes: ["verification_error"],
         },
@@ -410,7 +410,7 @@ describe("eligibility verify with the HTTP World ID verifier", () => {
     );
     const app = buildApp({
       authenticate: signedInAs(),
-      worldIdVerifier: new HttpWorldIdVerifier({
+      worldIdVerifierOverride: new HttpWorldIdVerifier({
         rpId: parseWorldIdRpId("rp_0123456789abcdef")!,
         environment: "production",
         fetch: world as unknown as typeof fetch,

@@ -460,7 +460,7 @@ describe("HttpWorldIdVerifier", () => {
     expect(result).toEqual({
       ok: false,
       code: "VERIFICATION_FAILED",
-      worldError: {
+      worldCodes: {
         code: "all_verifications_failed",
         resultCodes: ["verification_error"],
       },

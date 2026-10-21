@@ -14,9 +14,6 @@ import { hashToField } from "./rp-signature.js";
  * (POST /api/v4/verify/{rp_id}, the 4.0 item fields, the 400 body with
  * `code`, `detail` and per-result `code`).
  *
- * One action per campaign gives the campaign-scoped duplicate-human policy
- * without any cross-campaign identifier.
- *
  * Raw proofs are never logged or persisted by this module.
  */
 
@@ -38,7 +35,7 @@ export function parseWorldIdRpId(value: string): WorldIdRpId | null {
 
 /**
  * IDKit 4.4.0's `validateConfig` requires `app_id` to start with `app_`
- * (dist/index.js lines 2528-2530); whitespace is refused as well.
+ * (dist/index.js lines 2528-2530).
  */
 export function parseWorldIdAppId(value: string): WorldIdAppId | null {
   return /^app_\S+$/.test(value) ? (value as WorldIdAppId) : null;
@@ -53,15 +50,14 @@ export type WorldIdFailureCode =
   | "VERIFICATION_FAILED"
   | "PROVIDER_UNAVAILABLE";
 
-/** World's own error codes from a refusal; never its free-text `detail`. */
-export interface WorldError {
+export interface WorldRefusalCodes {
   code: string | null;
   resultCodes: string[];
 }
 
 export type WorldIdResult =
   | { ok: true; /** Decimal string. Never persisted raw. */ nullifier: string }
-  | { ok: false; code: WorldIdFailureCode; worldError?: WorldError };
+  | { ok: false; code: WorldIdFailureCode; worldCodes?: WorldRefusalCodes };
 
 export interface WorldIdVerifier {
   verify(request: {
@@ -110,7 +106,7 @@ const FIELD_HEX = /^0x[0-9a-fA-F]{1,64}$/;
 
 const WORLD_CODE = /^[a-z0-9_]{1,64}$/;
 
-const worldErrorSchema = z.looseObject({
+const worldCodesSchema = z.looseObject({
   code: z.unknown(),
   results: z.array(z.looseObject({ code: z.unknown() })).optional(),
 });
@@ -119,9 +115,11 @@ function worldCode(value: unknown): string | null {
   return typeof value === "string" && WORLD_CODE.test(value) ? value : null;
 }
 
-async function worldErrorOf(response: Response): Promise<WorldError | null> {
+async function worldCodesOf(
+  response: Response,
+): Promise<WorldRefusalCodes | null> {
   try {
-    const body = worldErrorSchema.safeParse(await response.json());
+    const body = worldCodesSchema.safeParse(await response.json());
 
     if (!body.success) {
       return null;
@@ -141,11 +139,11 @@ async function worldErrorOf(response: Response): Promise<WorldError | null> {
 }
 
 async function refusedBy(response: Response): Promise<WorldIdResult> {
-  const worldError = await worldErrorOf(response);
+  const worldCodes = await worldCodesOf(response);
 
-  return worldError === null
+  return worldCodes === null
     ? { ok: false, code: "VERIFICATION_FAILED" }
-    : { ok: false, code: "VERIFICATION_FAILED", worldError };
+    : { ok: false, code: "VERIFICATION_FAILED", worldCodes };
 }
 
 const verifyResponseSchema = z.looseObject({

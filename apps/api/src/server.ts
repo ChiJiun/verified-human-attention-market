@@ -52,8 +52,6 @@ if (participantKeySecret !== null && participantKeySecret.length < 32) {
   throw new Error("PARTICIPANT_KEY_SECRET must be at least 32 characters");
 }
 
-// Fails fast on a partial or malformed live configuration; simulation is
-// refused off the local anvil chain.
 const worldId = loadWorldIdConfig(process.env, chainId);
 
 // Optional bearer token for GET /metrics (scraper credential, not a secret
