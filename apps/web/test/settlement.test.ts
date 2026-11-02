@@ -4,16 +4,19 @@ import {
   type Hash,
   type PublicClient,
 } from "viem";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ASSUME_DROPPED_AFTER_MS,
+  cardFlipsToDone,
   observeSettlementTx,
+  pollSettlementTx,
   resolveSettlementTx,
   settlementButton,
   settlementEffectVisible,
   type SettlementAction,
   type SettlementTxObservation,
+  type SettlementTxOutcome,
 } from "../lib/settlement";
 
 const HASH = `0x${"ab".repeat(32)}` as Hash;
@@ -42,21 +45,59 @@ describe("settlement effect", () => {
 
 describe("close and refund buttons", () => {
   const available = { kind: "available" };
+  const idle = {
+    awaitingEffect: null,
+    maybeDropped: null,
+    blocked: false,
+  } as const;
 
   it("stay in place, disabled, while another action runs", () => {
-    expect(settlementButton("close", available, null, true)).toBe("disabled");
-    expect(settlementButton("refund", available, "close", true)).toBe(
-      "disabled",
-    );
-    expect(settlementButton("close", available, null, false)).toBe("enabled");
+    expect(
+      settlementButton("close", available, { ...idle, blocked: true }),
+    ).toEqual({ kind: "send", disabled: true });
+    expect(
+      settlementButton("refund", available, {
+        ...idle,
+        awaitingEffect: "close",
+        blocked: true,
+      }),
+    ).toEqual({ kind: "send", disabled: true });
+    expect(settlementButton("close", available, idle)).toEqual({
+      kind: "send",
+      disabled: false,
+    });
   });
 
   it("are hidden only while not offered or awaiting their own effect", () => {
-    expect(settlementButton("close", available, "close", false)).toBe("hidden");
-    expect(settlementButton("refund", { kind: "waiting" }, null, false)).toBe(
-      "hidden",
+    expect(
+      settlementButton("close", available, {
+        ...idle,
+        awaitingEffect: "close",
+      }),
+    ).toEqual({ kind: "hidden" });
+    expect(settlementButton("refund", { kind: "waiting" }, idle)).toEqual({
+      kind: "hidden",
+    });
+    expect(settlementButton("close", null, { ...idle, blocked: true })).toEqual(
+      { kind: "hidden" },
     );
-    expect(settlementButton("close", null, null, true)).toBe("hidden");
+  });
+
+  it("offer only the warned 'anyway' send for a transaction never seen", () => {
+    const waiting = {
+      ...idle,
+      awaitingEffect: "close",
+      maybeDropped: "close",
+    } as const;
+
+    expect(settlementButton("close", available, waiting)).toEqual({
+      kind: "send-anyway",
+      disabled: false,
+    });
+    // The chain no longer offers it (the first one landed): nothing.
+    expect(settlementButton("close", { kind: "unavailable" }, waiting)).toEqual(
+      { kind: "hidden" },
+    );
   });
 });
 
@@ -112,7 +153,7 @@ describe("resolving an unknown close or refund outcome", () => {
     ).toBe("pending");
   });
 
-  it("takes an unknown hash as dropped only after a while", () => {
+  it("takes a hash never seen as dropped only after a while", () => {
     const unknown = {
       receipt: null,
       known: false,
@@ -133,6 +174,138 @@ describe("resolving an unknown close or refund outcome", () => {
         { elapsedMs: 10 * ASSUME_DROPPED_AFTER_MS },
       ),
     ).toBe("pending");
+  });
+
+  it("keeps a transaction seen with nonce N pending while that slot is empty", () => {
+    // Seen once with nonce 7, now unknown to the node, nonce 7 still unused:
+    // it can still land, so only another transaction at 7 concludes it.
+    expect(
+      resolve(
+        { receipt: null, known: false, txNonce: 7, minedNonce: 7 },
+        { elapsedMs: ASSUME_DROPPED_AFTER_MS },
+      ),
+    ).toBe("pending");
+    expect(
+      resolve(
+        { receipt: null, known: false, txNonce: 7, minedNonce: null },
+        { elapsedMs: 10 * ASSUME_DROPPED_AFTER_MS },
+      ),
+    ).toBe("pending");
+    expect(
+      resolve(
+        { receipt: null, known: false, txNonce: 7, minedNonce: 8 },
+        { elapsedMs: ASSUME_DROPPED_AFTER_MS },
+      ),
+    ).toBe("replaced");
+  });
+});
+
+describe("polling an unknown outcome", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Runs `checks` in order, one per interval, reporting each verdict. */
+  async function poll(checks: (SettlementTxOutcome | Error)[]) {
+    const queue = [...checks];
+    const verdicts: SettlementTxOutcome[] = [];
+    let calls = 0;
+    const stop = pollSettlementTx(
+      async () => {
+        calls += 1;
+        const next = queue.shift() ?? "pending";
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      (outcome) => verdicts.push(outcome),
+      1_000,
+    );
+    for (let tick = 0; tick < checks.length + 2; tick += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    stop();
+    return { verdicts, calls: () => calls };
+  }
+
+  it("needs two agreeing checks, so one lagging backend decides nothing", async () => {
+    // A successful close read once as "nonce used, no receipt, still active".
+    const { verdicts } = await poll(["replaced", "pending", "done", "done"]);
+
+    expect(verdicts).toEqual(["done"]);
+  });
+
+  it("settles on two agreeing checks and then stops", async () => {
+    const { verdicts, calls } = await poll(["pending", "replaced", "replaced"]);
+
+    expect(verdicts).toEqual(["replaced"]);
+    const after = calls();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(calls()).toBe(after);
+  });
+
+  it("a failed check breaks the streak", async () => {
+    const { verdicts } = await poll([
+      "reverted",
+      new Error("rpc down"),
+      "reverted",
+    ]);
+
+    expect(verdicts).toEqual([]);
+  });
+
+  it("reports 'dropped' without stopping, and its withdrawal", async () => {
+    const { verdicts } = await poll([
+      "dropped",
+      "dropped",
+      "pending",
+      "pending",
+      "done",
+      "done",
+    ]);
+
+    expect(verdicts).toEqual(["dropped", "pending", "done"]);
+  });
+
+  it("never overlaps a slow check with the next one", async () => {
+    let running = 0;
+    let overlapped = false;
+    const stop = pollSettlementTx(
+      async () => {
+        running += 1;
+        overlapped ||= running > 1;
+        await new Promise((resolve) => setTimeout(resolve, 2_500));
+        running -= 1;
+        return "pending";
+      },
+      () => {},
+      1_000,
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    stop();
+
+    expect(overlapped).toBe(false);
+  });
+});
+
+describe("a card after the effect shows on-chain", () => {
+  it("turns done when it still shows that transaction waiting or failed", () => {
+    expect(cardFlipsToDone({ state: "reconciling", hash: HASH }, HASH)).toBe(
+      true,
+    );
+    // Failed on one backend's "replaced", then the chain shows it closed.
+    expect(cardFlipsToDone({ state: "failed", hash: HASH }, HASH)).toBe(true);
+  });
+
+  it("leaves another transaction's card or a finished one alone", () => {
+    const other = `0x${"cd".repeat(32)}` as Hash;
+
+    expect(cardFlipsToDone({ state: "failed", hash: other }, HASH)).toBe(false);
+    expect(cardFlipsToDone({ state: "failed" }, HASH)).toBe(false);
+    expect(cardFlipsToDone({ state: "done", hash: HASH }, HASH)).toBe(false);
+    expect(cardFlipsToDone({ state: "pending", hash: HASH }, HASH)).toBe(false);
   });
 });
 

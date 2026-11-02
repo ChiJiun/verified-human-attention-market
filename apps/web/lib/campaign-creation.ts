@@ -46,30 +46,47 @@ export async function checkLink(
   }
 }
 
-const wait = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Waits `ms`, or less when `signal` aborts. */
+function wait(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
 
 /**
  * Checks up to `attempts` times, `delayMs` apart, until linked, so a
  * transient RPC outage resumes on its own (#78). Resolves with the last
- * answer: the caller tells "linked" from "gave up".
+ * answer: the caller tells "linked" from "gave up". Rejects with the
+ * signal's reason once `signal` aborts (the page was left).
  */
 export async function keepChecking(
   check: () => Promise<LinkCheck>,
   {
     attempts,
     delayMs,
+    signal,
     sleep = wait,
   }: {
     attempts: number;
     delayMs: number;
-    sleep?: (ms: number) => Promise<void>;
+    signal?: AbortSignal | undefined;
+    sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   },
 ): Promise<LinkCheck> {
   for (let attempt = 1; ; attempt += 1) {
+    signal?.throwIfAborted();
     const last = await check();
     if (last.kind === "linked" || attempt >= attempts) return last;
-    await sleep(delayMs);
+    await sleep(delayMs, signal);
   }
 }
 

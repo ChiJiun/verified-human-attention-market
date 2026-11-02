@@ -92,10 +92,33 @@ describe("linking", () => {
     });
 
     expect(result).toEqual({ kind: "reconciling", code: "RPC_UNAVAILABLE" });
-    expect(sleep).toHaveBeenCalledExactlyOnceWith(5_000);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(5_000, undefined);
     expect(gaveUpMessage("RPC_UNAVAILABLE")).toMatch(
       /cannot reach the chain.*Press Check again; checking never sends a transaction\.$/,
     );
+  });
+
+  it.each([
+    ["while a check runs", 0],
+    ["while it waits", 50],
+  ])("stops checking when the page is left %s", async (_when, afterMs) => {
+    const fetch = answers(
+      [202, reconciling("NOT_CREATED_YET")],
+      [202, reconciling("NOT_CREATED_YET")],
+    );
+    const left = new AbortController();
+
+    const stopped = keepChecking(linkByDraft, {
+      attempts: 24,
+      delayMs: 60_000,
+      signal: left.signal,
+    }).catch((caught: unknown) => caught);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, afterMs));
+    left.abort();
+
+    expect(await stopped).toMatchObject({ name: "AbortError" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it.each([

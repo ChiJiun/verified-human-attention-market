@@ -36,22 +36,24 @@ import {
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import {
   describeChainError,
+  cardFlipsToDone,
   describeSimulationFailure,
   formatRemaining,
   observeSettlementTx,
+  pollSettlementTx,
   readSettlement,
   resolveSettlementTx,
   SETTLEMENT_CALLS,
-  SETTLEMENT_POLL_MS,
   SETTLEMENT_TX_MESSAGES,
   settlementButton,
   settlementEffectVisible,
   type ChainSettlement,
+  type FinalSettlementTxOutcome,
   type SettlementAction,
   type SettlementTarget,
-  type SettlementTxOutcome,
 } from "../../lib/settlement";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
+import { isUserRejection, nothingWasSent } from "../../lib/wallet-errors";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
 
 const erc20Abi = parseAbi([
@@ -110,7 +112,7 @@ type TxStatus =
   | { state: "pending"; label: string; hash: Hash }
   | { state: "reconciling"; label: string; hash: Hash | null }
   | { state: "done"; label: string; hash: Hash | null }
-  | { state: "failed"; label: string; message: string };
+  | { state: "failed"; label: string; message: string; hash?: Hash | null };
 
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
@@ -122,10 +124,14 @@ type ChainView =
 
 const UNREAD: ChainView = { state: "unread" };
 
-/** A close or refund whose receipt did not arrive while waiting (#86). */
-interface UnresolvedSettlement {
+/** The close or refund transaction this page sent last. */
+interface SentSettlement {
   action: SettlementAction;
   hash: Hash;
+}
+
+/** A close or refund whose receipt did not arrive while waiting (#86). */
+interface UnresolvedSettlement extends SentSettlement {
   sentAtMs: number;
   deployment: Deployment;
   target: SettlementTarget;
@@ -209,24 +215,6 @@ function SettlementNotes({
 /** Per-draft "a creation may be pending" marker (lib/campaign-creation.ts). */
 const attempts = createAttemptMarker(() => window.localStorage);
 
-/** EIP-1193 4001: the user rejected the request, so nothing was sent. */
-function isUserRejection(error: unknown): boolean {
-  for (
-    let current: unknown = error, depth = 0;
-    current && depth < 10;
-    current = (current as { cause?: unknown }).cause, depth += 1
-  ) {
-    const candidate = current as { code?: unknown; name?: unknown };
-    if (
-      candidate.code === 4001 ||
-      candidate.name === "UserRejectedRequestError"
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [campaignId, setCampaignId] = useState<CampaignId | null>(null);
@@ -250,11 +238,25 @@ export default function AdvertiserPage() {
   const [unresolved, setUnresolved] = useState<UnresolvedSettlement | null>(
     null,
   );
+  /** Hash of the unresolved transaction that was probably never broadcast. */
+  const [maybeDropped, setMaybeDropped] = useState<Hash | null>(null);
+  /** Kept after a failed verdict, so the card turns done if the effect shows later. */
+  const [lastSettlement, setLastSettlement] = useState<SentSettlement | null>(
+    null,
+  );
   const chainReads = useRef(0);
+  /** Aborted on unmount: stops the linking loop. */
+  const lifetime = useRef<AbortController | null>(null);
   const auth = useAdvertiserSession(wallet, setError);
   const activeSession = auth.active;
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const link = campaignLink(window.location.search);
@@ -358,14 +360,12 @@ export default function AdvertiserPage() {
    * chain read shows the effect (below).
    */
   const settleUnresolved = useCallback(
-    (
-      pending: UnresolvedSettlement,
-      outcome: Exclude<SettlementTxOutcome, "pending">,
-    ) => {
+    (pending: UnresolvedSettlement, outcome: FinalSettlementTxOutcome) => {
       const { label, done } = SETTLEMENT_CALLS[pending.action];
       setUnresolved((current) =>
         current?.hash === pending.hash ? null : current,
       );
+      setMaybeDropped(null);
       setTx((current) =>
         current.state !== "reconciling" || current.hash !== pending.hash
           ? current
@@ -375,6 +375,7 @@ export default function AdvertiserPage() {
                 state: "failed",
                 label,
                 message: SETTLEMENT_TX_MESSAGES[outcome],
+                hash: pending.hash,
               },
       );
       if (outcome !== "done") {
@@ -386,41 +387,42 @@ export default function AdvertiserPage() {
     [],
   );
 
-  // Once the chain (or the API's index of it) shows the status the awaited
-  // action produces, the wait is over, whichever transaction caused it (#86).
+  // Once the chain (or the API's index of it) shows the status an action
+  // produces, the wait for it is over, whichever transaction caused it, and
+  // a card still showing this page's last transaction for it (waiting, or
+  // failed on a lagging backend's answer) turns done (#86).
   const onchainStatus =
     chainView.state === "read" ? chainView.onchain.reading.storedStatus : null;
   useEffect(() => {
-    if (
-      !awaitingEffect ||
-      ![
+    const visible = (action: SettlementAction) =>
+      [
         onchainStatus,
         analytics?.settlement?.pending.status,
         analytics?.status,
-      ].some((status) => settlementEffectVisible(awaitingEffect, status))
-    ) {
-      return;
-    }
-    setAwaitingEffect(null);
-    if (unresolved?.action === awaitingEffect) {
-      settleUnresolved(unresolved, "done");
-    }
-  }, [awaitingEffect, onchainStatus, analytics, unresolved, settleUnresolved]);
+      ].some((status) => settlementEffectVisible(action, status));
 
-  // While the card says "reconciling", poll the receipt, the sender's nonce
-  // and the campaign, so a late, replaced or dropped transaction resolves
-  // without a reload. Nothing is ever sent from here.
+    if (awaitingEffect && visible(awaitingEffect)) setAwaitingEffect(null);
+    if (!lastSettlement || !visible(lastSettlement.action)) return;
+    const { hash, action } = lastSettlement;
+    setUnresolved((current) => (current?.hash === hash ? null : current));
+    setMaybeDropped((current) => (current === hash ? null : current));
+    setTx((current) =>
+      cardFlipsToDone(current, hash)
+        ? { state: "done", label: SETTLEMENT_CALLS[action].done, hash }
+        : current,
+    );
+  }, [awaitingEffect, onchainStatus, analytics, lastSettlement, tx]);
+
+  // While the card says "reconciling", check the transaction, the sender's
+  // nonce, the receipt and the campaign, so a late or replaced transaction
+  // resolves without a reload. Nothing is ever sent from here.
   useEffect(() => {
     if (!unresolved || !wallet) return;
     const pending = unresolved;
-    let stopped = false;
-    let checking = false;
     let txNonce: number | null = null;
 
-    const check = async () => {
-      if (checking) return;
-      checking = true;
-      try {
+    return pollSettlementTx(
+      async () => {
         const observation = await observeSettlementTx(
           wallet,
           pending.deployment.chainId,
@@ -437,32 +439,29 @@ export default function AdvertiserPage() {
             pending.target,
           );
           storedStatus = settlement.reading.storedStatus;
-          if (!stopped && read === chainReads.current) {
+          if (read === chainReads.current) {
             setChainView({ state: "read", onchain: settlement });
           }
         } catch {
           // Unknown for now; the next check reads again.
         }
-        const outcome = resolveSettlementTx({
+        return resolveSettlementTx({
           action: pending.action,
           storedStatus,
           observation,
           elapsedMs: Date.now() - pending.sentAtMs,
         });
-        if (!stopped && outcome !== "pending") {
-          settleUnresolved(pending, outcome);
-          void refresh();
+      },
+      (outcome) => {
+        if (outcome === "pending" || outcome === "dropped") {
+          // Not final: the "anyway" button comes and goes with it.
+          setMaybeDropped(outcome === "dropped" ? pending.hash : null);
+          return;
         }
-      } finally {
-        checking = false;
-      }
-    };
-
-    const timer = setInterval(() => void check(), SETTLEMENT_POLL_MS);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
+        settleUnresolved(pending, outcome);
+        void refresh();
+      },
+    );
   }, [unresolved, wallet, refresh, settleUnresolved]);
 
   async function run(action: () => Promise<void>) {
@@ -551,22 +550,34 @@ export default function AdvertiserPage() {
   /**
    * Keeps checking for about two minutes while the API reconciles. When it
    * gives up or the API refuses the link, the card says to press Check
-   * again; checking never sends a transaction (#78).
+   * again; checking never sends a transaction (#78). `walletError` is the
+   * wallet's own report when it failed without saying whether it sent. Stops
+   * when the page is left.
    */
-  async function linkUntilFinal(id: CampaignId, hash: Hash | null) {
+  async function linkUntilFinal(
+    id: CampaignId,
+    hash: Hash | null,
+    walletError?: string,
+  ) {
+    const signal = lifetime.current?.signal;
+    const reported = walletError
+      ? `Your wallet reported: ${walletError.replace(/\.?$/, ".")} `
+      : "";
     setTx({ state: "reconciling", label: "Linking campaign", hash });
     let last: LinkCheck;
     try {
       last = await keepChecking(() => checkOnchain(id, hash), {
         attempts: 24,
         delayMs: 5_000,
+        signal,
       });
     } catch (caught) {
+      if (signal?.aborted) return;
       void auth.syncFromError(caught);
       setTx({
         state: "failed",
         label: "Linking campaign",
-        message: `${describeError(caught)} ${CHECK_AGAIN}`,
+        message: `${reported}${describeError(caught)} ${CHECK_AGAIN}`,
       });
       return;
     }
@@ -578,7 +589,7 @@ export default function AdvertiserPage() {
       setTx({
         state: "failed",
         label: "Linking campaign",
-        message: gaveUpMessage(last.code),
+        message: `${reported}${gaveUpMessage(last.code)}`,
       });
     }
   }
@@ -650,15 +661,16 @@ export default function AdvertiserPage() {
           }),
         );
       } catch (caught) {
-        // Rejected in the wallet: nothing was sent now, but the marker of an
-        // earlier attempt (before "Create on-chain anyway") stays.
-        if (isUserRejection(caught)) {
+        // Rejected in the wallet, or the wallet is on another chain: nothing
+        // was sent now, but the marker of an earlier attempt (before "Create
+        // on-chain anyway") stays.
+        if (nothingWasSent(caught)) {
           setAwaitingLink(undoAttempt() !== null);
-          throw caught;
+          throw new Error(describeChainError(caught), { cause: caught });
         }
         // The transaction may have been broadcast before the error. Look for
-        // it by draft reference.
-        await linkUntilFinal(campaignId, null);
+        // it by draft reference, and say what the wallet reported.
+        await linkUntilFinal(campaignId, null, describeChainError(caught));
         return;
       }
 
@@ -923,6 +935,10 @@ export default function AdvertiserPage() {
     }
 
     const sentAtMs = Date.now();
+    // A new send (e.g. "anyway") supersedes the earlier unresolved one.
+    setUnresolved((current) => (current?.action === action ? null : current));
+    setMaybeDropped(null);
+    setLastSettlement({ action, hash });
     setAwaitingEffect(action);
     setTx({ state: "pending", label, hash });
     const mined = await waitForTx(wallet.publicClient, hash);
@@ -935,7 +951,12 @@ export default function AdvertiserPage() {
     }
     if (mined.kind === "reverted") {
       setAwaitingEffect(null);
-      setTx({ state: "failed", label, message: "The transaction reverted." });
+      setTx({
+        state: "failed",
+        label,
+        message: "The transaction reverted.",
+        hash,
+      });
     } else {
       setTx({ state: "done", label: done, hash });
     }
@@ -971,19 +992,18 @@ export default function AdvertiserPage() {
     apiStatus !== "settled"
       ? refundAvailability(onchain.reading)
       : null;
-  const blocked = busy || wrongNetwork;
-  const closeButton = settlementButton(
-    "close",
-    closeVerdict,
+  const buttonState = {
     awaitingEffect,
-    blocked,
-  );
-  const refundButton = settlementButton(
-    "refund",
-    refundVerdict,
-    awaitingEffect,
-    blocked,
-  );
+    maybeDropped:
+      unresolved !== null && maybeDropped === unresolved.hash
+        ? unresolved.action
+        : null,
+    blocked: busy || wrongNetwork,
+  };
+  const closeButton = settlementButton("close", closeVerdict, buttonState);
+  const refundButton = settlementButton("refund", refundVerdict, buttonState);
+  const anywayTitle =
+    "Your wallet's network has not seen the earlier transaction. If it is mined after all, this one reverts and only costs gas.";
 
   return (
     <main className="container">
@@ -1134,6 +1154,14 @@ export default function AdvertiserPage() {
               refund={refundVerdict}
             />
           )}
+          {buttonState.maybeDropped && (
+            <p className="note">
+              Your wallet&apos;s network has not seen the{" "}
+              {buttonState.maybeDropped} transaction for 10 minutes, so it was
+              probably never broadcast. Check your wallet&apos;s activity first;
+              this page keeps checking it.
+            </p>
+          )}
           <div className="actions">
             {analytics?.status === "draft" && !awaitingLink && (
               <button onClick={createOnchain} disabled={busy || wrongNetwork}>
@@ -1167,22 +1195,36 @@ export default function AdvertiserPage() {
                   Approve &amp; fund
                 </button>
               )}
-            {closeButton !== "hidden" && (
+            {closeButton.kind !== "hidden" && (
               <button
                 className="secondary"
                 onClick={() => settle("close")}
-                disabled={closeButton === "disabled"}
-                title="Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+                disabled={closeButton.disabled}
+                title={
+                  closeButton.kind === "send-anyway"
+                    ? anywayTitle
+                    : "Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+                }
               >
-                Close campaign
+                {closeButton.kind === "send-anyway"
+                  ? "Close campaign anyway"
+                  : "Close campaign"}
               </button>
             )}
-            {refundButton !== "hidden" && (
+            {refundButton.kind !== "hidden" && (
               <button
+                className={
+                  refundButton.kind === "send-anyway" ? "secondary" : undefined
+                }
                 onClick={() => settle("refund")}
-                disabled={refundButton === "disabled"}
+                disabled={refundButton.disabled}
+                title={
+                  refundButton.kind === "send-anyway" ? anywayTitle : undefined
+                }
               >
-                Refund unused budget
+                {refundButton.kind === "send-anyway"
+                  ? "Refund unused budget anyway"
+                  : "Refund unused budget"}
               </button>
             )}
             <button className="secondary" onClick={() => void refresh()}>
