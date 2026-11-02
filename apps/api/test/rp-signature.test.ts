@@ -13,6 +13,7 @@ import {
   type WorldIdConfig,
 } from "../src/identity/world-id-config.js";
 import { signedInAs } from "./support/auth.js";
+import { campaignInput } from "./support/campaign.js";
 
 /** Official vectors: https://docs.world.org/world-id/idkit/signatures (2026-10-13). */
 const KEY = `0x${"ab".repeat(32)}`;
@@ -118,27 +119,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       method: "POST",
       url: "/v1/campaigns",
       headers: { "idempotency-key": "rp-request" },
-      payload: {
-        advertiser: "0x1234567890abcdef1234567890abcdef12345678",
-        contentUrl: "https://example.com/sponsored",
-        rewardPerCompletion: "1000000",
-        maxCompletions: 10,
-        startAt: "2026-10-05T10:15:00.000Z",
-        endAt: "2026-10-05T11:15:00.000Z",
-        mission: {
-          questions: [
-            {
-              id: "q1",
-              prompt: "Pick a",
-              choices: [
-                { id: "a", label: "A" },
-                { id: "b", label: "B" },
-              ],
-            },
-          ],
-          answerKey: { q1: "a" },
-        },
-      },
+      payload: campaignInput(),
     });
     return { app, id: created.json<{ id: string }>().id };
   }

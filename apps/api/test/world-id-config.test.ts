@@ -8,6 +8,7 @@ import {
   WorldIdConfigError,
 } from "../src/identity/world-id-config.js";
 import { signedInAs } from "./support/auth.js";
+import { campaignInput } from "./support/campaign.js";
 
 const KEY: Hex = `0x${"ab".repeat(32)}`;
 const LIVE = {
@@ -137,27 +138,7 @@ describe("buildApp with a World ID config", () => {
       method: "POST",
       url: "/v1/campaigns",
       headers: { "idempotency-key": "world-id-config" },
-      payload: {
-        advertiser: "0x1234567890abcdef1234567890abcdef12345678",
-        contentUrl: "https://example.com/sponsored",
-        rewardPerCompletion: "1000000",
-        maxCompletions: 10,
-        startAt: "2026-10-05T10:15:00.000Z",
-        endAt: "2026-10-05T11:15:00.000Z",
-        mission: {
-          questions: [
-            {
-              id: "q1",
-              prompt: "Pick a",
-              choices: [
-                { id: "a", label: "A" },
-                { id: "b", label: "B" },
-              ],
-            },
-          ],
-          answerKey: { q1: "a" },
-        },
-      },
+      payload: campaignInput(),
     });
     const response = await app.inject({
       method: "POST",
