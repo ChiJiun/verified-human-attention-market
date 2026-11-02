@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 
+import { EVENT_TOPICS } from "../../src/chain/abi.js";
 import { reconcileCampaignEvents } from "../../src/chain/campaign-state.js";
 import {
   IndexCursorMovedError,
@@ -12,7 +13,7 @@ import {
   type IndexerConfig,
 } from "../../src/chain/indexer.js";
 import type { ChainRpc } from "../../src/chain/rpc.js";
-import { FakeChain, logs } from "./fake-chain.js";
+import { FakeChain, logs, word } from "./fake-chain.js";
 
 const ADVERTISER = "0x" + "a".repeat(40);
 const CLAIMANT = "0x" + "c".repeat(40);
@@ -492,20 +493,23 @@ export function defineIndexerContract(harness: IndexerHarness) {
   });
 
   /**
-   * A load-balanced RPC: header reads `staleAt` and, with `staleLogs`, the
-   * logs come from a node still on another fork; the rest is canonical.
+   * A load-balanced RPC: header reads `staleAt` and, with `logs`, the range
+   * logs (with `blockLogs`, the logs by block hash) come from a node still on
+   * another fork or behind; the rest is canonical.
    */
   function balanced(
     canonical: FakeChain,
     stale: FakeChain,
     staleAt: (number: bigint) => boolean,
-    staleLogs = false,
+    from: { logs?: boolean; blockLogs?: boolean } = {},
   ): ChainRpc {
     return {
       blockNumber: () => canonical.blockNumber(),
       getBlock: (number) =>
         (staleAt(number) ? stale : canonical).getBlock(number),
-      getLogs: (query) => (staleLogs ? stale : canonical).getLogs(query),
+      getLogs: (query) => (from.logs ? stale : canonical).getLogs(query),
+      getBlockLogs: (query) =>
+        (from.blockLogs ? stale : canonical).getBlockLogs(query),
       getTransactionReceipt: (hash) => canonical.getTransactionReceipt(hash),
       call: (to, data, block) => canonical.call(to, data, block),
     };
@@ -566,7 +570,9 @@ export function defineIndexerContract(harness: IndexerHarness) {
 
     // Its logs, and the header of the block holding them, come from the
     // stale node; the range end is canonical.
-    const mixed = balanced(chain, stale, (number) => number === fork, true);
+    const mixed = balanced(chain, stale, (number) => number === fork, {
+      logs: true,
+    });
 
     await expect(indexOnce(mixed, repository, config)).rejects.toBeInstanceOf(
       InconsistentChainReadError,
@@ -577,5 +583,152 @@ export function defineIndexerContract(harness: IndexerHarness) {
     // The canonical chain alone: no funding was ever confirmed.
     await indexOnce(chain, repository, config);
     expect((await state()).confirmed.funded).toBe("0");
+  });
+
+  const inconsistent = async (pass: Promise<unknown>) => {
+    const error = await pass.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(InconsistentChainReadError);
+    return error as InconsistentChainReadError;
+  };
+
+  it("never commits a range whose logs a lagging node left out, and commits it in full later (#102)", async () => {
+    const { chain, config, repository, scope, state } = setup(harness);
+    chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    await indexOnce(chain, repository, config);
+    const cursor = (await repository.getCursor(scope))!;
+
+    // A node stops following the chain, which then funds the campaign. The
+    // load balancer sends the range's eth_getLogs to that node: it answers
+    // without the funding, while the headers, read from the others, link.
+    const lagging = chain.copy();
+    const fundingBlock = chain.mine(1, [logs.funded(1, 10n * USDC)]);
+    chain.mine(6);
+    const rpc = balanced(chain, lagging, () => false, { logs: true });
+    const queries = chain.blockLogsCalls;
+
+    const error = await inconsistent(indexOnce(rpc, repository, config));
+    expect(error.blockNumber).toBe(fundingBlock);
+    expect(error.message).toMatch(/omitted 1 event/);
+    // Only the block whose bloom holds the event was read by hash.
+    expect(chain.blockLogsCalls - queries).toBe(1);
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+    expect((await state()).confirmed.funded).toBe("0");
+
+    // Asked by hash, the lagging node fails for a block it does not have.
+    await expect(
+      indexOnce(
+        balanced(chain, lagging, () => false, { logs: true, blockLogs: true }),
+        repository,
+        config,
+      ),
+    ).rejects.toThrow(/unknown block/);
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+
+    // Once the node has caught up, the next pass commits the range in full.
+    lagging.mine(1, [logs.funded(1, 10n * USDC)]);
+    lagging.mine(6);
+    expect((await indexOnce(rpc, repository, config)).confirmedThrough).toBe(
+      chain.head - 3n,
+    );
+    expect((await state()).confirmed.funded).toBe("10000000");
+  });
+
+  it("never commits a range whose answer left out one of a block's events (#102)", async () => {
+    const { chain, config, repository, scope, state } = setup(harness);
+    const block = chain.mine(1, [
+      logs.created(1, ADVERTISER),
+      logs.funded(1, 10n * USDC),
+    ]);
+    chain.mine(10);
+    const readLogs = chain.getLogs.bind(chain);
+    chain.getLogs = async (query) =>
+      (await readLogs(query)).filter(
+        (log) => log.topics[0] !== EVENT_TOPICS.CampaignFunded,
+      );
+
+    const error = await inconsistent(indexOnce(chain, repository, config));
+    expect(error.blockNumber).toBe(block);
+    expect(error.message).toMatch(/omitted 1 event/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    chain.getLogs = readLogs;
+    await indexOnce(chain, repository, config);
+    expect((await state()).confirmed).toMatchObject({
+      status: "active",
+      funded: "10000000",
+    });
+  });
+
+  it("never commits an event that its block does not hold (#102)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    const block = chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    // The range answer adds a funding to the creation's block.
+    const readLogs = chain.getLogs.bind(chain);
+    chain.getLogs = async (query) => {
+      const answer = await readLogs(query);
+      const creation = answer.find((log) => log.blockNumber === block);
+      return creation
+        ? [...answer, { ...creation, ...logs.funded(1, 99n), logIndex: 1 }]
+        : answer;
+    };
+
+    const error = await inconsistent(indexOnce(chain, repository, config));
+    expect(error.blockNumber).toBe(block);
+    expect(error.message).toMatch(/by the block's hash does not/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+  });
+
+  it("never commits an event that its block's bloom rules out (#102)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    const block = chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    chain.setLogsBloom(block, `0x${"0".repeat(512)}`);
+
+    const error = await inconsistent(indexOnce(chain, repository, config));
+    expect(error.blockNumber).toBe(block);
+    expect(error.message).toMatch(/logsBloom rules out/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+  });
+
+  it("pays one query by hash for a bloom false positive, then commits (#102)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    // The contract's address (an event the indexer does not read) and an
+    // indexed topic (from another contract) put both in the block's bloom,
+    // although the block holds no event of the contract.
+    chain.mine(1, [
+      { topics: [word(1)], data: "0x" },
+      { ...logs.funded(1, 999n * USDC), address: OTHER_CONTRACT },
+    ]);
+    chain.mine(10);
+
+    const result = await indexOnce(chain, repository, config);
+
+    expect(result.confirmedThrough).toBe(chain.head - 3n);
+    expect(result.blockLogQueries).toBe(1);
+    expect(chain.blockLogsCalls).toBe(1);
+    expect(result.skippedLogs).toBe(1);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+  });
+
+  it("reads each block by hash at most once when the bloom rules nothing out (#102)", async () => {
+    const { chain, config, repository, state } = setup(harness);
+    chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
+    chain.mine(10);
+    // Saturated blooms (a busy chain), and a header without a valid one.
+    for (let number = 0n; number <= chain.head; number += 1n) {
+      chain.setLogsBloom(number, `0x${"f".repeat(512)}`);
+    }
+    chain.setLogsBloom(config.deployBlock, "0x");
+
+    const result = await indexOnce(chain, repository, config);
+
+    expect(result.confirmedThrough).toBe(chain.head - 3n);
+    expect(result.blockLogQueries).toBe(
+      Number(result.confirmedThrough - config.deployBlock + 1n),
+    );
+    expect(chain.blockLogsCalls).toBe(result.blockLogQueries);
+    expect((await state()).confirmed.funded).toBe("10000000");
   });
 }

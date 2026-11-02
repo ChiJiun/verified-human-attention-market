@@ -144,6 +144,12 @@ const passes = metrics.counter(
   "vham_indexer_passes_total",
   "Indexer passes by result",
 );
+// The cost of proving committed ranges complete (#102): one eth_getLogs by
+// block hash per block whose logsBloom may hold an event.
+const blockLogQueries = metrics.counter(
+  "vham_indexer_block_log_queries_total",
+  "eth_getLogs requests by block hash made by successful passes",
+);
 const metricsPort = process.env.INDEXER_METRICS_PORT
   ? Number(process.env.INDEXER_METRICS_PORT)
   : null;
@@ -300,7 +306,9 @@ while (!stopping) {
       confirmedEvents: result.confirmedEvents,
       observedEvents: result.observedEvents,
       skippedLogs: result.skippedLogs,
+      blockLogQueries: result.blockLogQueries,
     });
+    blockLogQueries.inc({}, result.blockLogQueries);
 
     if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
       log("info", "campaigns reconciled", {
@@ -450,9 +458,10 @@ while (!stopping) {
       break;
     }
 
-    // The RPC answered one range from different forks or nodes (or the chain
-    // moved while reading it). Nothing was written; transient unless it
-    // keeps happening, which VhamIndexerInconsistentReads reports.
+    // The RPC answered one range from different forks or nodes, left events
+    // out (#102), or the chain moved while reading it. Nothing was written;
+    // transient unless it keeps happening, which VhamIndexerInconsistentReads
+    // reports.
     if (error instanceof InconsistentChainReadError) {
       inconsistentStreak += 1;
       gauges.inconsistentStreak.set(inconsistentStreak);
@@ -465,6 +474,7 @@ while (!stopping) {
       retryInMs: backoffMs,
       ...(error instanceof InconsistentChainReadError && {
         block: error.blockNumber.toString(),
+        ...(error.reason && { reason: error.reason }),
         inconsistentStreak,
       }),
     });

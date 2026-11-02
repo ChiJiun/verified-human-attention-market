@@ -1,4 +1,5 @@
-import { decodeCampaignManagerLog } from "./abi.js";
+import { decodeCampaignManagerLog, EVENT_TOPICS } from "./abi.js";
+import { bloomMatcher, parseBloom } from "./bloom.js";
 import type {
   ChainEventRepository,
   IndexedEvent,
@@ -25,6 +26,11 @@ export interface IndexResult {
   confirmedEvents: number;
   observedEvents: number;
   skippedLogs: number;
+  /**
+   * eth_getLogs requests by block hash this pass made to prove committed
+   * ranges complete: one per block whose bloom may hold an event (#102).
+   */
+  blockLogQueries: number;
 }
 
 /** A confirmed block changed: the confirmation depth was too shallow. */
@@ -42,8 +48,14 @@ export class ReorgBeyondConfirmationsError extends Error {
  * different forks). Transient: nothing was committed; the next pass retries.
  */
 export class InconsistentChainReadError extends Error {
-  constructor(readonly blockNumber: bigint) {
-    super(`Inconsistent chain read at block ${blockNumber}; retrying`);
+  constructor(
+    readonly blockNumber: bigint,
+    /** What disagreed, when it is more than a header or log hash. */
+    readonly reason?: string,
+  ) {
+    super(
+      `Inconsistent chain read at block ${blockNumber}${reason ? `: ${reason}` : ""}; retrying`,
+    );
     this.name = "InconsistentChainReadError";
   }
 }
@@ -143,6 +155,125 @@ async function linkedHeaders(
   return headers;
 }
 
+/** First topics of every event the indexer decodes. */
+const EVENT_TOPIC_LIST: readonly string[] = Object.values(EVENT_TOPICS);
+const EVENT_TOPIC_SET = new Set(EVENT_TOPIC_LIST);
+
+/** A log of `contract` whose first topic is one of the indexed events. */
+const isEventLog = (log: RawLog, contract: string) =>
+  log.address === contract && EVENT_TOPIC_SET.has(log.topics[0] ?? "");
+
+/** Identity and content: two answers for one block must agree on both. */
+const logKey = (log: RawLog) =>
+  `${log.transactionHash}:${log.logIndex}:${log.topics.join(",")}:${log.data}`;
+
+/** eth_getLogs-by-hash requests in flight at once. */
+const BLOCK_LOGS_CONCURRENCY = 8;
+
+/**
+ * The range's eth_getLogs answer must hold every event of the range (issue
+ * #102). Hash links cannot show that: a node behind the others (or whose log
+ * index lags) answers the range with fewer logs while the headers, read from
+ * another node, still link.
+ *
+ * Each header's logsBloom, tested locally, tells which blocks may hold an
+ * event of the contract. Every such block is read again with eth_getLogs by
+ * its hash (EIP-234), whose answer is that block's logs whichever node gives
+ * it (a node without the block fails), and the range answer must hold
+ * exactly those events for it. A block whose bloom rules the events out must
+ * have none in the range answer. Any difference is an
+ * InconsistentChainReadError: nothing is committed, the next pass retries.
+ *
+ * Cost: no request for a block whose bloom rules the events out; one
+ * eth_getLogs per block that may hold one (blocks with events, and bloom
+ * false positives). Returns that number.
+ */
+async function expectCompleteLogs(
+  rpc: ChainRpc,
+  contract: string,
+  headers: Map<bigint, BlockHeader>,
+  range: { from: bigint; to: bigint },
+  logs: RawLog[],
+): Promise<number> {
+  const read = new Map<bigint, RawLog[]>();
+
+  for (const log of logs) {
+    if (!log.removed && isEventLog(log, contract)) {
+      read.set(log.blockNumber, [...(read.get(log.blockNumber) ?? []), log]);
+    }
+  }
+
+  const mayHoldEvents = bloomMatcher(contract, EVENT_TOPIC_LIST);
+  const flagged: BlockHeader[] = [];
+
+  for (let number = range.from; number <= range.to; number += 1n) {
+    const header = headers.get(number)!;
+    // A header without a valid bloom proves nothing: read the block.
+    const bloom = parseBloom(header.logsBloom);
+
+    if (bloom === null || mayHoldEvents(bloom)) {
+      flagged.push(header);
+    } else if (read.has(number)) {
+      throw new InconsistentChainReadError(
+        number,
+        "eth_getLogs returned an event that the block's logsBloom rules out",
+      );
+    }
+  }
+
+  for (let start = 0; start < flagged.length; start += BLOCK_LOGS_CONCURRENCY) {
+    const chunk = flagged.slice(start, start + BLOCK_LOGS_CONCURRENCY);
+    const answers = await Promise.all(
+      chunk.map((header) =>
+        rpc.getBlockLogs({
+          blockHash: header.hash,
+          address: contract,
+          topics: [EVENT_TOPIC_LIST],
+        }),
+      ),
+    );
+
+    answers.forEach((answer, index) => {
+      const header = chunk[index]!;
+
+      if (
+        answer.some(
+          (log) =>
+            log.blockHash.toLowerCase() !== header.hash ||
+            log.blockNumber !== header.number,
+        )
+      ) {
+        throw new InconsistentChainReadError(
+          header.number,
+          "eth_getLogs by block hash answered for another block",
+        );
+      }
+
+      const held = new Set(
+        answer.filter((log) => isEventLog(log, contract)).map(logKey),
+      );
+      const returned = new Set((read.get(header.number) ?? []).map(logKey));
+      const omitted = [...held].filter((key) => !returned.has(key)).length;
+
+      if (omitted > 0) {
+        throw new InconsistentChainReadError(
+          header.number,
+          `eth_getLogs for blocks ${range.from}-${range.to} omitted ${omitted} event(s) of this block that eth_getLogs by its hash returns`,
+        );
+      }
+
+      if ([...returned].some((key) => !held.has(key))) {
+        throw new InconsistentChainReadError(
+          header.number,
+          "eth_getLogs returned an event that eth_getLogs by the block's hash does not",
+        );
+      }
+    });
+  }
+
+  return flagged.length;
+}
+
 /**
  * One idempotent indexing pass (issue #17).
  *
@@ -158,6 +289,9 @@ async function linkedHeaders(
  *   pass is therefore a halt too, and a batch whose reads came from
  *   different forks or nodes is retried; neither is ever committed. Any
  *   later rewrite of a committed block changes the cursor block's hash.
+ * - A batch is committed only with every event of its blocks (issue #102):
+ *   each block whose logsBloom may hold one is read again by hash, so a
+ *   getLogs answer that left events out (a lagging node) is retried too.
  * - A confirmed batch is committed only if the hash of its last block is the
  *   same before and after eth_getLogs, so logs read across a reorg or a
  *   provider node switch are never stored under a block hash they do not
@@ -196,6 +330,7 @@ export async function indexOnce(
   let confirmedEvents = 0;
   let observedEvents = 0;
   let skippedLogs = 0;
+  let blockLogQueries = 0;
 
   while (confirmedThrough < safeHead) {
     const from = confirmedThrough + 1n;
@@ -241,6 +376,15 @@ export async function indexOnce(
         throw new InconsistentChainReadError(log.blockNumber);
       }
     }
+
+    // Logs that are there belong to the chain; now none may be missing.
+    blockLogQueries += await expectCompleteLogs(
+      rpc,
+      scope.contractAddress,
+      headers,
+      { from, to },
+      logs,
+    );
 
     const toBlockAgain = await rpc.getBlock(to);
 
@@ -289,5 +433,6 @@ export async function indexOnce(
     confirmedEvents,
     observedEvents,
     skippedLogs,
+    blockLogQueries,
   };
 }

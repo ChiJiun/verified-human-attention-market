@@ -18,6 +18,8 @@ export interface BlockHeader {
   number: bigint;
   hash: string;
   parentHash: string;
+  /** 256-byte bloom of the block's log addresses and topics, 0x hex. */
+  logsBloom: string;
 }
 
 export interface TransactionReceipt {
@@ -42,6 +44,18 @@ export interface ChainRpc {
     address: string;
     fromBlock: bigint;
     toBlock: bigint;
+  }): Promise<RawLog[]>;
+  /**
+   * eth_getLogs of exactly one block, by its hash (EIP-234): the answer is
+   * that block's logs whichever node gives it, since a block's logs are fixed
+   * by its hash, and a node that does not have the block fails instead of
+   * answering for another one. `topics` is the eth_getLogs topic filter
+   * (each position: one topic, alternatives, or null for any).
+   */
+  getBlockLogs(query: {
+    blockHash: string;
+    address: string;
+    topics: readonly (string | readonly string[] | null)[];
   }): Promise<RawLog[]>;
   getTransactionReceipt(hash: string): Promise<TransactionReceipt | null>;
   /** eth_call at `block` (default: latest). */
@@ -135,7 +149,21 @@ export class JsonRpcClient implements ChainRpc {
       number: BigInt(String(block.number)),
       hash: String(block.hash).toLowerCase(),
       parentHash: String(block.parentHash).toLowerCase(),
+      // Validated where it is used: the indexer reads a malformed or missing
+      // bloom as "may hold anything".
+      logsBloom: String(block.logsBloom ?? "").toLowerCase(),
     };
+  }
+
+  private async logs(filter: Record<string, unknown>): Promise<RawLog[]> {
+    const logs = await this.request("eth_getLogs", [filter]);
+
+    // `null` (e.g. for an unknown block hash) is not "no logs".
+    if (!Array.isArray(logs)) {
+      throw new RpcError("eth_getLogs returned no log list");
+    }
+
+    return (logs as Record<string, unknown>[]).map(parseLog);
   }
 
   async getLogs(query: {
@@ -143,15 +171,23 @@ export class JsonRpcClient implements ChainRpc {
     fromBlock: bigint;
     toBlock: bigint;
   }): Promise<RawLog[]> {
-    const logs = (await this.request("eth_getLogs", [
-      {
-        address: query.address,
-        fromBlock: toHex(query.fromBlock),
-        toBlock: toHex(query.toBlock),
-      },
-    ])) as Record<string, unknown>[];
+    return this.logs({
+      address: query.address,
+      fromBlock: toHex(query.fromBlock),
+      toBlock: toHex(query.toBlock),
+    });
+  }
 
-    return logs.map(parseLog);
+  async getBlockLogs(query: {
+    blockHash: string;
+    address: string;
+    topics: readonly (string | readonly string[] | null)[];
+  }): Promise<RawLog[]> {
+    return this.logs({
+      blockHash: query.blockHash,
+      address: query.address,
+      topics: query.topics,
+    });
   }
 
   async getTransactionReceipt(

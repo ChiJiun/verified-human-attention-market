@@ -9,7 +9,7 @@ import {
 } from "../src/chain/abi.js";
 import { deriveCampaignState } from "../src/chain/campaign-state.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
-import { JsonRpcClient } from "../src/chain/rpc.js";
+import { JsonRpcClient, RpcError } from "../src/chain/rpc.js";
 import { addressWord, logs, word } from "./support/fake-chain.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 
@@ -183,5 +183,62 @@ describe("JsonRpcClient", () => {
       "0x10",
       { blockHash: hash, requireCanonical: true },
     ]);
+  });
+
+  it("reads a header's logsBloom and one block's logs by hash (EIP-234, #102)", async () => {
+    const requests: { method: string; params: unknown[] }[] = [];
+    const results: unknown[] = [];
+    const client = new JsonRpcClient("http://rpc.test", (async (
+      _url: unknown,
+      init?: RequestInit,
+    ) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", result: results.shift() }),
+      );
+    }) as typeof fetch);
+    const contract = "0x" + "c0".repeat(20);
+    const hash = word(0xb10c);
+    const bloom = `0x${"0F".repeat(256)}`;
+
+    results.push({
+      number: "0x10",
+      hash,
+      parentHash: word(0xb10b),
+      logsBloom: bloom,
+    });
+    expect((await client.getBlock(16n))?.logsBloom).toBe(bloom.toLowerCase());
+
+    results.push([
+      {
+        address: contract,
+        topics: [EVENT_TOPICS.CampaignClosed, word(1)],
+        data: "0x",
+        blockNumber: "0x10",
+        blockHash: hash,
+        transactionHash: word(0x7),
+        logIndex: "0x0",
+      },
+    ]);
+    const topics = [[EVENT_TOPICS.CampaignClosed, EVENT_TOPICS.CampaignFunded]];
+    const logsAtBlock = await client.getBlockLogs({
+      blockHash: hash,
+      address: contract,
+      topics,
+    });
+    expect(logsAtBlock).toMatchObject([
+      { blockNumber: 16n, blockHash: hash, logIndex: 0, removed: false },
+    ]);
+    expect(requests[1]).toMatchObject({
+      method: "eth_getLogs",
+      params: [{ blockHash: hash, address: contract, topics }],
+    });
+    expect(requests[1]!.params[0]).not.toHaveProperty("fromBlock");
+
+    // A null answer (e.g. a node that does not know the hash) is no "no logs".
+    results.push(null);
+    await expect(
+      client.getBlockLogs({ blockHash: hash, address: contract, topics }),
+    ).rejects.toBeInstanceOf(RpcError);
   });
 });
