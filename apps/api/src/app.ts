@@ -70,6 +70,7 @@ import {
   LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "./observability/instrumentation.js";
+import { claimAuthorizationObserver } from "./observability/claim-authorizations.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
 import type { WorldIdVerifier } from "./identity/world-id.js";
@@ -120,6 +121,8 @@ export interface AppDependencies {
   trustProxyHops?: number;
   close?: () => Promise<void>;
   now?: () => Date;
+  /** Receives the JSON log lines; turns logging on under NODE_ENV=test. */
+  logStream?: { write(line: string): void };
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
@@ -134,9 +137,14 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === "test"
+      process.env.NODE_ENV === "test" && !dependencies.logStream
         ? false
-        : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
+        : {
+            redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+            ...(dependencies.logStream
+              ? { stream: dependencies.logStream }
+              : {}),
+          },
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });
@@ -223,12 +231,17 @@ export function buildApp(dependencies: AppDependencies = {}) {
   });
   registerSessionCookieGuard(app, { webOrigin });
 
-  registerInstrumentation(app, {
+  const observeClaim = claimAuthorizationObserver({
     metrics,
     payoutAnomalies:
       dependencies.payoutAnomalies ?? new PayoutAnomalyDetector(),
-    metricsToken: dependencies.metricsToken ?? null,
     now,
+    log: app.log,
+  });
+
+  registerInstrumentation(app, {
+    metrics,
+    metricsToken: dependencies.metricsToken ?? null,
     collect: async () => {
       await chainStatus();
     },
@@ -350,6 +363,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
           }
         : null,
       now,
+      observe: observeClaim,
     };
 
     await registerEligibilityRoutes(instance, {
@@ -382,6 +396,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
         ? (campaign, claimant) =>
             prepareClaim(claimDependencies, campaign, claimant)
         : null,
+      observeClaim,
       issueAuthorization:
         claimDependencies.signer && claimDependencies.chain
           ? (input) => authorizeClaim(claimDependencies, input)

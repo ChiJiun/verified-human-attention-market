@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import type { FastifyBaseLogger } from "fastify";
+
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { ClaimRepository } from "../claims/repository.js";
 import {
   claimRefusal,
+  type ClaimOutcome,
   type ClaimPreparation,
   type ClaimSigning,
 } from "../claims/service.js";
@@ -60,6 +63,16 @@ export interface SubmissionServiceDependencies {
         claimantAddress: string,
       ) => Promise<ClaimPreparation>)
     | null;
+  /**
+   * Called once with the outcome of each acceptance-time authorization
+   * attempt (#89): a refused preparation, a refused signature, or a signature
+   * stored with the accepted completion.
+   */
+  observeClaim?: (
+    campaignId: string,
+    outcome: ClaimOutcome,
+    log?: FastifyBaseLogger,
+  ) => void;
   now: () => Date;
   maxAttempts?: number;
   quality?: QualityConfig;
@@ -129,6 +142,7 @@ export async function submitCompletion(
     claimantAddress: string;
     idempotencyKey: string;
     answers: unknown;
+    log?: FastifyBaseLogger;
   },
 ): Promise<SubmissionOutcome> {
   const claimantAddress = input.claimantAddress.toLowerCase();
@@ -215,6 +229,7 @@ export async function submitCompletion(
   if (dependencies.prepareClaim) {
     const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
     if (!prepared.ok) {
+      dependencies.observeClaim?.(campaign.id, prepared, input.log);
       return {
         ok: false,
         status: prepared.status,
@@ -261,6 +276,7 @@ export async function submitCompletion(
   );
 
   let signed: SignedClaim | null = null;
+  let created = false;
 
   try {
     const result = await dependencies.submissions.recordIdempotent({
@@ -285,15 +301,25 @@ export async function submitCompletion(
                 .within(scope)
                 .issueOnce({ ...signing.terms, submissionId: submission.id });
               signed = issued.claim;
+              created = issued.created;
             },
           }
         : {}),
     });
 
+    // Observed only once the acceptance and its signature are committed.
+    if (signed) {
+      dependencies.observeClaim?.(
+        campaign.id,
+        { ok: true, claim: signed, created },
+        input.log,
+      );
+    }
     return { ok: true, ...result, claim: signed };
   } catch (error) {
     const refusal = claimRefusal(error);
     if (refusal) {
+      dependencies.observeClaim?.(campaign.id, refusal, input.log);
       return {
         ok: false,
         status: refusal.status,
