@@ -16,6 +16,7 @@ import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 import { signedInAs, TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
 import { FakeChain } from "./support/fake-chain.js";
 import { FakeWorldId } from "./support/world-id.js";
+import { campaignInput } from "./support/campaign.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 
@@ -107,27 +108,7 @@ async function setup(options: {
     method: "POST",
     url: "/v1/campaigns",
     headers: { "idempotency-key": "campaign" },
-    payload: {
-      advertiser: ADVERTISER,
-      contentUrl: "https://example.com/sponsored",
-      rewardPerCompletion: "1000000",
-      maxCompletions: 10,
-      startAt: "2026-10-05T10:15:00.000Z",
-      endAt: "2026-10-05T11:15:00.000Z",
-      mission: {
-        questions: [
-          {
-            id: "q1",
-            prompt: "Pick a",
-            choices: [
-              { id: "a", label: "A" },
-              { id: "b", label: "B" },
-            ],
-          },
-        ],
-        answerKey: { q1: "a" },
-      },
-    },
+    payload: campaignInput({ advertiser: ADVERTISER }),
   });
   const campaignId = created.json<{ id: string }>().id;
   await campaigns.linkOnchain(campaignId, {

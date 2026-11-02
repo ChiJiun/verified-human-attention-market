@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
+import { campaignInput } from "./support/campaign.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
@@ -73,27 +74,9 @@ class FakeWorldId implements WorldIdVerifier {
   }
 }
 
-const campaignPayload = {
+const campaignPayload = campaignInput({
   advertiser: "0x1234567890ABCDEF1234567890ABCDEF12345678",
-  contentUrl: "https://example.com/sponsored",
-  rewardPerCompletion: "1000000",
-  maxCompletions: 10,
-  startAt: "2026-10-05T10:15:00.000Z",
-  endAt: "2026-10-05T11:15:00.000Z",
-  mission: {
-    questions: [
-      {
-        id: "q1",
-        prompt: "Pick a",
-        choices: [
-          { id: "a", label: "A" },
-          { id: "b", label: "B" },
-        ],
-      },
-    ],
-    answerKey: { q1: "a" },
-  },
-};
+});
 
 async function setup(
   options: { secret?: string | null; clock?: () => Date } = {},

@@ -35,6 +35,7 @@ import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js"
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
 import { FakeChain, logs } from "./support/fake-chain.js";
 import { FakeWorldId } from "./support/world-id.js";
+import { campaignInput } from "./support/campaign.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const CONTRACT = "0x" + "c0".repeat(20);
@@ -47,27 +48,7 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-const draft = {
-  advertiser: ADVERTISER,
-  contentUrl: "https://example.com/sponsored",
-  rewardPerCompletion: "1000000",
-  maxCompletions: 10,
-  startAt: "2026-10-05T10:15:00.000Z",
-  endAt: "2026-10-05T11:15:00.000Z",
-  mission: {
-    questions: [
-      {
-        id: "q1",
-        prompt: "Pick a",
-        choices: [
-          { id: "a", label: "A" },
-          { id: "b", label: "B" },
-        ],
-      },
-    ],
-    answerKey: { q1: "a" },
-  },
-};
+const draft = campaignInput({ advertiser: ADVERTISER });
 
 const CONFIRMATIONS = 2;
 const START = Date.parse(draft.startAt) / 1000;
