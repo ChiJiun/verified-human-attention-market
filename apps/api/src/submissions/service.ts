@@ -1,6 +1,23 @@
 import { randomUUID } from "node:crypto";
 
+import type { FastifyBaseLogger } from "fastify";
+
 import type { CampaignRepository } from "../campaigns/repository.js";
+import type { ClaimRepository } from "../claims/repository.js";
+import {
+  claimRefusal,
+  type ClaimOutcome,
+  type ClaimPreparation,
+  type ClaimSigning,
+} from "../claims/service.js";
+import type { SignedClaim } from "../claims/signer.js";
+import type { PersistenceScope } from "../db/client.js";
+import type { Deployment } from "@vham/shared/deployment";
+
+import {
+  isRetiredDeployment,
+  type CampaignRecord,
+} from "../campaigns/types.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
 import { IdempotencyConflictError } from "../persistence/errors.js";
 import {
@@ -28,8 +45,34 @@ export const MAX_ATTEMPTS_PER_ELIGIBILITY = 2;
 
 export interface SubmissionServiceDependencies {
   campaigns: CampaignRepository;
+  /** Configured deployment; campaigns linked elsewhere are retired. */
+  deployment: Deployment | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
   eligibility: EligibilityRepository;
   submissions: SubmissionRepository;
+  claims: {
+    within(scope: PersistenceScope): Pick<ClaimRepository, "issueOnce">;
+  };
+  prepareClaim:
+    | ((
+        campaign: CampaignRecord,
+        claimantAddress: string,
+      ) => Promise<ClaimPreparation>)
+    | null;
+  /**
+   * Called once with the outcome of each acceptance-time authorization
+   * attempt (#89): a refused preparation, a refused signature, or a signature
+   * stored with the accepted completion.
+   */
+  observeClaim?: (
+    campaignId: string,
+    outcome: ClaimOutcome,
+    log?: FastifyBaseLogger,
+  ) => void;
   now: () => Date;
   maxAttempts?: number;
   quality?: QualityConfig;
@@ -46,10 +89,25 @@ export type SubmissionFailureCode =
   | "CAMPAIGN_NOT_ACTIVE"
   | "CAMPAIGN_NOT_STARTED"
   | "CAMPAIGN_ENDED"
-  | "MALFORMED_ANSWERS";
+  | "MALFORMED_ANSWERS"
+  | "CHAIN_HALTED"
+  | "CHAIN_UNAVAILABLE"
+  // Authorization refused at acceptance (nothing was recorded).
+  | "CAMPAIGN_CAP_REACHED"
+  | "ALREADY_CLAIMED"
+  | "DAILY_LIMIT_REACHED"
+  | "SIGNER_UNAVAILABLE"
+  | "SIGNER_MISMATCH"
+  | "AUTHORIZATION_UNAVAILABLE";
 
 export type SubmissionOutcome =
-  | { ok: true; submission: SubmissionRecord; created: boolean }
+  | {
+      ok: true;
+      submission: SubmissionRecord;
+      created: boolean;
+      /** Signed with a new acceptance; null for replays or without a signer. */
+      claim: SignedClaim | null;
+    }
   | { ok: false; status: number; code: SubmissionFailureCode };
 
 /** Rejections that are not genuine attempts and are therefore not stored. */
@@ -76,11 +134,6 @@ function canonicalAnswers(raw: unknown) {
   });
 }
 
-/**
- * Engagement submission: eligibility (World ID, #9) + deterministic verifier
- * (#15) + idempotent persistence (#8). Claim authorization is issued
- * separately for accepted submissions (#10).
- */
 export async function submitCompletion(
   dependencies: SubmissionServiceDependencies,
   input: {
@@ -89,6 +142,7 @@ export async function submitCompletion(
     claimantAddress: string;
     idempotencyKey: string;
     answers: unknown;
+    log?: FastifyBaseLogger;
   },
 ): Promise<SubmissionOutcome> {
   const claimantAddress = input.claimantAddress.toLowerCase();
@@ -112,13 +166,22 @@ export async function submitCompletion(
       return { ok: false, status: 409, code: "IDEMPOTENCY_CONFLICT" };
     }
 
-    return { ok: true, submission: existing, created: false };
+    return { ok: true, submission: existing, created: false, claim: null };
   }
 
   const campaign = await dependencies.campaigns.getById(input.campaignId);
 
   if (!campaign) {
     return { ok: false, status: 404, code: "CAMPAIGN_NOT_FOUND" };
+  }
+
+  // Its rewards could not be signed for on the configured contract.
+  if (isRetiredDeployment(campaign, dependencies.deployment)) {
+    return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+  }
+
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
   }
 
   const mission = await dependencies.campaigns.getMission(campaign.id);
@@ -162,6 +225,23 @@ export async function submitCompletion(
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
+  let signing: ClaimSigning = { state: "unconfigured" };
+  if (dependencies.prepareClaim) {
+    const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
+    if (!prepared.ok) {
+      dependencies.observeClaim?.(campaign.id, prepared, input.log);
+      return {
+        ok: false,
+        status: prepared.status,
+        code: prepared.code as SubmissionFailureCode,
+      };
+    }
+    if (!prepared.payable) {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
+    signing = prepared.signing;
+  }
+
   const evaluation = evaluateSubmission(mission, input.answers, {
     now,
     campaign,
@@ -195,6 +275,9 @@ export async function submitCompletion(
     quality,
   );
 
+  let signed: SignedClaim | null = null;
+  let created = false;
+
   try {
     const result = await dependencies.submissions.recordIdempotent({
       id: randomUUID(),
@@ -209,10 +292,41 @@ export async function submitCompletion(
       answers: evaluation.answers,
       qualityFlags,
       createdAt: now,
+      ...(evaluation.result === "accepted" && signing.state === "ready"
+        ? {
+            // Acceptance means payable: sign in the same transaction and
+            // roll the acceptance back if no authorization can be issued.
+            beforeCommit: async (submission, scope) => {
+              const issued = await dependencies.claims
+                .within(scope)
+                .issueOnce({ ...signing.terms, submissionId: submission.id });
+              signed = issued.claim;
+              created = issued.created;
+            },
+          }
+        : {}),
     });
 
-    return { ok: true, ...result };
+    // Observed only once the acceptance and its signature are committed.
+    if (signed) {
+      dependencies.observeClaim?.(
+        campaign.id,
+        { ok: true, claim: signed, created },
+        input.log,
+      );
+    }
+    return { ok: true, ...result, claim: signed };
   } catch (error) {
+    const refusal = claimRefusal(error);
+    if (refusal) {
+      dependencies.observeClaim?.(campaign.id, refusal, input.log);
+      return {
+        ok: false,
+        status: refusal.status,
+        code: refusal.code as SubmissionFailureCode,
+      };
+    }
+
     if (error instanceof DuplicateCompletionError) {
       return { ok: false, status: 409, code: "ALREADY_COMPLETED" };
     }

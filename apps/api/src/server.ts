@@ -4,6 +4,7 @@ import { PostgresApiClientRepository } from "./api-clients/repository.js";
 import { DEFAULT_RATE_LIMITS } from "./api-clients/routes.js";
 import { PostgresAuthRepository } from "./auth/repository.js";
 import { verifyEoaSignature } from "./auth/siwe.js";
+import { parseWebOrigin } from "./auth/web-origin.js";
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import { PostgresClaimRepository } from "./claims/repository.js";
 import {
@@ -12,7 +13,11 @@ import {
   type ClaimSigner,
 } from "./claims/signer.js";
 import { buildApp } from "./app.js";
-import { loadChainConfig, verifyChainConnection } from "./chain/config.js";
+import {
+  loadChainConfig,
+  parseConfirmations,
+  verifyChainConnection,
+} from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
@@ -20,13 +25,7 @@ import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import { PostgresModerationRepository } from "./moderation/repository.js";
 import type { ModerationMode } from "./moderation/routes.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
-import { createRpSigner } from "./identity/rp-signature.js";
-import {
-  HttpWorldIdVerifier,
-  LocalSimulatedWorldIdVerifier,
-  UnconfiguredWorldIdVerifier,
-  type WorldIdEnvironment,
-} from "./identity/world-id.js";
+import { loadWorldIdConfig } from "./identity/world-id-config.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -54,31 +53,7 @@ if (participantKeySecret !== null && participantKeySecret.length < 32) {
   throw new Error("PARTICIPANT_KEY_SECRET must be at least 32 characters");
 }
 
-const worldIdEnvironment = (process.env.WORLD_ID_ENVIRONMENT ??
-  "production") as WorldIdEnvironment;
-
-if (!["production", "staging"].includes(worldIdEnvironment)) {
-  throw new Error("WORLD_ID_ENVIRONMENT must be production or staging");
-}
-
-const worldIdRpId = process.env.WORLD_ID_RP_ID;
-const worldIdMode = process.env.WORLD_ID_MODE ?? "live";
-
-if (!["live", "simulated"].includes(worldIdMode)) {
-  throw new Error("WORLD_ID_MODE must be live or simulated");
-}
-
-// Simulation proves nothing: the constructor throws unless the chain is the
-// local anvil chain, so the API cannot start this way anywhere with value.
-const worldIdVerifier =
-  worldIdMode === "simulated"
-    ? new LocalSimulatedWorldIdVerifier(chainId)
-    : worldIdRpId
-      ? new HttpWorldIdVerifier({
-          rpId: worldIdRpId,
-          environment: worldIdEnvironment,
-        })
-      : new UnconfiguredWorldIdVerifier();
+const worldId = loadWorldIdConfig(process.env, chainId);
 
 // Optional bearer token for GET /metrics (scraper credential, not a secret
 // worth a key manager, but keep it out of logs and the repository).
@@ -154,18 +129,6 @@ if (!Number.isSafeInteger(trustProxy) || trustProxy < 0) {
   throw new Error("TRUST_PROXY_HOPS must be a non-negative integer");
 }
 
-// IDKit RP signing (#12). Needs both the RP id and the server-only key.
-const rpSigningKey = process.env.RP_SIGNING_KEY || null;
-const worldIdRequest =
-  worldIdMode === "live" && worldIdRpId && rpSigningKey
-    ? {
-        signer: createRpSigner(rpSigningKey),
-        rpId: worldIdRpId,
-        appId: process.env.WORLD_ID_APP_ID || null,
-        environment: worldIdEnvironment,
-      }
-    : null;
-
 const database = createDatabase(databaseUrl);
 const campaignRepository = new PostgresCampaignRepository(database.db);
 // Claim signer custody (#23). Production keys live in a KMS/HSM behind a
@@ -202,6 +165,7 @@ if (!/^[1-9][0-9]{0,30}$/.test(dailyPayoutLimit)) {
 // Sign-In with Ethereum (#37). Without SIWE_DOMAIN, sign-in is disabled and
 // every advertiser-only endpoint returns 401 (fail closed).
 const siweDomain = process.env.SIWE_DOMAIN || null;
+const webOrigin = parseWebOrigin(process.env.WEB_ORIGIN, siweDomain);
 // With an RPC, smart-contract wallets (ERC-1271/6492) can sign in too.
 const publicClient = chainConfig
   ? createPublicClient({ transport: http(chainConfig.rpcUrl) })
@@ -210,6 +174,7 @@ const publicClient = chainConfig
 const app = buildApp({
   authRepository: new PostgresAuthRepository(database.db),
   siwe: siweDomain ? { domain: siweDomain, chainId } : null,
+  webOrigin,
   verifySignature: publicClient
     ? (input) => publicClient.verifyMessage(input)
     : verifyEoaSignature,
@@ -219,8 +184,7 @@ const app = buildApp({
   claimRepository: new PostgresClaimRepository(database.db),
   claimSigner,
   dailyPayoutLimitAtomic: BigInt(dailyPayoutLimit),
-  worldIdVerifier,
-  worldIdRequest,
+  worldId: worldId.config,
   participantKeySecret,
   chainId,
   metricsToken,
@@ -233,6 +197,8 @@ const app = buildApp({
   chain: chainConfig
     ? {
         rpc: new JsonRpcClient(chainConfig.rpcUrl),
+        // Links wait for the same depth the indexer treats as final.
+        confirmations: parseConfirmations(process.env.INDEXER_CONFIRMATIONS),
         chain: {
           chainId: chainConfig.chainId,
           contractAddress: chainConfig.campaignManagerAddress,
@@ -257,14 +223,18 @@ if (!metricsToken) {
 
 if (!siweDomain) {
   app.log.warn("SIWE sign-in is disabled: set SIWE_DOMAIN");
+} else if (!webOrigin && chainId !== 31337) {
+  app.log.warn(
+    "WEB_ORIGIN is not set: a browser that sends no Fetch Metadata cannot change state with a cookie session",
+  );
 }
 
-if (worldIdMode === "simulated") {
-  app.log.warn("WORLD_ID_MODE=simulated: local anvil demo only");
-} else if (!worldIdRpId || !participantKeySecret) {
-  app.log.warn(
-    "World ID eligibility is disabled: set WORLD_ID_RP_ID and PARTICIPANT_KEY_SECRET",
-  );
+for (const warning of worldId.warnings) {
+  app.log.warn(warning);
+}
+
+if (!participantKeySecret) {
+  app.log.warn("World ID eligibility is disabled: set PARTICIPANT_KEY_SECRET");
 }
 
 const port = Number(process.env.API_PORT ?? 3001);

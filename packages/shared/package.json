@@ -15,6 +15,18 @@
     "./chains": {
       "types": "./dist/chains.d.ts",
       "default": "./dist/chains.js"
+    },
+    "./deployment": {
+      "types": "./dist/deployment.d.ts",
+      "default": "./dist/deployment.js"
+    },
+    "./settlement": {
+      "types": "./dist/settlement.d.ts",
+      "default": "./dist/settlement.js"
+    },
+    "./world-id": {
+      "types": "./dist/world-id.d.ts",
+      "default": "./dist/world-id.js"
     }
   },
   "scripts": {
@@ -25,8 +37,12 @@
   "dependencies": {
     "zod": "4.6.5"
   },
+  "peerDependencies": {
+    "viem": "2.38.6"
+  },
   "devDependencies": {
     "typescript": "5.9.3",
+    "viem": "2.38.6",
     "vitest": "5.0.3"
   }
 }

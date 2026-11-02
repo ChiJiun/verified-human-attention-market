@@ -3,6 +3,8 @@
 > Scope: POC → MVP  
 > Status: Draft  
 > This is not a security audit.
+>
+> Implementation status reviewed: 2026-10-19
 
 ## Assets
 
@@ -39,6 +41,8 @@
 - campaign/action-specific replay rules；
 - behavioral fraud signals later。
 
+**Implemented (#9, ADR-0007):** one World ID action per campaign, World ID 4.0 proofs only (one person's 3.0 and 4.0 nullifiers differ, so the API refuses 3.0 results), backend verification against the v4 API, `UNIQUE(campaign_id, participant_key)` and `UNIQUE(campaign_id, claimant_address)`, one accepted completion per human (partial unique index), one paid claim per wallet on-chain.
+
 **Residual risk:** 真人帳號出租、多人協同、verification market。
 
 ## T-002 Proof Replay
@@ -52,6 +56,8 @@
 - campaign-specific policy；
 - never issue claim solely from client assertion。
 
+**Implemented:** the IDKit result is forwarded unchanged to World's verify endpoint and only a nullifier that World verified is accepted; replaying the same proof returns the same eligibility (idempotent) and can never bind a second wallet. Since 2026-10-21 (#71) the proof is also bound to the claimant wallet: the page opens IDKit with `signal = keccak256(campaign, wallet, salt)` for a 32-byte salt the browser draws, posts the salt with the proof, and a result whose credentials do not all carry that signal's hash is refused before World is called (`403 SIGNAL_MISMATCH`, ADR-0007 update 2026-10-21). Only the `proof_of_human` credential (issuer schema id 1) is accepted, so a second credential type cannot add a second nullifier for the same human. A proof relayed from another wallet, or produced without a signal, therefore cannot create eligibility, provided World's verify endpoint refuses a 4.0 proof whose `signal_hash` was altered. IDKit 4.4.0 fills `signal_hash` itself and the official docs do not state that World checks it, so the #13 Base Sepolia swap test is a hard condition before #71 closes (ADR-0007). The salt leaves the browser only in that one request and no endpoint returns it, so World cannot match `signal_hash` against public on-chain claimants. Residual risk: a phishing page that opens IDKit with its own salt binds the proof to the wallet it names; the signal binds a proof to a wallet, not to the person's intent.
+
 ## T-003 Claim Replay
 
 **Threat:** 同一 reward authorization 多次領取。
@@ -62,6 +68,8 @@
 - on-chain consumed nonce mapping；
 - signed campaign + claimant + amount + expiry；
 - tests for replay。
+
+**Implemented:** `consumedNonces`, `claimedWallet`, EIP-712 domain binding, `issuedAt`/`expiresAt` with `MAX_AUTHORIZATION_TTL`, and `draftRef` (ADR-0011) so an authorization cannot be redeemed against a campaign another draft obtained under the same id after a deep reorg. Tests: `test_DuplicateNonceRejected`, `test_OneWalletCannotClaimTwice`, `test_ClaimRejectsAnotherDraftsAuthorization`, `test_AuthorizationForReorgedDraftCannotClaimTheNewCampaign`.
 
 ## T-004 Backend Signer Compromise
 
@@ -99,6 +107,8 @@
 - simple contract state machine；
 - avoid duplicate source of truth。
 
+**Implemented:** `invariant_BudgetIsConserved`, `invariant_PaidRewardsNeverExceedFunding`, `invariant_CompletionsStayWithinCap` (stateful, 128 runs × 64 calls in CI); refund waits one authorization TTL after the issuance deadline; `checkReconciliation` compares contract state, indexed events and issued authorizations and alerts on any mismatch.
+
 ## T-006 Reentrancy / Token Interaction Bug
 
 **Threat:** malicious or unexpected token behavior around transfers。
@@ -109,6 +119,8 @@
 - Checks-Effects-Interactions；
 - standard audited primitives where appropriate；
 - reentrancy protection if contract flow requires it。
+
+**Implemented:** one immutable `rewardToken`; `claim` and `refundUnusedBudget` update state (nonce, wallet, accounting, status) before the external token call (checks-effects-interactions); transfers use a low-level call that tolerates tokens returning no data but reverts on `false`. There is no reentrancy guard; a reentrant USDC call would find the nonce already consumed and the wallet already marked. Residual: the token is trusted (official USDC only).
 
 ## T-007 Engagement Automation
 
@@ -121,6 +133,8 @@
 - rate limits；
 - behavior signals；
 - advertiser acceptance / fraud analytics。
+
+**Implemented:** two attempts per verified human per campaign, answer key never served, deterministic grading, campaign-scoped quality flags (`FAST_COMPLETION`, `PASSED_ON_RETRY`, `CAMPAIGN_BURST`, ADR-0009) shown only to the advertiser. Residual: a bot driven by a verified human still passes a short quiz; see T-017.
 
 ## T-008 Human Farming
 
@@ -144,6 +158,8 @@
 - server-issued session/challenge；
 - cross-check multiple signals；
 - never authorize payment on dwell time alone。
+
+**Implemented:** the API accepts no client telemetry at all; the only engagement evidence is the server-graded answers plus server-side timestamps (`verifiedAt`, `createdAt`).
 
 ## T-010 Advertiser Malicious Content
 
@@ -211,6 +227,8 @@
 - idempotency；
 - never treat timeout as definitive failure without reconciliation。
 
+**Implemented (#16, #17, ADR-0011):** events are confirmed only `INDEXER_CONFIRMATIONS` deep; the unconfirmed tail is re-read every pass and reorged events are orphaned; logs read across a reorg are never committed; a reorg deeper than the confirmation depth halts the deployment (`indexer_halts`) so no participation or signing continues on stale links, and `reorg:recover` re-verifies every link against the contract before the index is rebuilt; drafts link by `draftRef` so a lost RPC response never leads to a second creation; the API reads the contract live before accepting a completion or signing. Residual: recovery is manual and the API is unavailable to participants during a halt.
+
 ## T-014 Admin Abuse
 
 **Threat:** privileged operator changes campaign or drains funds。
@@ -227,31 +245,6 @@
 
 **Implemented (#24):** moderation operators are a separate SIWE role with no access to funds or settlement data; every action needs a reason and is appended to `moderation_actions` (UPDATE/DELETE rejected by trigger); submission results cannot be rewritten or deleted (trigger); settlement amounts are re-derived from chain events. Permissions are documented in `docs/operations/MODERATION.md`. Owner/signer custody remains #23.
 
-## T-017 Quality-Signal and Reputation Manipulation
-
-**Threat:** farmers learn the quality rules and pace themselves (wait out `FAST_COMPLETION`, never retry, spread across time to avoid `CAMPAIGN_BURST`); wash behaviour builds a good score to be cashed out later; a competitor floods a campaign to make its completions look flagged.
-
-**Mitigation (#25, ADR-0009):**
-
-- Flags are never shown to participants and do not change payout, so there is nothing to win by gaming them in the MVP.
-- Signals are derived from stored facts and are re-derivable; thresholds are configuration, not code.
-- No cross-campaign reputation exists, so there is no score to farm or wash; one requires its own ADR with a manipulation model.
-- A flood still needs a verified human per submission (World ID) and is visible as `CAMPAIGN_BURST` plus rate-limit metrics.
-
-**Residual risk:** careful farmers are not detected; the signals are a baseline, not proof of attention.
-
-## T-016 API Key Abuse / Scraping
-
-**Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
-
-**Mitigation (implemented, #26):**
-
-- Keys are scoped (`campaigns:write`, `analytics:read`), bound to one advertiser and environment, stored as `sha256` only, and can never reach admin, key-management or session endpoints.
-- Owner and operator revocation take effect on the next request; creation and revocation are audit-logged.
-- Per-key, per-IP and stricter per-route (sign-in, eligibility, reports) rate limits with metrics.
-
-**Residual risk:** limits are per instance and per IP; distributed abuse needs an edge/WAF limit in front of the API.
-
 ## T-015 Wallet Impersonation / Session Theft
 
 **Threat:** someone creates campaigns or reads analytics as another advertiser by claiming their address, replays a captured sign-in message, or steals a session token.
@@ -265,7 +258,46 @@
 - Advertiser-only endpoints require the session wallet to equal the campaign advertiser.
 - Fail closed: without `SIWE_DOMAIN`, nobody can sign in.
 
-**Residual risk:** the bearer token lives in browser memory and is exposed to XSS. Before beta, keep a strict CSP and consider HttpOnly cookies with CSRF protection. Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
+**Mitigation (implemented, #72):**
+
+- The web app signs in with `transport: "cookie"`: the token is an `__Host-vham_session` cookie with `HttpOnly; Secure; SameSite=Strict; Path=/`, never returned in a body, so page scripts cannot read it. After sign-in the page reads `GET /v1/auth/session`, so a browser that refused the cookie gets an error instead of a page that looks signed in. Scripts and operators keep the bearer transport.
+- Any request other than `GET`, `HEAD` or `OPTIONS` that carries the session cookie, whatever its value and with or without an `Authorization` header, must be same-origin (`Sec-Fetch-Site: same-origin`). When the browser sends no Fetch Metadata, `Origin` must equal `WEB_ORIGIN` (optional, host-bound to `SIWE_DOMAIN`). Anything else is `403 CSRF_REJECTED`, logged as `csrf_rejected` without the requesting origin. The cookie sign-in itself is subject to the same rule (login CSRF). An `Authorization` header is never mixed with the cookie, and API keys stay header-only.
+- Key management (`/v1/api-clients*`) and operator routes (`/v1/admin/*`) refuse a credential from the cookie (`403 COOKIE_SESSION_NOT_ALLOWED`), so script on the page cannot mint an API key or act as an operator with it.
+- Logout revokes every session the request presents (a bearer token and every session cookie value) and clears the cookie only when the request carried it, so a cross-site form cannot sign the browser out. A new cookie sign-in revokes the cookie session it replaces, and a `401` for a cookie credential clears the cookie. Responses to requests that carry the cookie are `Cache-Control: no-store`. Every API response is `X-Content-Type-Options: nosniff`, and logs redact `Set-Cookie`.
+- The web app sets a strict per-request Content-Security-Policy (`script-src 'self' 'nonce-…' 'strict-dynamic'`, `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, with World ID's bridge and font host allowlisted) plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`. CI starts the production build and checks that every script on each page carries that request's nonce (`apps/web/scripts/csp-smoke.mjs`). Campaign and submission ids are validated as UUIDs before they reach a request path, and the web app's API client accepts only fixed routes or paths built from validated ids.
+
+**Residual risk:**
+
+- Script that runs on the web app's origin (an XSS that gets past the CSP, or a compromised dependency) can act as the signed-in advertiser while the page is open: create, publish and link campaigns and read analytics, because same-origin requests carry the cookie. It cannot read the token, mint an API key or reach operator routes with the cookie. It can still ask the wallet for a new SIWE signature with the bearer transport, and the user then sees a wallet prompt for this site's domain.
+- `style-src` keeps `'unsafe-inline'` for IDKit's shadow-root styles.
+- Next prerenders the root error page (`/_global-error`, shown after an uncaught render error) at build time, so its scripts have no nonce and the CSP blocks them. Its text and its plain-form Reload button still work. The policy does not add `'unsafe-inline'` for it.
+- A browser that ignores `SameSite` and sends no Fetch Metadata is covered only by the `Origin` check, which needs `WEB_ORIGIN` set.
+- Participant endpoints rely on World ID wallet binding plus the contract's `msg.sender == claimant` check rather than a session.
+
+## T-016 API Key Abuse / Scraping
+
+**Threat:** a leaked or abused integration key creates campaigns or reads analytics as the advertiser; anonymous clients flood sign-in, eligibility or report endpoints.
+
+**Mitigation (implemented, #26):**
+
+- Keys are scoped (`campaigns:write`, `analytics:read`), bound to one advertiser and environment, stored as `sha256` only, and can never reach admin, key-management or session endpoints.
+- Owner and operator revocation take effect on the next request; creation and revocation are audit-logged.
+- Per-key, per-IP and stricter per-route (sign-in, eligibility, reports) rate limits with metrics.
+
+**Residual risk:** limits are per instance and per IP; distributed abuse needs an edge/WAF limit in front of the API.
+
+## T-017 Quality-Signal and Reputation Manipulation
+
+**Threat:** farmers learn the quality rules and pace themselves (wait out `FAST_COMPLETION`, never retry, spread across time to avoid `CAMPAIGN_BURST`); wash behaviour builds a good score to be cashed out later; a competitor floods a campaign to make its completions look flagged.
+
+**Mitigation (#25, ADR-0009):**
+
+- Flags are never shown to participants and do not change payout, so there is nothing to win by gaming them in the MVP.
+- Signals are derived from stored facts and are re-derivable; thresholds are configuration, not code.
+- No cross-campaign reputation exists, so there is no score to farm or wash; one requires its own ADR with a manipulation model.
+- A flood still needs a verified human per submission (World ID) and is visible as `CAMPAIGN_BURST` plus rate-limit metrics.
+
+**Residual risk:** careful farmers are not detected; the signals are a baseline, not proof of attention.
 
 # POC Risk Limits
 
@@ -281,12 +313,15 @@ Before production:
 
 # Security Exit Gate for Mainnet Beta
 
-- [ ] Contract unit tests pass.
-- [ ] Invariant/fuzz tests pass.
-- [ ] Replay tests pass.
-- [ ] Access control review complete.
-- [ ] Signer/key handling documented.
-- [ ] Monitoring alerts exist.
-- [ ] Pause and incident runbook tested.
-- [ ] Financial exposure is capped.
+Status 2026-10-19 (details in `docs/operations/PRODUCTION_READINESS.md`, #29):
+
+- [x] Contract unit tests pass (CI job `solidity`).
+- [x] Invariant/fuzz tests pass (CI).
+- [x] Replay tests pass (Foundry + API).
+- [x] Access control review complete for the current contract (owner: pause/unpause, signer rotation, ownership transfer only; ADR-0008). To be repeated by the independent reviewer.
+- [x] Signer/key handling documented (ADR-0008, RUNBOOK).
+- [x] Monitoring alerts exist (`docs/operations/alerts.yml`).
+- [x] Pause and incident runbook tested (Foundry, e2e drill; INCIDENT_RESPONSE.md).
+- [x] Financial exposure is capped (immutable limits, 24 h payout limit; Base mainnet not configurable).
 - [ ] Independent review/audit performed when fund exposure justifies it.
+- [ ] Named operational owner / on-call.

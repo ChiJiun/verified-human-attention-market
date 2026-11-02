@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
+import { buildApp } from "../src/app.js";
 import {
   ChainConfigError,
   loadChainConfig,
+  parseConfirmations,
   verifyChainConnection,
 } from "../src/chain/config.js";
+import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import { FakeChain } from "./support/fake-chain.js";
 
 const valid = {
   EVM_CHAIN_ID: "84532",
@@ -89,6 +93,13 @@ function rpcStub(results: Record<string, unknown>) {
     };
     const key =
       method === "eth_getCode" ? `${method}:${String(params[0])}` : method;
+    if (!(key in results)) {
+      // Like a reverting eth_call on a contract without the function.
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: 3 } }),
+        { status: 200 },
+      );
+    }
     return new Response(
       JSON.stringify({ jsonrpc: "2.0", id: 1, result: results[key] }),
       {
@@ -109,10 +120,64 @@ describe("verifyChainConnection", () => {
           eth_chainId: "0x14a34",
           [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
           [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+          eth_call: `0x${"0".repeat(64)}`,
         }),
       ),
     ).resolves.toBeUndefined();
   });
+
+  it("refuses a CampaignManager deployed before ADR-0011", async () => {
+    // Code exists, but campaignIdByDraft reverts.
+    await expect(
+      verifyChainConnection(
+        config,
+        rpcStub({
+          eth_chainId: "0x14a34",
+          [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
+          [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+        }),
+      ),
+    ).rejects.toThrow(/before ADR-0011/);
+  });
+
+  /** Answers chain id and code; eth_call gets `callResponse`. */
+  function providerFailing(callResponse: () => Response) {
+    const stub = rpcStub({
+      eth_chainId: "0x14a34",
+      [`eth_getCode:${config.campaignManagerAddress}`]: "0x6080",
+      [`eth_getCode:${config.usdcAddress}`]: "0x6080",
+    });
+    return (async (url: string, init: RequestInit) => {
+      const { method } = JSON.parse(init.body as string) as { method: string };
+      return method === "eth_call" ? callResponse() : stub(url, init);
+    }) as unknown as typeof fetch;
+  }
+
+  it.each([
+    ["HTTP 503", () => new Response("unavailable", { status: 503 })],
+    [
+      "a rate-limit error",
+      () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32005, message: "limit exceeded" },
+          }),
+          { status: 200 },
+        ),
+    ],
+  ])(
+    "reports %s on the version probe as a provider problem, not an old contract",
+    async (_label, callResponse) => {
+      const result = verifyChainConnection(
+        config,
+        providerFailing(callResponse),
+      );
+      await expect(result).rejects.toThrow(/provider problem/);
+      await expect(result).rejects.not.toThrow(/before ADR-0011/);
+    },
+  );
 
   it("fails when the RPC is a different chain", async () => {
     await expect(
@@ -131,4 +196,41 @@ describe("verifyChainConnection", () => {
       ),
     ).rejects.toThrow(/no contract code/);
   });
+});
+
+describe("INDEXER_CONFIRMATIONS (API and worker)", () => {
+  it("defaults to 10 and accepts positive integers", () => {
+    expect(parseConfirmations(undefined)).toBe(10);
+    expect(parseConfirmations("")).toBe(10);
+    expect(parseConfirmations("3")).toBe(3);
+  });
+
+  it.each(["0", "-1", "abc", "1.5", "1e3", " "])(
+    "refuses %j at startup instead of linking unconfirmed creations or failing later",
+    (value) => {
+      expect(() => parseConfirmations(value)).toThrow(ChainConfigError);
+    },
+  );
+
+  it.each([0, -1, 1.5, Number.NaN])(
+    "buildApp refuses chain.confirmations = %s",
+    (confirmations) => {
+      const contract = "0x" + "c0".repeat(20);
+      expect(() =>
+        buildApp({
+          chain: {
+            rpc: new FakeChain(contract),
+            chain: {
+              chainId: 84532,
+              contractAddress: contract,
+              usdcAddress: "0x" + "d0".repeat(20),
+            },
+            events: new InMemoryChainEventRepository(),
+            now: () => new Date(),
+            confirmations,
+          },
+        }),
+      ).toThrow(/confirmations must be a positive integer/);
+    },
+  );
 });

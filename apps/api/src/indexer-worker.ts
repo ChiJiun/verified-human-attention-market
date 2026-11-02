@@ -2,12 +2,13 @@ import { createServer } from "node:http";
 
 import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import {
-  autoLinkCreatedCampaigns,
-  syncCampaignStatuses,
-} from "./campaigns/onchain.js";
-import { loadChainConfig } from "./chain/config.js";
+  loadChainConfig,
+  parseConfirmations,
+  verifyChainConnection,
+} from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
-import { indexOnce, ReorgBeyondConfirmationsError } from "./chain/indexer.js";
+import { ReorgBeyondConfirmationsError } from "./chain/indexer.js";
+import { recordHaltWithRetry, runWorkerPass } from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { MetricsRegistry } from "./observability/metrics.js";
@@ -29,13 +30,12 @@ if (!databaseUrl || !chainConfig) {
   );
 }
 
-const confirmations = Number(process.env.INDEXER_CONFIRMATIONS ?? 10);
+// Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
+await verifyChainConnection(chainConfig);
+
+const confirmations = parseConfirmations(process.env.INDEXER_CONFIRMATIONS);
 const pollMs = Number(process.env.INDEXER_POLL_MS ?? 5_000);
 const maxBlockRange = BigInt(process.env.INDEXER_MAX_BLOCK_RANGE ?? 2_000);
-
-if (!Number.isSafeInteger(confirmations) || confirmations < 1) {
-  throw new Error("INDEXER_CONFIRMATIONS must be a positive integer");
-}
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresChainEventRepository(database.db);
@@ -160,11 +160,37 @@ const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
     }),
   );
 
+// A recorded deep reorg must be recovered first (ADR-0011). After
+// `reorg:recover --apply` the worker rebuilds; the halt stays until verified.
+const existingHalt = await repository.getHalt(scope);
+if (existingHalt?.recoveryAppliedAt) {
+  log("warn", "rebuilding the index after reorg recovery", {
+    block: existingHalt.block.toString(),
+    note: "Participation stays halted until the rebuilt index and every link verify.",
+  });
+} else if (existingHalt) {
+  log("error", "indexer halted by a reorg beyond the confirmation depth", {
+    block: existingHalt.block.toString(),
+    since: existingHalt.at.toISOString(),
+    action:
+      "Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+  });
+  process.exit(1);
+}
+
 let backoffMs = pollMs;
 
 while (!stopping) {
   try {
-    const result = await indexOnce(rpc, repository, config);
+    const pass = await runWorkerPass({
+      rpc,
+      events: repository,
+      campaigns,
+      config,
+      usdcAddress: chainConfig.usdcAddress,
+      now,
+    });
+    const { index: result, autoLinked, statuses, recovery } = pass;
     gauges.head.set(Number(result.head));
     gauges.confirmed.set(Number(result.confirmedThrough));
     gauges.lag.set(Number(result.head - result.confirmedThrough));
@@ -177,26 +203,34 @@ while (!stopping) {
       skippedLogs: result.skippedLogs,
     });
 
-    // Reconcile campaigns from confirmed events (issue #16).
-    const autoLinked = await autoLinkCreatedCampaigns({
-      campaigns,
-      events: repository,
-      rpc,
-      chain: { ...scope, usdcAddress: chainConfig.usdcAddress },
-      now,
-    });
-    const statuses = await syncCampaignStatuses({
-      campaigns,
-      events: repository,
-      chain: scope,
-      now,
-    });
-
     if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
       log("info", "campaigns reconciled", {
         autoLinked: autoLinked.linked,
         statusChanges: statuses.updated,
       });
+    }
+
+    // ADR-0011: a link whose canonical creation names another draft was
+    // left behind by a reorg deeper than its confirmation; it is released.
+    if (autoLinked.relinked.length > 0 || statuses.orphanedLinks.length > 0) {
+      log("warn", "orphaned on-chain links released or skipped", {
+        releasedCampaignIds: autoLinked.relinked,
+        orphanedCampaignIds: statuses.orphanedLinks,
+      });
+    }
+
+    // ADR-0011: after `reorg:recover --apply` the halt is cleared only once
+    // the rebuilt index has caught up and every link verifies.
+    if (recovery?.cleared) {
+      log("info", "reorg recovery verified; participation resumes");
+    } else if (recovery) {
+      log(
+        "warn",
+        "reorg recovery not verified yet; participation stays halted",
+        {
+          reason: recovery.reason,
+        },
+      );
     }
 
     if (autoLinked.ambiguous.length > 0) {
@@ -269,8 +303,32 @@ while (!stopping) {
     });
 
     if (error instanceof ReorgBeyondConfirmationsError) {
-      // Do not guess: settlement data may be wrong. Requires an operator.
-      log("error", error.message, { block: error.blockNumber.toString() });
+      // Do not guess: settlement data may be wrong. Record the halt so the
+      // API stops all participation and signing for this deployment, then
+      // stop. Requires an operator (ADR-0011).
+      // The halt must be persisted: retry until it is. If the worker is
+      // stopped first, the next start detects the same reorg again.
+      await recordHaltWithRetry(repository, scope, error.blockNumber, {
+        now: () => new Date(),
+        stopping: () => stopping,
+        onFailure: (attempt, haltError) =>
+          log(
+            "error",
+            "COULD NOT RECORD THE REORG HALT; retrying. The API is NOT paused until this succeeds",
+            {
+              attempt,
+              error:
+                haltError instanceof Error
+                  ? haltError.message
+                  : String(haltError),
+            },
+          ),
+      });
+      log("error", error.message, {
+        block: error.blockNumber.toString(),
+        action:
+          "Participation is halted. Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+      });
       break;
     }
 

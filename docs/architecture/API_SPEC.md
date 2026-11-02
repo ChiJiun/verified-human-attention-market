@@ -3,6 +3,8 @@
 > Status: System Design  
 > Style: REST/JSON  
 > Authentication details may evolve before implementation.
+>
+> Reconciled with the routes under `apps/api/src/**/routes.ts` on 2026-10-19. Every error code is catalogued in `apps/api/src/errors/catalog.ts`.
 
 ## Conventions
 
@@ -15,19 +17,73 @@ idempotency and versioning rules: [API_CONTRACT.md](./API_CONTRACT.md) (#26).
 - Dates/times use RFC 3339 externally.
 - Monetary integer fields use atomic units or explicit decimal strings; never floating-point JSON numbers for settlement.
 
-# Authentication (Sign-In with Ethereum, #37)
+# Authentication (Sign-In with Ethereum, #37; browser sessions, #72)
 
 1. `POST /v1/auth/nonce` → `{ nonce, expiresAt }` (single-use, 10 min).
 2. The wallet signs an EIP-4361 message with that nonce, `domain = SIWE_DOMAIN`,
    `chainId = EVM_CHAIN_ID`, `version = 1` and a current `issuedAt`.
-3. `POST /v1/auth/verify { message, signature }` → `{ token, tokenType: "Bearer", address, expiresAt }`.
+3. `POST /v1/auth/verify { message, signature, transport? }` with `transport`
+   `"bearer"` (default) or `"cookie"`:
+   - `bearer` → `{ token, tokenType: "Bearer", address, chainId, expiresAt }`;
+     the caller then sends `Authorization: Bearer <token>`. For scripts,
+     operators and tests.
+   - `cookie` → `{ transport: "cookie", address, chainId, expiresAt }` with
+     `Set-Cookie: __Host-vham_session=<token>; Path=/; Max-Age=<seconds until expiresAt>; HttpOnly; Secure; SameSite=Strict`
+     and `Cache-Control: no-store`. The token never appears in a body. For the
+     web app, which reaches the API same-origin through `/api/*`. A cookie
+     sign-in must pass the CSRF rule below (`403 CSRF_REJECTED`) before the
+     nonce is consumed. A successful cookie sign-in revokes the session of
+     every session cookie the request carried, so the new cookie replaces the
+     old session instead of leaving it valid. The web app then reads
+     `GET /v1/auth/session` to confirm that the browser kept the cookie.
+
+   `400 INVALID_SIGN_IN_REQUEST` for a malformed body, `401` with `INVALID_MESSAGE` / `WRONG_DOMAIN` / `WRONG_CHAIN` / `MESSAGE_NOT_VALID_NOW` / `INVALID_SIGNATURE` / `NONCE_INVALID_OR_USED`.
    The server checks domain, chain, time window (`issuedAt` ≤ now + 60 s,
    `expirationTime` / `notBefore`), the signature (EOA offline; ERC-1271/6492
    smart wallets via RPC when configured) and then **atomically consumes** the
-   nonce, so replays fail with `NONCE_INVALID_OR_USED`.
-4. Send `Authorization: Bearer <token>`. Sessions last up to 12 h (or the
-   message's `expirationTime` if earlier). `GET /v1/auth/session`,
-   `POST /v1/auth/logout` (revokes). Only `sha256(token)` is stored.
+   nonce, so replays fail with `NONCE_INVALID_OR_USED`. A failed sign-in
+   leaves the current session alone.
+4. Credential precedence: an `Authorization` header, when present, is the only
+   credential read. `Bearer vhamk_…` is an API key, so a malformed key is
+   `401 INVALID_API_KEY` on every `/v1` route. Any other value counts only as
+   `Bearer <session token>` with the exact 43-character token. Anything else
+   is `401` on session routes and never falls back to the cookie. Behind an
+   HTTP Basic gate the browser sends `Authorization: Basic …`, so cookie
+   sessions do not work there. Without the header, exactly one well-formed
+   `__Host-vham_session` cookie counts. An API key, a malformed value or
+   duplicate session cookies are no credential, and API keys are
+   header-only. Sessions last up to 12 h (or the message's `expirationTime`
+   if earlier). Only `sha256(token)` is stored.
+5. CSRF rule for the session cookie: a request other than `GET`, `HEAD` or
+   `OPTIONS` that carries the `__Host-vham_session` cookie name, whatever its
+   value and whatever else the request carries, must carry
+   `Sec-Fetch-Site: same-origin`. When the browser sends no Fetch Metadata,
+   `Origin` must equal `WEB_ORIGIN`. Anything else is `403 CSRF_REJECTED`,
+   logged as `event: "csrf_rejected"` with the `Sec-Fetch-Site` value and
+   whether an `Origin` came, never the origin itself. Requests without the
+   session cookie, such as scripts with a bearer token or an API key, are not
+   subject to the rule. Responses to requests that carry the session cookie
+   are `Cache-Control: no-store`. Every API response carries
+   `X-Content-Type-Options: nosniff`.
+
+   `WEB_ORIGIN` is optional. The API validates it at startup as an http(s)
+   origin whose host is `SIWE_DOMAIN`. Without it there is no `Origin`
+   fallback, and off the local chain the API logs a warning at startup.
+6. Key management (`/v1/api-clients*`) and operator routes (`/v1/admin/*`)
+   refuse a credential that comes from the session cookie with
+   `403 COOKIE_SESSION_NOT_ALLOWED`. The web app has no UI for them. Use the
+   bearer transport.
+7. `GET /v1/auth/session` → `{ address, chainId, expiresAt }`, `204` when the
+   request presents no credential, and `401 UNAUTHENTICATED` when it presents
+   one that is not a live session, always with `Cache-Control: no-store`. The
+   web app restores a cookie session with it after a reload. A `401 UNAUTHENTICATED` from this route or from an
+   advertiser-only route clears the cookie (`Max-Age=0`) when the cookie was
+   the credential: expired, revoked or malformed.
+8. `POST /v1/auth/logout` → `204`. It revokes the session of a session token
+   in the `Authorization` header and of every session token among the session
+   cookie values. It sends the clearing `Set-Cookie` (`Max-Age=0`) only when
+   the request carried the session cookie. A cross-site form carries no
+   `SameSite=Strict` cookie, so it cannot sign the browser out.
 
 Advertiser-only endpoints return `401 UNAUTHENTICATED` without a session and
 `403 NOT_CAMPAIGN_ADVERTISER` when the signed-in wallet is not the campaign's
@@ -39,6 +95,12 @@ wallet), `POST /v1/campaigns/:id/publish`, `POST /v1/campaigns/:id/onchain`,
 Participant endpoints (eligibility, submissions, claim authorization) do not
 require a session in the POC: rewards are bound to the wallet verified with
 World ID, and the contract requires `msg.sender == claimant`.
+
+# Chain
+
+## GET /v1/chain
+
+Public. `{ chainId, campaignManager, usdc }` of the configured deployment (contract addresses are public data), or `503 CHAIN_NOT_CONFIGURED`. The web app uses it to check that a campaign's link belongs to the current deployment before funding.
 
 # Campaigns
 
@@ -85,18 +147,32 @@ Request:
 - `mission` (ADR-0002 comprehension check): 1–3 questions, 2–6 choices each, identifiers `[A-Za-z0-9_-]{1,32}`. `answerKey` must name a valid choice for every question. `passThreshold` defaults to the number of questions (all correct).
 - Campaign and mission version 1 are stored in one transaction. Missions are immutable (DB trigger); a change requires a new version. The mission is part of the idempotency hash, and answer-key ordering does not matter.
 
-Response:
+Response (`201`, or `200` on an idempotent replay): the campaign as returned by `GET /v1/campaigns/:id`.
 
-```json
-{
-  "id": "cmp_...",
-  "status": "draft"
-}
-```
+Errors: `400 INVALID_IDEMPOTENCY_KEY` (missing or longer than 200 chars), `400 INVALID_CAMPAIGN` (with `details` from the schema), `400 CAMPAIGN_START_IN_PAST`, `400 UNSAFE_CONTENT_URL`, `401` / `403` (see Authentication), `409 IDEMPOTENCY_CONFLICT`.
 
 ## GET /v1/campaigns/:id
 
-Returns normalized off-chain + indexed on-chain state.
+Public. The off-chain draft and its link:
+
+```json
+{
+  "id": "uuid",
+  "chainId": 84532,
+  "onchainCampaignId": "1",
+  "advertiser": "0x...",
+  "contentUrl": "https://example.com/article",
+  "rewardPerCompletion": "1000000",
+  "maxCompletions": 10,
+  "startAt": "2026-10-05T04:00:00.000Z",
+  "endAt": "2026-10-05T10:00:00.000Z",
+  "status": "active",
+  "createdAt": "…",
+  "updatedAt": "…"
+}
+```
+
+`status` mirrors confirmed chain events (see `/onchain`). Settlement numbers are not here; use `/analytics`. `404 CAMPAIGN_NOT_FOUND` for unknown or malformed ids.
 
 ## GET /v1/campaigns/:id/mission
 
@@ -115,26 +191,47 @@ Public mission payload for participants. **Never** includes `answerKey` or `pass
 }
 ```
 
-Unknown or malformed campaign ids return `404`.
+Unknown or malformed campaign ids return `404 MISSION_NOT_FOUND`. Moderation-gated (see Moderation).
 
 ## POST /v1/campaigns/:id/publish
 
-Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime)` on `CampaignManager`, `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget)`. Returns `409 CAMPAIGN_START_PASSED` once `startAt` has passed (the contract would reject it), and `503 CHAIN_NOT_CONFIGURED` without chain config.
+Returns the on-chain transaction intent for a `draft` (no state change): `createCampaign(reward, maxCompletions, startTime, endTime, draftRef)` on `CampaignManager` (`draftRef = keccak256("vham-draft:" + draftId)`, ADR-0011), `approve(CampaignManager, budget)` on USDC, then `fundCampaign(campaignId, budget, draftRef)` (the contract reverts with `WrongDraft` unless the reference names that id for the sender).
+
+```json
+{
+  "chainId": 84532,
+  "campaignManager": "0x...",
+  "steps": [
+    { "contract": "0x<CampaignManager>", "function": "createCampaign", "args": { "rewardPerCompletion": "1000000", "maxCompletions": 10, "startTime": 1791180000, "endTime": 1791201600, "draftRef": "0x..." } },
+    { "contract": "0x<USDC>", "function": "approve", "args": { "spender": "0x<CampaignManager>", "amount": "10000000" } },
+    { "contract": "0x<CampaignManager>", "function": "fundCampaign", "args": { "campaignId": "<from CampaignCreated>", "amount": "10000000", "draftRef": "0x..." } }
+  ],
+  "linkEndpoint": "/v1/campaigns/<id>/onchain"
+}
+```
+
+Errors: `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_ALREADY_PUBLISHED` (not a `draft` or already linked), `409 CAMPAIGN_START_PASSED` (the contract would reject it), `503 CHAIN_NOT_CONFIGURED`. Moderation-gated.
 
 ## POST /v1/campaigns/:id/onchain
 
-Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16).
+Body: `{ "txHash": "0x…" }` of the advertiser's `createCampaign` transaction (issue #16), or `{}` to link by draft reference when no hash is known (ADR-0011).
 
-The client's report is never trusted. The API fetches the receipt, requires a `CampaignCreated` log from the configured contract with the draft's advertiser, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_campaign_id)`) with status `pending_onchain`.
+The client's report is never trusted. With a hash, the API fetches the receipt, requires its block to still be canonical (`getBlock(receipt.blockNumber).hash == receipt.blockHash`, `202 TX_UNCONFIRMED` otherwise) and the contract's `campaignIdByDraft` at the confirmed block to name the receipt's id (`202 TX_UNCONFIRMED` while the mapping is still empty at that block, `422 DRAFT_MISMATCH` when it names another id), requires a `CampaignCreated` log from the configured contract with the draft's advertiser **and the draft's `draftRef`**, and reads `campaigns(id)` via `eth_call` to require identical reward, completion cap and window. Then it links `onchain_campaign_id` (`UNIQUE(chain_id, onchain_contract_address, onchain_campaign_id)`; ids restart on every deployment, ADR-0011) with status `pending_onchain`.
 
 | Status | Meaning |
 | --- | --- |
-| 200 | linked (idempotent for the same `txHash`) |
-| 202 `TX_PENDING`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling" }`: retry later. **Never** treat it as failure or create/fund again. |
-| 409 | `ALREADY_LINKED`, `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
-| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `PARAMETERS_MISMATCH` |
+| 200 | `{ id, onchainCampaignId, publishTxHash, status }` — linked (idempotent for the same creation, by hash or by draft) |
+| 202 `TX_PENDING`, 202 `TX_UNCONFIRMED`, 202 `NOT_CREATED_YET`, 503 `RPC_UNAVAILABLE` | `{ "status": "reconciling", "code": "<one of these>", "retryAfterSeconds": 10 }`: retry later. **Never** treat it as failure or create/fund again. (Not an error body: no `error` object.) |
+| 400 | `INVALID_TX_HASH` |
+| 404 | `CAMPAIGN_NOT_FOUND` |
+| 409 | `ALREADY_LINKED` (this draft is linked to another creation, or was linked on an earlier contract deployment), `ONCHAIN_CAMPAIGN_ALREADY_LINKED`, `WRONG_CHAIN` |
+| 422 | `TX_REVERTED`, `NO_CAMPAIGN_CREATED_EVENT`, `ADVERTISER_MISMATCH`, `DRAFT_MISMATCH`, `PARAMETERS_MISMATCH` |
 
-If the hash is never reported (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the advertiser's **single** unlinked draft with identical economics. Ambiguous matches are logged for manual resolution.
+A creation is linked only once it is buried under `INDEXER_CONFIRMATIONS` blocks (`202 TX_UNCONFIRMED` before), so a shallow reorg can never leave a permanent link to a creation that is no longer canonical. A deeper reorg makes the indexer worker record a halt: until `reorg:recover -- --apply` has run **and** the worker has rebuilt and verified the index, World ID requests, eligibility, submissions and claim authorizations for the deployment return `503 CHAIN_HALTED` (RUNBOOK). Independently, a submission is accepted only if the contract would pay it right now (see Submissions), so no work is completed for a stale link even when the worker is down.
+
+Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the confirmed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it stores no transaction hash, only a per-draft "a creation may be pending" marker that makes it offer *Check again* first after a reload, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
+
+If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution. If a confirmed creation's id is already linked to a **different** draft (a link left behind by a reorg deeper than the confirmation depth), that link is released (the campaign returns to `draft`) and the named draft is linked; status sync never applies such a creation's events to the wrong draft, and the claim service checks `campaignIdByDraft` live before signing.
 
 Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only from **confirmed** chain events by the indexer worker. Submissions are accepted only while `active`.
 
@@ -142,10 +239,11 @@ Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only fr
 
 ## POST /v1/campaigns/:id/world-id/request
 
-Returns what IDKit needs to open a request (ADR-0007, #12):
+No request body. Returns what IDKit needs to open a request (ADR-0007, #12):
 
 ```json
 {
+  "mode": "live",
   "appId": "app_…",
   "action": "vham-campaign-<campaignId>",
   "environment": "production",
@@ -153,7 +251,11 @@ Returns what IDKit needs to open a request (ADR-0007, #12):
 }
 ```
 
-`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN`, `503 WORLD_ID_NOT_CONFIGURED` (needs `WORLD_ID_RP_ID` + `RP_SIGNING_KEY`). Moderation-gated; sensitive rate-limit bucket.
+`mode` names the response shape. A `live` response always has an `appId`. With `WORLD_ID_MODE=simulated` (local anvil only) the response is `{ "mode": "simulated", "action" }`, with no `appId`, `environment`, or `rpContext`.
+
+The response carries no signal. The page derives the wallet-bound signal itself from the campaign id, the claimant and a 32-byte salt it draws (`@vham/shared/world-id`, ADR-0007 update 2026-10-21), passes the signal to IDKit, and sends the salt with the proof to `eligibility/verify`.
+
+`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (none of `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID` is set; a partial or malformed set stops the API at startup), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
 
 ## POST /v1/campaigns/:id/eligibility/verify
 
@@ -162,27 +264,39 @@ See ADR-0007. Request:
 ```json
 {
   "claimant": "0x...",
+  "signalSalt": "0x<32 bytes>",
   "idkitResponse": { "protocol_version": "4.0", "action": "vham-campaign-<campaignId>", "...": "forwarded unchanged" }
 }
 ```
 
+`signalSalt` is the salt the client drew for this proof: 32 random bytes as `0x` hex, either case. The expected signal is
+
+```text
+keccak256(abi.encode(string "vham:world-id-signal:v2", string campaignId, address claimant, bytes32 signalSalt))
+```
+
+with the ABI types `(string, string, address, bytes32)` and the campaign id in lowercase (`worldIdSignal` in `@vham/shared/world-id`). A client passes this signal to IDKit as the `0x` hex string, for example `CredentialRequest("proof_of_human", { signal })`; IDKit hashes a `0x` string as bytes, not as text, and the result's `signal_hash` is `keccak256(signal bytes) >> 8` as 32 bytes. The salt is never stored, logged, or sent to World.
+
+`signalSalt` became required within `/v1` (#71). This is a recorded exception to the versioning rule in API_CONTRACT.md; see ADR-0007, update 2026-10-21.
+
 Backend:
 
-1. checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
-2. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
-3. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
-4. returns an opaque eligibility token.
+1. accepts only `idkitResponse.protocol_version == "4.0"` whose `responses` items have the 4.0 shape: `identifier` `"proof_of_human"` with `issuer_schema_id` 1 (any other credential is refused), `nullifier`, `expires_at_min`, and a `proof` array of exactly 5 strings. A legacy 3.0 result, or a 4.0 result that carries a 3.0 item, returns `400 INVALID_PROOF_PAYLOAD` without a call to World. The backend then checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
+2. checks that every credential's `signal_hash`, `0x` hex only, is the hash of the signal derived from this `claimant` and `signalSalt` (`403 SIGNAL_MISMATCH` without a call to World: the result does not match this wallet, campaign and salt, or carries no signal hash);
+3. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`; on a 400 from World it logs World's `code` and per-result codes, never the `detail` text;
+4. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
+5. returns an opaque eligibility token.
 
 Responses:
 
 | Status | Body / code |
 | --- | --- |
 | 201 / 200 (replay) | `{ "eligibilityToken", "campaignId", "claimant", "expiresAt" }` |
-| 400 | `INVALID_ELIGIBILITY_REQUEST`, `INVALID_PROOF_PAYLOAD` |
-| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH` |
+| 400 | `INVALID_ELIGIBILITY_REQUEST` (missing or malformed `claimant`, `signalSalt`, or `idkitResponse`), `INVALID_PROOF_PAYLOAD` |
+| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH`, `SIGNAL_MISMATCH` |
 | 404 | `CAMPAIGN_NOT_FOUND` |
 | 409 | `CAMPAIGN_NOT_OPEN`, `PARTICIPANT_WALLET_MISMATCH`, `WALLET_ALREADY_BOUND` |
-| 503 | `WORLD_ID_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE` |
+| 503 | `WORLD_ID_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE`, `CHAIN_HALTED` |
 
 Proof payloads are never echoed, logged, or persisted.
 
@@ -225,15 +339,18 @@ Engagement verifier rejection codes (deterministic, see `apps/api/src/missions/v
 
 Implemented flow (`apps/api/src/submissions/service.ts`):
 
+0. `400 INVALID_IDEMPOTENCY_KEY` without a valid header, `400 INVALID_SUBMISSION` for a malformed body, `404 CAMPAIGN_NOT_FOUND` / `MISSION_NOT_FOUND`, `409 CAMPAIGN_NOT_ACTIVE` when the campaign is linked on a retired deployment, `503 CHAIN_HALTED` during a deep-reorg halt.
 1. Same `Idempotency-Key` + same request returns the stored outcome, even after the campaign ends. A changed request returns `409 IDEMPOTENCY_CONFLICT`.
 2. The eligibility token must belong to this campaign **and** the claimant wallet bound during World ID verification (`403 INVALID_ELIGIBILITY`, `403 ELIGIBILITY_EXPIRED`).
 3. One accepted completion per human (`409 ALREADY_COMPLETED`), and at most **2 attempts** per human per campaign (`429 ATTEMPT_LIMIT_REACHED`), so the multiple-choice check cannot be brute-forced by retrying.
-4. The deterministic verifier runs. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) are not stored and do not count as attempts. `MISSING_ANSWERS` and `COMPREHENSION_FAILED` are stored as rejected attempts.
-5. The response reveals only the status and reason code, never which answers were wrong.
+4. Before the verifier evaluates the answers, the API reads the contract **live** (ADR-0011, decision 12). `campaignIdByDraft` must still name the linked id, and `campaigns(id)` must carry the draft's parameters. The campaign must be `Active`, not closed, inside its window, with remaining budget ≥ reward and completions below the cap. Otherwise the response is `409 CAMPAIGN_NOT_ACTIVE`. When a claim signer is configured, the API also reads `authorizedSigner` and `claimedWallet(id, claimant)`. If `authorizedSigner` is not the configured signer, the response is `503 SIGNER_MISMATCH`. If `claimedWallet` reports a paid wallet, a request with correct answers fails in step 6 with `409 ALREADY_CLAIMED`. If a read fails, the response is `503 CHAIN_UNAVAILABLE`. A refusal at this step stores nothing and consumes no attempt, even for wrong answers. Indexed status can lag by the confirmation depth. These reads do not lag.
+5. The deterministic verifier runs. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) are not stored and do not count as attempts. `MISSING_ANSWERS` and `COMPREHENSION_FAILED` are stored as rejected attempts.
+6. An accepted completion gets its claim authorization in the same request (see Claims). The contract pays an authorization issued up to `closedAt`, so a close after acceptance cannot strand the participant.
+7. The response reveals only the status and reason code, never which answers were wrong.
 
-Outcomes: `accepted`, `rejected` (POC verifier is synchronous; no `pending`).
+Outcomes: `accepted`, `rejected` (POC verifier is synchronous; no `pending`). Status `201` for a new outcome, `200` for a replay. A rejected submission has `"status": "rejected"`, a `rejectionCode` and `"claim": null`.
 
-Current accepted response (claim authorization is issued by #10):
+Accepted response:
 
 ```json
 {
@@ -242,28 +359,25 @@ Current accepted response (claim authorization is issued by #10):
   "claimant": "0x...",
   "status": "accepted",
   "rejectionCode": null,
-  "claim": { "status": "pending_authorization" }
-}
-```
-
-Target accepted response once #10 lands:
-
-Accepted response:
-
-```json
-{
-  "status": "accepted",
   "claim": {
-    "campaignId": "1",
-    "claimant": "0x...",
-    "amount": "1000000",
-    "nonce": "0x...",
-    "issuedAt": 1791186300,
-    "expiresAt": 1791187200,
-    "signature": "0x..."
+    "status": "authorized",
+    "authorization": {
+      "campaignId": "1",
+      "draftRef": "0x...",
+      "claimant": "0x...",
+      "amount": "1000000",
+      "nonce": "0x...",
+      "issuedAt": 1791186300,
+      "expiresAt": 1791187200,
+      "signature": "0x...",
+      "chainId": 84532,
+      "contractAddress": "0x..."
+    }
   }
 }
 ```
+
+The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer **or without a chain configuration** (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed.
 
 # Claims
 
@@ -275,17 +389,25 @@ Only an accepted submission bound to that verified campaign and claimant can
 receive an authorization. Fresh issuance requires an active, linked campaign;
 an existing unexpired authorization may be retrieved after close. The server's
 signer must match the contract's current signer.
-The response contains the exact EIP-712 `ClaimAuthorization` fields,
-`signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
+The response contains the exact EIP-712 `ClaimAuthorization` fields
+(including `draftRef`, which the contract checks against
+`campaignIdByDraft`), `signature`, `chainId`, and `contractAddress`. Monetary values and `campaignId`
 are decimal strings. A retry before expiry returns the same signed payload;
 concurrent requests cannot issue a second authorization. After expiry, an
 unredeemed authorization is reissued with a new nonce while the campaign is
 still active and under its cap; once the wallet has been paid the endpoint
-returns `409 ALREADY_CLAIMED`. Other errors: `409 CAMPAIGN_CAP_REACHED`
+returns `409 ALREADY_CLAIMED`. Status `201` for a newly signed authorization,
+`200` for a replay. Other errors: `400 INVALID_ELIGIBILITY_TOKEN`, `403
+INVALID_ELIGIBILITY` (token not bound to this campaign and claimant), `404
+SUBMISSION_NOT_FOUND`, `409 SUBMISSION_NOT_ACCEPTED`, `409 CAMPAIGN_CAP_REACHED`
 (paid + outstanding authorizations reached `maxCompletions`), `409
-CAMPAIGN_NOT_ACTIVE` (including closed on-chain), and `503 CHAIN_UNAVAILABLE` /
-`SIGNER_MISMATCH` (fail closed). The API never returns or logs the private
-signing key.
+CAMPAIGN_NOT_ACTIVE` (including closed on-chain, a link that `campaignIdByDraft`
+no longer confirms, or a retired deployment), `503 AUTHORIZATION_UNAVAILABLE`
+(no signer or chain configured), `503 CHAIN_HALTED`, `503 CHAIN_UNAVAILABLE`,
+`503 SIGNER_MISMATCH`, `503 SIGNER_UNAVAILABLE`, `503 DAILY_LIMIT_REACHED` (fail
+closed). Before signing, the service reads `campaignIdByDraft`,
+`authorizedSigner`, `campaigns(id)` and `claimedWallet` live. The API never
+returns or logs the private signing key.
 
 # Analytics
 
@@ -298,10 +420,15 @@ Settlement values come only from reconciled chain events, and submission counts 
 ```json
 {
   "campaignId": "uuid",
+  "chainId": 84532,
   "onchainCampaignId": "1",
+  "onchainContractAddress": "0x...",
+  "draftRef": "0x...",
   "status": "active",
   "rewardPerCompletion": "1000000",
   "maxCompletions": 10,
+  "startAt": "2026-10-05T04:00:00.000Z",
+  "endAt": "2026-10-05T10:00:00.000Z",
   "plannedBudget": "10000000",
   "submissions": {
     "accepted": 8,
@@ -327,7 +454,7 @@ Settlement values come only from reconciled chain events, and submission counts 
 }
 ```
 
-`settlement` is `null` until the campaign is linked on-chain.
+`settlement` is `null` until the campaign is linked on-chain, and also when the link belongs to another deployment than the one the API is configured for (events of another contract are never shown). The web app compares `chainId` + `onchainContractAddress` with `GET /v1/chain` before offering to fund.
 
 # API clients (#26)
 
@@ -335,10 +462,10 @@ SIWE session of the advertiser only (API keys get `403 API_KEY_NOT_ALLOWED`).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /v1/api-clients` | `{ name, scopes: ["campaigns:write" \| "analytics:read"], rateLimitPerMinute? }` → `201 { id, key, keyPrefix, scopes, environment, rateLimitPerMinute, createdAt }`; the key is shown once. `409 API_CLIENT_LIMIT_REACHED` above 10 active keys. |
-| `GET /v1/api-clients` | Own keys (no secrets) |
-| `DELETE /v1/api-clients/:id` | Revoke own key → `204` |
-| `POST /v1/admin/api-clients/:id/revoke` | Operator revoke `{ reason }` |
+| `POST /v1/api-clients` | `{ name, scopes: ["campaigns:write" \| "analytics:read"], rateLimitPerMinute? }` → `201 { id, name, key, keyPrefix, scopes, environment, rateLimitPerMinute, createdAt, revokedAt: null }`; the key is shown once. `400 INVALID_API_CLIENT`, `409 API_CLIENT_LIMIT_REACHED` above 10 active keys. |
+| `GET /v1/api-clients` | `{ items: [ … ] }` — own keys (no secrets) |
+| `DELETE /v1/api-clients/:id` | Revoke own key → `204`; `404 API_CLIENT_NOT_FOUND` |
+| `POST /v1/admin/api-clients/:id/revoke` | Operator revoke `{ reason }` → the client; `403 NOT_OPERATOR`, `400 INVALID_ACTION`, `404 API_CLIENT_NOT_FOUND` |
 
 # Moderation (#24)
 
@@ -348,15 +475,15 @@ Policy and permissions: [docs/operations/MODERATION.md](../operations/MODERATION
 `400 UNSAFE_CONTENT_URL` (`reason`: `NOT_HTTPS`, `HAS_CREDENTIALS`, `IP_HOST`,
 `INTERNAL_HOST`, `NON_DEFAULT_PORT`, `TOO_LONG`, `DOMAIN_NOT_ALLOWED`).
 
-Gate: `GET /mission`, `POST /eligibility/verify`, `POST /submissions` and
-`POST /publish` return `403 CAMPAIGN_NOT_APPROVED` until the campaign is
-approved, and `410 CAMPAIGN_TAKEN_DOWN` after a take-down. Claim
-authorization is not gated: completed work stays payable.
+Gate: `GET /mission`, `POST /world-id/request`, `POST /eligibility/verify`,
+`POST /submissions` and `POST /publish` return `403 CAMPAIGN_NOT_APPROVED`
+until the campaign is approved, and `410 CAMPAIGN_TAKEN_DOWN` after a
+take-down. Claim authorization is not gated: completed work stays payable.
 
 ## POST /v1/campaigns/:id/reports
 
 Public, no identity stored. `{ "reason": "phishing" | "malware" | "scam" | "misleading" | "offensive" | "broken_link" | "other", "details"?: string ≤ 500 }`
-→ `201 { reportId, status: "open" }`.
+→ `201 { reportId, status: "open" }`; `400 INVALID_REPORT`, `404 CAMPAIGN_NOT_FOUND`.
 
 ## Operator endpoints
 
@@ -364,11 +491,11 @@ SIWE session of a wallet in `OPERATOR_ADDRESSES`; otherwise `401` / `403 NOT_OPE
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/admin/moderation?status=pending_review` | Review queue (≤ 100) with content URL and advertiser |
-| `GET /v1/admin/campaigns/:id/moderation` | Status, full audit trail, reports |
-| `POST /v1/admin/campaigns/:id/moderation` | `{ action: approve \| reject \| take_down \| reinstate, reason, reportId? }`; `409 INVALID_TRANSITION` |
-| `GET /v1/admin/reports?status=open` | Reports by status |
-| `POST /v1/admin/reports/:reportId/resolve` | `{ resolution: dismissed \| actioned, reason }`; `409 REPORT_ALREADY_RESOLVED` |
+| `GET /v1/admin/moderation?status=pending_review` | Review queue (≤ 100) with content URL and advertiser; `400 INVALID_QUERY` |
+| `GET /v1/admin/campaigns/:id/moderation` | Status, full audit trail, reports; `404 CAMPAIGN_NOT_FOUND` |
+| `POST /v1/admin/campaigns/:id/moderation` | `{ action: approve \| reject \| take_down \| reinstate, reason, reportId? }`; `400 INVALID_ACTION`, `404 CAMPAIGN_NOT_FOUND` / `REPORT_NOT_FOUND`, `409 INVALID_TRANSITION` / `REPORT_CAMPAIGN_MISMATCH` |
+| `GET /v1/admin/reports?status=open` | Reports by status; `400 INVALID_QUERY` |
+| `POST /v1/admin/reports/:reportId/resolve` | `{ resolution: dismissed \| actioned, reason }`; `400 INVALID_RESOLUTION`, `404 REPORT_NOT_FOUND`, `409 REPORT_ALREADY_RESOLVED` |
 
 # Health
 
@@ -413,11 +540,14 @@ See `docs/operations/RUNBOOK.md` for the metric list, alerts and responses.
 ```json
 {
   "error": {
-    "code": "CAMPAIGN_EXPIRED",
-    "message": "Campaign is no longer accepting submissions",
-    "requestId": "req_..."
+    "code": "CAMPAIGN_ENDED",
+    "message": "Submission was not accepted",
+    "requestId": "req_...",
+    "retryable": false
   }
 }
 ```
+
+`retryable` is added to every error response (status ≥ 400) from the catalogue; `202 reconciling` bodies are not errors and carry no `error` object.
 
 Client-visible errors must not expose proof payloads, signer material, database internals, or stack traces.

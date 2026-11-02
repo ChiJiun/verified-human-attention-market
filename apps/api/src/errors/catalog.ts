@@ -1,4 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  FastifyServerOptions,
+} from "fastify";
 
 /**
  * Stable, machine-readable error codes (#26). Every error response is
@@ -13,6 +18,9 @@ import type { FastifyInstance } from "fastify";
  */
 export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   // Request shape
+  INVALID_REQUEST: { retryable: false },
+  PAYLOAD_TOO_LARGE: { retryable: false },
+  UNSUPPORTED_MEDIA_TYPE: { retryable: false },
   INVALID_CAMPAIGN: { retryable: false },
   INVALID_IDEMPOTENCY_KEY: { retryable: false },
   INVALID_ELIGIBILITY_REQUEST: { retryable: false },
@@ -41,12 +49,15 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   INVALID_SIGNATURE: { retryable: false },
   NOT_CAMPAIGN_ADVERTISER: { retryable: false },
   NOT_OPERATOR: { retryable: false },
+  CSRF_REJECTED: { retryable: false },
+  COOKIE_SESSION_NOT_ALLOWED: { retryable: false },
   INVALID_API_KEY: { retryable: false },
   API_KEY_WRONG_ENVIRONMENT: { retryable: false },
   API_KEY_NOT_ALLOWED: { retryable: false },
   INSUFFICIENT_SCOPE: { retryable: false },
 
   // Not found
+  ROUTE_NOT_FOUND: { retryable: false },
   CAMPAIGN_NOT_FOUND: { retryable: false },
   MISSION_NOT_FOUND: { retryable: false },
   SUBMISSION_NOT_FOUND: { retryable: false },
@@ -64,6 +75,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   ALREADY_LINKED: { retryable: false },
   ONCHAIN_CAMPAIGN_ALREADY_LINKED: { retryable: false },
   ADVERTISER_MISMATCH: { retryable: false },
+  DRAFT_MISMATCH: { retryable: false },
   PARAMETERS_MISMATCH: { retryable: false },
   TX_REVERTED: { retryable: false },
   ALREADY_COMPLETED: { retryable: false },
@@ -80,6 +92,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   INVALID_PROOF_PAYLOAD: { retryable: false },
   ACTION_MISMATCH: { retryable: false },
   ENVIRONMENT_MISMATCH: { retryable: false },
+  SIGNAL_MISMATCH: { retryable: false },
   INVALID_TRANSITION: { retryable: false },
   REPORT_ALREADY_RESOLVED: { retryable: false },
   REPORT_CAMPAIGN_MISMATCH: { retryable: false },
@@ -95,8 +108,14 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   CAMPAIGN_CAP_REACHED: { retryable: true },
   NO_CAMPAIGN_CREATED_EVENT: { retryable: true },
   TX_PENDING: { retryable: true },
+  NOT_CREATED_YET: { retryable: true },
+  TX_UNCONFIRMED: { retryable: true },
+  CHAIN_HALTED: { retryable: true },
   DAILY_LIMIT_REACHED: { retryable: true },
   RATE_LIMITED: { retryable: true },
+
+  // Unexpected failure
+  INTERNAL_ERROR: { retryable: true },
 
   // Dependencies unavailable
   CHAIN_UNAVAILABLE: { retryable: true },
@@ -144,5 +163,80 @@ export function registerErrorModel(app: FastifyInstance) {
     } catch {
       return payload;
     }
+  });
+}
+
+const CLIENT_ERRORS: Record<number, { code: string; message: string }> = {
+  413: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" },
+  415: {
+    code: "UNSUPPORTED_MEDIA_TYPE",
+    message: "Content type is not supported",
+  },
+};
+
+const INVALID_REQUEST = { code: "INVALID_REQUEST", message: "Invalid request" };
+
+function sendError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  statusCode: number,
+  { code, message }: { code: string; message: string },
+) {
+  return reply.status(statusCode).send({
+    error: {
+      code,
+      message,
+      requestId: request.id,
+      retryable: isRetryable(code, statusCode),
+    },
+  });
+}
+
+/**
+ * Errors Fastify raises before routing (an undecodable URL) never reach the
+ * error handler or the onSend hooks, so they get the same body here.
+ */
+export const frameworkErrors: NonNullable<
+  FastifyServerOptions["frameworkErrors"]
+> = (_error, request, reply) => {
+  void reply.header("x-request-id", request.id);
+  return sendError(request, reply, 400, INVALID_REQUEST);
+};
+
+/**
+ * Fastify's own 4xx errors keep their status under a fixed message; every
+ * other error is logged in full and answered as a generic 500, so query
+ * text, parameters and stack-derived messages never leave the process.
+ */
+export function registerErrorHandlers(app: FastifyInstance) {
+  app.setNotFoundHandler((request, reply) =>
+    sendError(request, reply, 404, {
+      code: "ROUTE_NOT_FOUND",
+      message: "Route not found",
+    }),
+  );
+
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode = (error as { statusCode?: unknown } | null)?.statusCode;
+
+    if (
+      typeof statusCode === "number" &&
+      statusCode >= 400 &&
+      statusCode < 500
+    ) {
+      request.log.info({ err: error }, "Request rejected");
+      return sendError(
+        request,
+        reply,
+        statusCode,
+        CLIENT_ERRORS[statusCode] ?? INVALID_REQUEST,
+      );
+    }
+
+    request.log.error({ err: error }, "Unhandled error");
+    return sendError(request, reply, 500, {
+      code: "INTERNAL_ERROR",
+      message: "Internal server error",
+    });
   });
 }

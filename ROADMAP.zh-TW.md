@@ -1,5 +1,5 @@
-# 開發路線圖已整合至 README
+# 開發路線圖已移動
 
-Roadmap 現在直接維護在 [README.zh-TW.md](README.zh-TW.md#開發路線圖)，讓 GitHub 專案首頁能同時呈現產品規格與開發路線。
+完整路線圖現在在 [docs/product/VISION.zh-TW.md](docs/product/VISION.zh-TW.md#開發路線圖)。含目前進度的一頁摘要在 [README](README.zh-TW.md#路線圖)。
 
-[English](README.md#roadmap)
+[English](docs/product/VISION.md#roadmap)

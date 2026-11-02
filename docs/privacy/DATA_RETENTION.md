@@ -24,6 +24,7 @@
 | --- | --- | --- | --- | --- |
 | World ID proof (`idkitResponse`) | request only | Identity proof | Not stored; forwarded to World and dropped | Code (never persisted, logs redact `idkitResponse`/`proof`) |
 | World ID nullifier | memory only | Identity | Not stored | Code (only the HMAC below is stored) |
+| World ID signal salt and signal (#71) | `signalSalt` in the verify request only; the signal in IDKit's request and its hash in the result | Pseudonymous, campaign-scoped | Not stored; the browser draws the salt and sends it once with the proof. World App receives the signal inside IDKit's encrypted request, World's verify endpoint receives its hash | Code (never persisted, logs redact `signalSalt`) |
 | Participant key | `eligibility.participant_key` | Pseudonymous, campaign-scoped | Campaign end + 30 days, then replaced by a value derived from the row id | `applyRetention` |
 | Payout wallet, unpaid (rejected / never accepted) | `eligibility`, `submissions` `claimant_address` | Personal data | Campaign end + 30 days, then replaced by an unlinkable placeholder address | `applyRetention` |
 | Payout wallet, paid (accepted) | same | Personal data, also public on-chain | Life of the campaign record (settlement, disputes) | — |

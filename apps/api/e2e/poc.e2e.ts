@@ -11,15 +11,23 @@
  */
 import { readFileSync } from "node:fs";
 
+import { parseClosedAt, refundAvailableAt } from "@vham/shared";
+import { campaignManagerAbi } from "@vham/shared/contracts";
 import { sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { fileURLToPath } from "node:url";
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   createTestClient,
   createWalletClient,
+  custom,
   defineChain,
   http,
+  keccak256,
+  stringToBytes,
+  type Hash,
   toHex,
   type Abi,
   type Address,
@@ -27,12 +35,14 @@ import {
 } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
+import { newWorldIdSignalSalt, worldIdSignal } from "@vham/shared/world-id";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { PostgresAuthRepository } from "../src/auth/repository.js";
 import {
   autoLinkCreatedCampaigns,
+  draftRefFor,
   readOnchainCampaign,
   syncCampaignStatuses,
 } from "../src/campaigns/onchain.js";
@@ -49,11 +59,6 @@ import { createClaimSigner } from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresModerationRepository } from "../src/moderation/repository.js";
-import {
-  campaignAction,
-  type WorldIdResult,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
 import { PostgresSubmissionRepository } from "../src/submissions/repository.js";
 
 const RPC_URL = process.env.E2E_RPC_URL ?? "http://127.0.0.1:8545";
@@ -77,6 +82,7 @@ const advertiser = mnemonicToAccount(MNEMONIC, { addressIndex: 2 });
 const alice = mnemonicToAccount(MNEMONIC, { addressIndex: 3 });
 const bob = mnemonicToAccount(MNEMONIC, { addressIndex: 4 });
 const operator = mnemonicToAccount(MNEMONIC, { addressIndex: 5 });
+const carol = mnemonicToAccount(MNEMONIC, { addressIndex: 7 });
 
 function artifact(path: string): { abi: Abi; bytecode: Hex } {
   const json = JSON.parse(
@@ -86,24 +92,6 @@ function artifact(path: string): { abi: Abi; bytecode: Hex } {
     ),
   ) as { abi: Abi; bytecode: { object: Hex } };
   return { abi: json.abi, bytecode: json.bytecode.object };
-}
-
-/** World ID needs the World App; the proof is simulated as { action, human }. */
-class SimulatedWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? {
-          ok: true,
-          nullifier: String(
-            BigInt(`0x${Buffer.from(proof.human).toString("hex")}`),
-          ),
-        }
-      : { ok: false, code: "ACTION_MISMATCH" };
-  }
 }
 
 const describeE2e = DATABASE_URL ? describe : describe.skip;
@@ -160,6 +148,28 @@ describeE2e("POC economic loop on a local chain", () => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     expect(receipt.status).toBe("success");
     return hash;
+  }
+
+  async function simulatedVerification(
+    campaignId: string,
+    claimant: Address,
+    human: string,
+  ) {
+    const requested = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/world-id/request`,
+    });
+    expect(requested.statusCode).toBe(200);
+    const { action } = requested.json<{ action: string }>();
+    const signalSalt = newWorldIdSignalSalt();
+    return {
+      signalSalt,
+      idkitResponse: {
+        action,
+        simulatedHuman: human,
+        signal: worldIdSignal({ campaignId, claimant, salt: signalSalt }),
+      },
+    };
   }
 
   async function signIn(account: typeof deployer) {
@@ -239,10 +249,16 @@ describeE2e("POC economic loop on a local chain", () => {
       ),
       authRepository: new PostgresAuthRepository(database.db),
       siwe: { domain: DOMAIN, chainId: anvil.id },
-      worldIdVerifier: new SimulatedWorldId(),
+      worldId: { mode: "simulated" },
       participantKeySecret: "e2e-participant-key-secret-0123456789",
       chainId: anvil.id,
-      chain: { rpc, chain, events: eventRepository, now },
+      chain: {
+        rpc,
+        chain,
+        events: eventRepository,
+        now,
+        confirmations: CONFIRMATIONS,
+      },
       dailyPayoutLimitAtomic: 10n * USDC,
       // Production moderation: an operator must approve the campaign.
       moderationRepository: new PostgresModerationRepository(database.db),
@@ -360,33 +376,155 @@ describeE2e("POC economic loop on a local chain", () => {
       steps: { args: Record<string, string | number> }[];
     }>();
     const create = intent.steps[0]!.args;
-    const createHash = await send(
-      advertiser,
-      managerAddress,
-      manager.abi,
-      "createCampaign",
+
+    // RPC timeout after broadcast (#13), made safe by the draft reference
+    // (ADR-0011). The node accepts createCampaign but the response is lost,
+    // so the client never learns the hash. A second tab then sends the same
+    // draft again, and the same wallet creates an identical campaign for a
+    // different draft. Exactly one campaign may be linked to this draft.
+    const draftRef = create.draftRef as Hash;
+    const createArgs = (ref: Hash) =>
       [
         BigInt(create.rewardPerCompletion!),
         Number(create.maxCompletions),
         BigInt(create.startTime!),
         BigInt(create.endTime!),
-      ],
-    );
-
-    const linked = await app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${campaignId}/onchain`,
-      headers: auth,
-      payload: { txHash: createHash },
+        ref,
+      ] as const;
+    const node = http(RPC_URL)({ chain: anvil });
+    let lostHash: Hash | null = null;
+    const lossyWallet = createWalletClient({
+      account: advertiser,
+      chain: anvil,
+      transport: custom({
+        async request({ method, params }) {
+          const result = await node.request({ method, params });
+          if (method === "eth_sendRawTransaction") {
+            lostHash = result as Hash;
+            throw new Error("simulated timeout: response lost after broadcast");
+          }
+          return result;
+        },
+      }),
     });
+    const linkByDraft = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/onchain`,
+        headers: auth,
+        payload: {},
+      });
+    const linkByHash = (txHash: Hash) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/onchain`,
+        headers: auth,
+        payload: { txHash },
+      });
+
+    await testClient.setAutomine(false);
+    await expect(
+      lossyWallet.writeContract({
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "createCampaign",
+        args: createArgs(draftRef),
+      }),
+    ).rejects.toThrow(/response lost after broadcast/);
+    expect(lostHash).not.toBeNull();
+
+    // Still in the mempool: linking by draft is "reconciling", not failed.
+    const beforeMined = await linkByDraft();
+    expect(beforeMined.statusCode).toBe(202);
+    expect(beforeMined.json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+
+    // A second tab sends the same draft again. A wallet that simulates first
+    // already refuses (the lost transaction is pending); one that estimated
+    // gas before the first broadcast still sends it, and the contract must
+    // refuse it on-chain.
+    await expect(
+      publicClient.simulateContract({
+        account: advertiser,
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "createCampaign",
+        args: createArgs(draftRef),
+        blockTag: "pending",
+      }),
+    ).rejects.toThrow(/DraftAlreadyCreated/);
+    const retryHash = await wallet(advertiser).writeContract({
+      address: managerAddress,
+      abi: manager.abi,
+      functionName: "createCampaign",
+      args: createArgs(draftRef),
+      gas: 500_000n,
+    });
+    // The same wallet also creates an identical campaign for another draft.
+    const decoyHash = await wallet(advertiser).writeContract({
+      address: managerAddress,
+      abi: manager.abi,
+      functionName: "createCampaign",
+      args: createArgs(keccak256(stringToBytes("vham-draft:someone-else"))),
+    });
+
+    await testClient.mine({ blocks: 1 });
+    await testClient.setAutomine(true);
+    const receipt = (hash: Hash) =>
+      publicClient.waitForTransactionReceipt({ hash });
+    expect((await receipt(lostHash!)).status).toBe("success");
+    // The contract refuses a second campaign for the same draft.
+    expect((await receipt(retryHash)).status).toBe("reverted");
+    expect((await receipt(decoyHash)).status).toBe("success");
+
+    // Mined but not yet final: still reconciling, never linked early.
+    expect((await linkByDraft()).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+    await testClient.mine({ blocks: CONFIRMATIONS });
+
+    // Linking needs no hash: the contract knows this draft's campaign.
+    const linked = await linkByDraft();
+    expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({ status: "pending_onchain" });
     const onchainId = BigInt(
       linked.json<{ onchainCampaignId: string }>().onchainCampaignId,
     );
+    expect(
+      await publicClient.readContract({
+        address: managerAddress,
+        abi: manager.abi,
+        functionName: "campaignIdByDraft",
+        args: [advertiser.address, draftRef],
+      }),
+    ).toBe(onchainId);
 
-    // Simulated RPC timeout after broadcast: the hash is not (yet) known to
-    // the node. The API answers "reconciling", never a failure that would make
-    // the advertiser create and fund a duplicate campaign.
+    // Idempotent, and the other transactions can never be linked here.
+    expect((await linkByDraft()).statusCode).toBe(200);
+    expect((await linkByHash(lostHash!)).statusCode).toBe(200);
+    expect((await linkByHash(decoyHash)).json()).toMatchObject({
+      error: { code: "DRAFT_MISMATCH" },
+    });
+    expect((await linkByHash(retryHash)).json()).toMatchObject({
+      error: { code: "TX_REVERTED" },
+    });
+
+    // Exactly one creation carries this draft's reference.
+    const creations = await publicClient.getContractEvents({
+      address: managerAddress,
+      abi: manager.abi,
+      eventName: "CampaignCreated",
+      args: { draftRef },
+      fromBlock: 0n,
+    });
+    expect(creations).toHaveLength(1);
+
+    // A hash the node has never seen (dropped or not yet propagated) is also
+    // "reconciling", never a failure that would make the advertiser create
+    // and fund a duplicate campaign.
     const otherDraft = await app.inject({
       method: "POST",
       url: "/v1/campaigns",
@@ -413,6 +551,7 @@ describeE2e("POC economic loop on a local chain", () => {
     await send(advertiser, managerAddress, manager.abi, "fundCampaign", [
       onchainId,
       10n * USDC,
+      draftRefFor(campaignId),
     ]);
     await reconcile();
 
@@ -428,17 +567,29 @@ describeE2e("POC economic loop on a local chain", () => {
 
     // 4. A verified human completes the mission after start.
     await travelTo(seconds(130));
+    const aliceVerification = await simulatedVerification(
+      campaignId,
+      alice.address,
+      "alice",
+    );
     const verified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
-      payload: {
-        claimant: alice.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "alice" },
-      },
+      payload: { claimant: alice.address, ...aliceVerification },
     });
     expect(verified.statusCode).toBe(201);
     const eligibilityToken = verified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
+
+    const relayed = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: { claimant: bob.address, ...aliceVerification },
+    });
+    expect(relayed.statusCode).toBe(403);
+    expect(relayed.json()).toMatchObject({
+      error: { code: "SIGNAL_MISMATCH" },
+    });
 
     const submitted = await app.inject({
       method: "POST",
@@ -450,9 +601,17 @@ describeE2e("POC economic loop on a local chain", () => {
         answers: [{ questionId: "q1", choiceId: "a" }],
       },
     });
-    expect(submitted.json()).toMatchObject({ status: "accepted" });
+    // The authorization is signed in the same request as the acceptance
+    // (ADR-0011), so a later close cannot strand an accepted completion.
+    expect(submitted.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
+    });
     const submissionId = submitted.json<{ submissionId: string }>()
       .submissionId;
+    const issuedAtAcceptance = submitted.json<{
+      claim: { authorization: { nonce: Hex } };
+    }>().claim.authorization;
 
     // The same human cannot complete twice.
     const again = await app.inject({
@@ -467,15 +626,17 @@ describeE2e("POC economic loop on a local chain", () => {
     });
     expect(again.statusCode).toBe(409);
 
-    // 5. EIP-712 authorization from the backend signer.
+    // 5. EIP-712 authorization from the backend signer: requesting it again
+    // returns the one issued at acceptance.
     const authorization = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
       payload: { eligibilityToken },
     });
-    expect(authorization.statusCode).toBe(201);
+    expect(authorization.statusCode).toBe(200);
     const claim = authorization.json<{
       campaignId: string;
+      draftRef: Hex;
       claimant: Address;
       amount: string;
       nonce: Hex;
@@ -483,17 +644,21 @@ describeE2e("POC economic loop on a local chain", () => {
       expiresAt: number;
       signature: Hex;
     }>();
-    const claimArgs = [
+    expect(claim.nonce).toBe(issuedAtAcceptance.nonce);
+    expect(claim.draftRef).toBe(draftRef);
+    const toClaimArgs = (signed: typeof claim) => [
       {
-        campaignId: BigInt(claim.campaignId),
-        claimant: claim.claimant,
-        amount: BigInt(claim.amount),
-        nonce: claim.nonce,
-        issuedAt: BigInt(claim.issuedAt),
-        expiresAt: BigInt(claim.expiresAt),
+        campaignId: BigInt(signed.campaignId),
+        draftRef: signed.draftRef,
+        claimant: signed.claimant,
+        amount: BigInt(signed.amount),
+        nonce: signed.nonce,
+        issuedAt: BigInt(signed.issuedAt),
+        expiresAt: BigInt(signed.expiresAt),
       },
-      claim.signature,
+      signed.signature,
     ];
+    const claimArgs = toClaimArgs(claim);
 
     // 5b. Emergency drills (#23, docs/operations/RUNBOOK.md).
     const simulateClaim = () =>
@@ -575,24 +740,17 @@ describeE2e("POC economic loop on a local chain", () => {
       onchain!.paidCompletions,
     );
 
-    // 8. Close: no new liability after close, refund only after the grace period.
+    // 8. Close: a completion accepted before the close stays payable; none
+    // is accepted after it; refund only after the grace period.
     await travelTo(seconds(10));
-    await send(advertiser, managerAddress, manager.abi, "closeCampaign", [
-      onchainId,
-    ]);
-    const closedAt = clock;
-
     const bobVerified = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant: bob.address,
-        idkitResponse: { action: campaignAction(campaignId), human: "bob" },
+        ...(await simulatedVerification(campaignId, bob.address, "bob")),
       },
     });
-    // The close is not confirmed by the indexer yet, so the database still
-    // says "active" and Bob's completion is accepted. No liability results:
-    // the claim service reads closedAt live from the contract and refuses.
     expect(bobVerified.statusCode).toBe(201);
     const bobToken = bobVerified.json<{ eligibilityToken: string }>()
       .eligibilityToken;
@@ -606,27 +764,108 @@ describeE2e("POC economic loop on a local chain", () => {
         answers: [{ questionId: "q1", choiceId: "a" }],
       },
     });
-    expect(bobSubmission.json()).toMatchObject({ status: "accepted" });
-    const bobAuth = await app.inject({
-      method: "POST",
-      url: `/v1/campaigns/${campaignId}/submissions/${bobSubmission.json<{ submissionId: string }>().submissionId}/authorization`,
-      payload: { eligibilityToken: bobToken },
+    expect(bobSubmission.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
     });
-    expect(bobAuth.json()).toMatchObject({
+    const bobClaim = bobSubmission.json<{
+      claim: { authorization: typeof claim };
+    }>().claim.authorization;
+
+    await travelTo(seconds(10));
+    await send(advertiser, managerAddress, manager.abi, "closeCampaign", [
+      onchainId,
+    ]);
+
+    // Bob was accepted before the close, so his authorization still pays.
+    await send(
+      bob,
+      managerAddress,
+      manager.abi,
+      "claim",
+      toClaimArgs(bobClaim),
+    );
+    expect(
+      await publicClient.readContract({
+        address: usdcAddress,
+        abi: mockUsdc.abi,
+        functionName: "balanceOf",
+        args: [bob.address],
+      }),
+    ).toBe(USDC);
+
+    // The close is not confirmed by the indexer yet, so the database still
+    // says "active". The submission service reads the contract live and
+    // accepts no completion the contract would not pay.
+    const carolVerified = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/eligibility/verify`,
+      payload: {
+        claimant: carol.address,
+        ...(await simulatedVerification(campaignId, carol.address, "carol")),
+      },
+    });
+    expect(carolVerified.statusCode).toBe(201);
+    const carolSubmission = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions`,
+      headers: { "idempotency-key": "carol-1" },
+      payload: {
+        eligibilityToken: carolVerified.json<{ eligibilityToken: string }>()
+          .eligibilityToken,
+        claimant: carol.address,
+        answers: [{ questionId: "q1", choiceId: "a" }],
+      },
+    });
+    expect(carolSubmission.statusCode).toBe(409);
+    expect(carolSubmission.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
 
-    await expect(
-      publicClient.simulateContract({
-        account: advertiser,
-        address: managerAddress,
-        abi: manager.abi,
-        functionName: "refundUnusedBudget",
-        args: [onchainId],
-      }),
-    ).rejects.toThrow();
+    // eth_call at "latest" runs at the latest block's timestamp.
+    const refundRevert = async () => {
+      try {
+        await publicClient.simulateContract({
+          account: advertiser,
+          address: managerAddress,
+          abi: campaignManagerAbi,
+          functionName: "refundUnusedBudget",
+          args: [onchainId],
+        });
+        return null;
+      } catch (error) {
+        const reverted =
+          error instanceof BaseError
+            ? error.walk(
+                (cause) => cause instanceof ContractFunctionRevertedError,
+              )
+            : null;
+        return reverted instanceof ContractFunctionRevertedError
+          ? (reverted.data?.errorName ?? "unnamed revert")
+          : "not a contract revert";
+      }
+    };
+    expect(await refundRevert()).toBe("RefundNotAvailable");
 
-    await travelTo(new Date(closedAt.getTime() + 15 * 60_000 + 5_000));
+    const campaign = await publicClient.readContract({
+      address: managerAddress,
+      abi: campaignManagerAbi,
+      functionName: "campaigns",
+      args: [onchainId],
+    });
+    const refundAt = refundAvailableAt({
+      endTime: campaign[7],
+      closedAt: parseClosedAt(campaign[8]),
+      maxAuthorizationTtl: await publicClient.readContract({
+        address: managerAddress,
+        abi: campaignManagerAbi,
+        functionName: "MAX_AUTHORIZATION_TTL",
+      }),
+    });
+    await travelTo(new Date(Number(refundAt - 1n) * 1000));
+    expect(await refundRevert()).toBe("RefundNotAvailable");
+    await travelTo(new Date(Number(refundAt) * 1000));
+    expect(await refundRevert()).toBeNull();
     const balanceBefore = (await publicClient.readContract({
       address: usdcAddress,
       abi: mockUsdc.abi,
@@ -642,7 +881,7 @@ describeE2e("POC economic loop on a local chain", () => {
       functionName: "balanceOf",
       args: [advertiser.address],
     })) as bigint;
-    expect(balanceAfter - balanceBefore).toBe(9n * USDC);
+    expect(balanceAfter - balanceBefore).toBe(8n * USDC);
 
     // 9. Final reconciliation: settled, and accounting balances exactly.
     await reconcile();
@@ -659,10 +898,10 @@ describeE2e("POC economic loop on a local chain", () => {
         confirmed: {
           status: "settled",
           funded: "10000000",
-          paidRewards: "1000000",
-          refunded: "9000000",
+          paidRewards: "2000000",
+          refunded: "8000000",
           remaining: "0",
-          paidCompletions: 1,
+          paidCompletions: 2,
           accountingViolation: false,
         },
         hasUnconfirmedEvents: false,

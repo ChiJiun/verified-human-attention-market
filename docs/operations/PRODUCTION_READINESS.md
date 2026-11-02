@@ -1,7 +1,7 @@
 # Production-Readiness Gate
 
 > Issue #29. This is a hard gate: no meaningful real funds (anything beyond
-> test USDC) until every exit criterion is ✅. Status as of 2026-10-13.
+> test USDC) until every exit criterion is ✅. Status as of 2026-10-19.
 
 ## Exit criteria
 
@@ -52,3 +52,11 @@
 - [x] Severity levels, roles, first-hour checklist, communication rules.
 - [x] Incident issue template and postmortem template.
 - [ ] Named owner and on-call rota (project owner).
+
+### Decisions still required before real funds
+
+- [ ] Gas UX: revisit ADR-0003 (wallet-native sponsorship, paymaster or relayer) — the POC makes participants pay gas.
+- [ ] Deployment: multisig owner, KMS signer and signing service, second RPC provider, managed PostgreSQL with PITR (ADR-0008, RUNBOOK).
+- [x] Web session hardening in code: HttpOnly cookie sessions with CSRF protection and a nonce-based CSP (#72, Threat Model T-015).
+- [ ] Web session deployment: set `WEB_ORIGIN` to the web app's https origin. Put no HTTP Basic gate in front of the web app, because the browser's `Authorization: Basic` header wins over the session cookie and cookie sessions stop working. Redact `Cookie` and `Set-Cookie` in web, CDN and WAF access logs, because the `__Host-` cookie has `Path=/` and every request to the web origin carries the token.
+- [ ] World ID: the #13 swap test on Base Sepolia, step by step as in ADR-0007 (update 2026-10-21). The wallet-bound `signal` itself is implemented (#71). In a campaign where neither wallet A's human nor wallet B has an eligibility: capture two independent IDKit results from A without letting the page post them, and note `rpContext.expires_at` of both; post the newer (second) result for B with `signal_hash` set to the hash of B's signal and B's salt, and expect exactly `403 VERIFICATION_FAILED` (a `201` or a `409` is a failure); record World's error codes from the API log, which must hold no expiry code; then post the older (first), unmodified result for A with its own salt within its `rp_context` lifetime and expect `201`. Without that positive control the run is inconclusive.

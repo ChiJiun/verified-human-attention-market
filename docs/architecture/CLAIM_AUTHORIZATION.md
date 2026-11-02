@@ -20,15 +20,18 @@ sequenceDiagram
     participant S as Claim Signer
     participant C as Reward Contract
 
-    U->>API: submit(campaign, proof, answers, claimant)
+    U->>API: POST eligibility/verify(claimant, signalSalt, IDKit result)
     API->>W: verify World ID proof
     W-->>API: valid / invalid
+    API-->>U: eligibilityToken
+    U->>API: POST submissions(eligibilityToken, claimant, answers)
+    API->>C: eth_call: live campaign state
     API->>V: evaluate mission
     V-->>API: pass / reject
     API->>API: idempotency + duplicate-human check
-    API->>S: sign bounded ClaimAuthorization
+    API->>S: sign bounded ClaimAuthorization (same DB transaction)
     S-->>API: EIP-712 signature
-    API-->>U: authorization + signature
+    API-->>U: accepted + authorization + signature
     U->>C: claim(authorization, signature)
     C->>C: verify signer/domain/expiry/nonce/budget
     C-->>U: USDC
@@ -39,6 +42,7 @@ sequenceDiagram
 ```solidity
 struct ClaimAuthorization {
     uint256 campaignId;
+    bytes32 draftRef;
     address claimant;
     uint256 amount;
     bytes32 nonce;
@@ -47,11 +51,17 @@ struct ClaimAuthorization {
 }
 ```
 
-Suggested type string:
+Type string (typehash `0x190486b79e77ff5517da40fe874a526fb3507c8999e73a8a70f90d4e2e90005b`):
 
 ```text
-ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)
+ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)
 ```
+
+`draftRef` binds the authorization to the platform draft (ADR-0011): `claim`
+reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][draftRef] ==
+campaignId`. After a reorg deeper than the confirmation depth the same id may
+belong to another draft; an authorization for the old draft can then never be
+paid from the new campaign's budget.
 
 ## Nonce
 
@@ -75,20 +85,39 @@ The signed payload includes both `issuedAt` and `expiresAt`. The contract verifi
 - `expiresAt > block.timestamp`;
 - `expiresAt > issuedAt`;
 - `expiresAt - issuedAt <= MAX_AUTHORIZATION_TTL`;
-- `issuedAt` is no later than the campaign's issuance deadline (manual `closedAt` or natural `endTime`).
+- `campaign.startTime <= issuedAt`, and `issuedAt` is no later than the campaign's issuance deadline (manual `closedAt` or natural `endTime`).
 
 This closes an important refund race: after the issuance deadline plus the maximum authorization TTL, every honestly issued authorization must have expired, so unused budget can be refunded without an on-chain reservation transaction for every authorization.
 
 ## Idempotency
+
+The authorization is signed in the same request that accepts the completion
+and returned with it (ADR-0011): the contract pays an authorization issued up
+to `closedAt`, so a close after acceptance cannot strand the participant. If
+no authorization can be issued there, nothing is recorded and the request
+fails with the reason (`409` or `503`), so the same request can be sent again.
+The response says `pending_authorization` only without a configured signer
+(code `null`) and on a replay whose authorization cannot be reissued (with the
+reason code). `POST .../authorization` can then be called again.
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
 authorization request returns the same active signature.
 
 Before signing, the service reads **live** contract state via `eth_call`: the
-current `authorizedSigner`, `campaigns(id)` (paid completions, `closedAt`,
+current `authorizedSigner`, `campaignIdByDraft(advertiser, draftRef)` (must still
+name the linked id), `campaigns(id)` (paid completions, `closedAt`,
 `endTime`) and `claimedWallet(id, claimant)`. Indexed events lag by the
-confirmation depth; these reads do not. RPC failures fail closed.
+confirmation depth; these reads do not. RPC failures fail closed. These reads, and the lookup of confirmed payouts in the index, run
+before the transaction that records an acceptance opens, and the same
+`campaigns(id)` reading decides whether the completion is accepted at all
+(ADR-0011, decision 12). Inside the transaction only the campaign row lock,
+the cap and payout-limit counts, the signature and the update run, so an
+acceptance holds its pool connection for the database round trips plus at
+most one signer call (bounded by the signer's timeout), never for an RPC.
+The row lock is `FOR NO KEY UPDATE`, because every acceptance in flight already
+holds `KEY SHARE` on the campaign row through its submission's foreign key and
+`FOR UPDATE` would make concurrent acceptances deadlock.
 
 - **Cap:** under the campaign row lock, a new authorization is issued only if
   `onchain paidCompletions + unexpired authorizations of other submissions <
@@ -111,6 +140,14 @@ confirmation depth; these reads do not. RPC failures fail closed.
 - **Close:** issuance stops as soon as `closedAt != 0` on-chain, so no
   authorization is issued after the issuance deadline that the refund grace
   period relies on.
+- **At acceptance:** a new accepted completion is signed inside the
+  transaction that records it (`PostgresClaimRepository.within(tx)`); if no
+  authorization can be issued the acceptance is rolled back, so an accepted
+  completion without a redeemable authorization never exists (ADR-0011).
+- **Binding:** the stored authorization records the on-chain campaign id,
+  chain and contract it was signed for. It is replayed only while these equal
+  the campaign's current link; after a deep-reorg relink or a redeploy it is
+  unredeemable, is not counted as outstanding, and a new one is issued.
 
 Submission endpoint accepts an `Idempotency-Key`.
 

@@ -1,5 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { z } from "zod";
+
+import { serializeClaim } from "../claims/routes.js";
+import type { ClaimOutcome } from "../claims/service.js";
+import { OPERATOR_OUTCOMES } from "../observability/instrumentation.js";
 
 import {
   submitCompletion,
@@ -17,7 +21,21 @@ const submissionBodySchema = z.object({
 
 export async function registerSubmissionRoutes(
   app: FastifyInstance,
-  dependencies: SubmissionServiceDependencies,
+  dependencies: SubmissionServiceDependencies & {
+    /**
+     * Returns the authorization of an accepted completion on a replay (the
+     * one signed at acceptance, reissued if it expired). New acceptances are
+     * signed inside their own transaction (ADR-0011). null = no signer.
+     */
+    issueAuthorization:
+      | ((input: {
+          campaignId: string;
+          submissionId: string;
+          eligibilityToken: string;
+          log?: FastifyBaseLogger;
+        }) => Promise<ClaimOutcome>)
+      | null;
+  },
 ) {
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/submissions",
@@ -61,6 +79,7 @@ export async function registerSubmissionRoutes(
         claimantAddress: parsed.data.claimant,
         idempotencyKey,
         answers: parsed.data.answers,
+        log: request.log,
       });
 
       if (!outcome.ok) {
@@ -72,6 +91,48 @@ export async function registerSubmissionRoutes(
       }
 
       const { submission } = outcome;
+      let claim: Record<string, unknown> | null = null;
+
+      if (submission.result === "accepted") {
+        // A new acceptance was signed in its own transaction; a replay
+        // returns the stored authorization (reissued if it expired).
+        const authorization = outcome.claim
+          ? { ok: true as const, claim: outcome.claim }
+          : dependencies.issueAuthorization
+            ? await dependencies.issueAuthorization({
+                campaignId: request.params.id,
+                submissionId: submission.id,
+                eligibilityToken: parsed.data.eligibilityToken,
+                log: request.log,
+              })
+            : null;
+
+        if (
+          authorization &&
+          !authorization.ok &&
+          OPERATOR_OUTCOMES.has(authorization.code)
+        ) {
+          request.log.error(
+            {
+              event: "claim_authorizations",
+              outcome: authorization.code,
+              campaignId: submission.campaignId,
+            },
+            "Critical path failed",
+          );
+        }
+        claim = authorization?.ok
+          ? {
+              status: "authorized",
+              authorization: serializeClaim(authorization.claim),
+            }
+          : {
+              status: "pending_authorization",
+              // Why it could not be signed now (it can be requested again).
+              code:
+                authorization && !authorization.ok ? authorization.code : null,
+            };
+      }
 
       return reply.status(outcome.created ? 201 : 200).send({
         submissionId: submission.id,
@@ -80,10 +141,7 @@ export async function registerSubmissionRoutes(
         status: submission.result,
         // Only the reason code: which answers were wrong is not revealed.
         rejectionCode: submission.rejectionCode,
-        claim:
-          submission.result === "accepted"
-            ? { status: "pending_authorization" }
-            : null,
+        claim,
       });
     },
   );

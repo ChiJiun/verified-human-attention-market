@@ -8,17 +8,22 @@
 | Caller | Credential | Reaches |
 | --- | --- | --- |
 | Participants | none (World ID proof per campaign) | mission, eligibility, submissions, claim authorization, reports |
-| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`) | everything an advertiser can do, including key management |
-| Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | only the scoped routes below, acting as the advertiser that created the key |
-| Operators | SIWE session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` |
+| Advertisers (interactive) | SIWE session (`POST /v1/auth/verify`): the web app's `__Host-vham_session` cookie (`transport: "cookie"`, CSRF-protected), or a bearer token for scripts | everything an advertiser can do; key management only with the bearer token (`403 COOKIE_SESSION_NOT_ALLOWED` with the cookie) |
+| Integrations (servers) | API key `vhamk_test_…` / `vhamk_live_…` | the scoped routes below, acting as the advertiser that created the key; also accepted on public routes (where it grants nothing), never on admin, key-management or session routes |
+| Operators | SIWE bearer session of a wallet in `OPERATOR_ADDRESSES` | `/v1/admin/*` (never with the cookie) |
 
 API keys:
 
-- Created by the advertiser with a SIWE session: `POST /v1/api-clients
+- Created by the advertiser with a SIWE bearer session: `POST /v1/api-clients
   { name, scopes, rateLimitPerMinute? }`. The key is returned **once**; only
   `sha256(key)` and a display prefix are stored. At most 10 active keys per
-  advertiser.
-- Sent as `Authorization: Bearer vhamk_…`.
+  advertiser. The session cookie cannot create, list or revoke keys, so a
+  script on the web app's origin cannot mint a key that outlives the page.
+- Sent as `Authorization: Bearer vhamk_…`, header-only. Any value that starts
+  with `Bearer vhamk_` is treated as a key, so a malformed one is
+  `401 INVALID_API_KEY`. The session cookie is for browser sessions only and
+  never carries an API key. A request with both authenticates with the key,
+  and the cookie's CSRF rule still applies to it (API_SPEC.md).
 - Scopes:
 
   | Scope | Routes |
@@ -71,12 +76,25 @@ metrics endpoints are exempt.
   uncatalogued code). `message` is for humans and may change.
 - `retryable: true` — the same request may succeed later (back off
   exponentially; honour `Retry-After`). Examples: `RATE_LIMITED`,
-  `CHAIN_UNAVAILABLE`, `CAMPAIGN_CAP_REACHED`, `TX_PENDING`.
+  `CHAIN_UNAVAILABLE`, `CAMPAIGN_CAP_REACHED`. (`TX_PENDING` and the other
+  `202 reconciling` codes are not error bodies; they carry
+  `retryAfterSeconds` instead.)
 - `retryable: false` — change the request or stop. Examples:
   `IDEMPOTENCY_CONFLICT`, `ALREADY_CLAIMED`, `INSUFFICIENT_SCOPE`.
 - Unknown codes: treat 5xx and 429 as retryable, other 4xx as terminal.
 - `requestId` equals the `x-request-id` response header; quote it in
   support requests.
+- Unexpected failures answer `500 INTERNAL_ERROR` with a fixed message and
+  never the thrown message, so SQL text, bound parameters and stack-derived
+  text stay server side. The full error is logged once, at `error`, on a line
+  that carries the same `requestId`. A failure on a critical route (the
+  routes with an outcome metric) adds one more line at `error` with
+  `event`, `outcome`, `statusCode` and `campaignId` but not the error, so
+  count error causes from the lines that carry `err`.
+- Errors Fastify raises itself keep their status with a fixed message:
+  `400 INVALID_REQUEST` (malformed JSON or an undecodable URL),
+  `413 PAYLOAD_TOO_LARGE`, `415 UNSUPPORTED_MEDIA_TYPE` and
+  `404 ROUTE_NOT_FOUND`.
 
 ## Idempotency
 
@@ -103,7 +121,11 @@ campaign, submission, claim and PostgreSQL tests.
   new enum values in responses. Clients must ignore unknown fields.
 - Breaking changes (removing or renaming fields, changing types or
   semantics, making optional input required) require `/v2`.
+  Recorded exception: `signalSalt` became required on
+  `POST /v1/campaigns/:id/eligibility/verify` before any external client
+  existed (#71, ADR-0007 update 2026-10-21).
 - A deprecated endpoint or field is announced in the changelog and served
   with `Deprecation: true` and `Sunset: <HTTP date>` headers for at least
-  90 days in the sandbox and 180 days in live before removal.
+  90 days in the sandbox and 180 days in live before removal. (Policy only:
+  nothing is deprecated yet and the API emits no such headers today.)
 - Error codes are never reused for a different meaning.

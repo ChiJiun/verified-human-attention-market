@@ -88,7 +88,7 @@ Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
 
 ## 4. Current implementation order
 
-Status as of 2026-10-18 (verify against GitHub, which is authoritative):
+Status as of 2026-10-21 (verify against GitHub, which is authoritative):
 
 Done on `main`:
 
@@ -97,7 +97,7 @@ Done on `main`:
 - #15 mission model + deterministic engagement verifier
 - #9 World ID eligibility, backend side (ADR-0007)
 - `POST /v1/campaigns/:id/submissions` (eligibility + verifier + persistence, 2-attempt cap)
-- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config, runtime ABI from `@vham/shared` in API and web (still open for the real testnet deployment record)
+- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config, runtime ABI from `@vham/shared` in API and web (closed 2026-10-15; the ADR-0011 redeploy is tracked under #13)
 - #17 reorg-safe chain indexer; #16 verified on-chain linking + status sync; #20 analytics
 - #10 EIP-712 claim authorization: live on-chain checks, cap = paid + unexpired outstanding, reissue of expired unredeemed authorizations
 - #37 Sign-In with Ethereum; advertiser-only endpoints
@@ -107,12 +107,13 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
-- #19 closed 2026-10-15: `CampaignManager` is deployed on Base Sepolia and recorded in `packages/contracts/deployments/84532.json`
+In review, not merged (2026-10-21). The stack is #62 at the root (`main`), with #88 and #90 targeting its branch; #68 on #62; #79, #81, #83 and #84 on #68; #85 on #79; #87 on #84; #93 (this update) on #68; and #92 on `main`. They close or ref #74, #73, #13/#12, #69, #71, #72, #89 and #91. The owner decides the merge order and merges: #62 with #88 and #90, then #68, then the PRs on #68, then #85 and #87 once retargeted. #93 is retargeted to `main` after #68 merges. Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has PR #66). Details are in `docs/SDLC_STATUS.md`.
 
 Next, in dependency order:
 
-1. **#12 — live World ID check.** The IDKit widget is wired in `apps/web` (IDKit 4.4.0, `proofOfHuman()`, v4 proofs only; ADR-0007). It has only been verified against the API contract and the simulated mode; the first real proof happens in the Base Sepolia run. Close #12 only after that run.
-2. **#13 remainder** — Base Sepolia run (needs the owner's keystore, RPC and a World ID app). PR #62 carries the run record plus the contract-level `draftRef` / idempotent-creation redesign (ADR-0011) and is still under review; continue from that branch rather than re-doing the run on `main`.
+1. **Owner gates before the redeploy**: review and merge the stack, and decide issue #80 (`CampaignManager` cleanup), because the redeploy is the next on-chain change.
+2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md and the runbook in PR #83, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13; #19 was closed on 2026-10-15) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Issue #71 closes only after the #13 swap test passes as written in ADR-0007 on PR #85's branch. Close/refund buttons are in PR #84 (open).
+3. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
@@ -154,6 +155,7 @@ This is a baseline engagement test, not a claim that comprehension questions pro
 ```text
 ClaimAuthorization {
   campaignId
+  draftRef      // ADR-0011
   claimant
   amount
   nonce
@@ -175,6 +177,15 @@ max 10 test USDC funding
 ```
 
 These are test parameters, not final pricing.
+
+### ADR-0006 to ADR-0011 (accepted later; read the files)
+
+- **ADR-0006** — the three exposure limits are immutable constructor parameters of `CampaignManager`.
+- **ADR-0007** — World ID: one action per campaign, backend v4 verification, HMAC participant keys, IDKit 4.4.0 with RP-signed requests.
+- **ADR-0008** — signer custody (KMS behind a signing service in production), role separation, 24 h payout limit.
+- **ADR-0009** — campaign-scoped quality flags only; no cross-campaign reputation without a new ADR.
+- **ADR-0011** — idempotent on-chain creation per draft (`draftRef`): `createCampaign`, `fundCampaign` and `ClaimAuthorization` all carry it; deployments are kept apart in the database; a reorg beyond the confirmation depth halts the deployment until recovery; acceptance and claim authorization are one persisted result.
+- ADR-0010 (passive accrual) is **proposed only** (PR #61) and is not a decision.
 
 ---
 
@@ -447,14 +458,14 @@ Current database stack:
 - PostgreSQL
 - Drizzle ORM / Drizzle migrations
 
-Current logical tables include:
+Current logical tables (see `docs/architecture/DATA_MODEL.md`):
 
-- campaigns
-- eligibility
-- submissions
-- answers
-- chain_events
-- reconciliation_state
+- campaigns, missions
+- eligibility, submissions, answers
+- chain_events, reconciliation_state, indexer_halts
+- auth_nonces, auth_sessions
+- campaign_moderation, campaign_reports, moderation_actions
+- api_clients
 
 Do not modify production schema manually without a migration.
 
@@ -487,7 +498,12 @@ Current contract tests cover:
 - post-close authorization rejection;
 - pause behavior;
 - funding fuzzing;
-- stateful budget/completion invariants.
+- stateful budget/completion invariants;
+- exposure limits (ADR-0006): reward / completions / budget above limit, boundaries, invalid constructor limits, fuzzed creation;
+- cancel of an unfunded draft, no cancel once funded, no funding after end;
+- signer rotation revokes old signatures; typehash pinned against the backend;
+- draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
+- deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.
 
@@ -606,7 +622,7 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is the **#12 remainder** (real World ID), then #13 on Base Sepolia (see §4), unless GitHub state shows that work has already advanced.
+At this handoff, the expected next task is the owner-gated ADR-0011 redeploy and Base Sepolia re-run for #12/#13 (see §4), after the owner reviews and merges the open PR stack, unless GitHub state shows that work has already advanced. Do not merge those PRs.
 
 ---
 

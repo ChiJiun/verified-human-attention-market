@@ -2,15 +2,29 @@
 
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
+  newWorldIdSignalSalt,
+  worldIdSignal,
+  type WorldIdSignalInput,
+} from "@vham/shared/world-id";
+import {
+  CredentialRequest,
   IDKitRequestWidget,
-  proofOfHuman,
   type IDKitResult,
   type RpContext,
 } from "@worldcoin/idkit";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatUnits, type Address, type Hash, type Hex } from "viem";
 
 import { api, describeError } from "../../lib/api";
+import {
+  campaignLink,
+  campaignPath,
+  claimAuthorizationPath,
+  parseSubmissionId,
+  type CampaignId,
+  type CampaignLink,
+  type SubmissionId,
+} from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
@@ -35,6 +49,8 @@ interface Mission {
 
 interface Authorization {
   campaignId: string;
+  /** The campaign's draft reference, checked by the contract (ADR-0011). */
+  draftRef: Hex;
   claimant: Address;
   amount: string;
   nonce: Hex;
@@ -44,23 +60,36 @@ interface Authorization {
   contractAddress: Address;
 }
 
-/** What `POST /world-id/request` returns: everything IDKit needs to open. */
-interface WorldIdRequest {
-  appId: `app_${string}` | null;
+interface LiveWorldIdRequest {
+  mode: "live";
+  appId: `app_${string}`;
   action: string;
   environment: "production" | "staging";
   rpContext: RpContext;
+}
+
+type WorldIdRequest =
+  LiveWorldIdRequest | { mode: "simulated"; action: string };
+
+/** The proof signal's inputs, with the campaign id parsed from the link. */
+type SignalBinding = WorldIdSignalInput & { campaignId: CampaignId };
+
+interface PendingVerification {
+  request: LiveWorldIdRequest;
+  binding: SignalBinding;
 }
 
 type Step =
   | { kind: "verify" }
   | { kind: "answer" }
   | { kind: "rejected"; code: string }
-  | { kind: "claim"; submissionId: string }
+  | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash | null };
 
-const WORLD_ID_MODE = process.env.NEXT_PUBLIC_WORLD_ID_MODE ?? "live";
+function progressKey(campaignId: string, wallet: string, name: string) {
+  return `vham:${campaignId.toLowerCase()}:${wallet.toLowerCase()}:${name}`;
+}
 
 /** Per-browser progress so a reload never repeats a completed step. */
 function store<T>(key: string, value?: T | null): T | null {
@@ -78,7 +107,8 @@ function store<T>(key: string, value?: T | null): T | null {
 }
 
 export default function MissionPage() {
-  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [link, setLink] = useState<CampaignLink>({ kind: "none" });
+  const campaignId = link.kind === "campaign" ? link.id : null;
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [mission, setMission] = useState<Mission | null>(null);
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -87,21 +117,32 @@ export default function MissionPage() {
   const [step, setStep] = useState<Step>({ kind: "verify" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [worldRequest, setWorldRequest] = useState<WorldIdRequest | null>(null);
-  const [widgetOpen, setWidgetOpen] = useState(false);
+  const [pending, setPending] = useState<PendingVerification | null>(null);
 
   const key = (name: string) =>
-    `vham:${campaignId}:${wallet?.address.toLowerCase()}:${name}`;
+    progressKey(campaignId ?? "", wallet?.address ?? "", name);
+  const constraints = useMemo(
+    () =>
+      pending &&
+      CredentialRequest("proof_of_human", {
+        signal: worldIdSignal(pending.binding),
+      }),
+    [pending],
+  );
+  const closeWidget = useCallback((open: boolean) => {
+    if (!open) setPending(null);
+  }, []);
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("campaign");
-    setCampaignId(id);
-    if (!id) return;
+    const resolved = campaignLink(window.location.search);
+    setLink(resolved);
+    if (resolved.kind !== "campaign") return;
+    const { id } = resolved;
     void (async () => {
       try {
         const [loadedCampaign, loadedMission] = await Promise.all([
-          api<Campaign>(`/v1/campaigns/${id}`),
-          api<Mission>(`/v1/campaigns/${id}/mission`),
+          api<Campaign>(campaignPath(id)),
+          api<Mission>(campaignPath(id, "/mission")),
         ]);
         setCampaign(loadedCampaign.data);
         setMission(loadedMission.data);
@@ -127,55 +168,68 @@ export default function MissionPage() {
     run(async () => {
       const connected = await connectWallet();
       setWallet(connected);
-      const prefix = `vham:${campaignId}:${connected.address.toLowerCase()}:`;
-      const token = store<string>(`${prefix}eligibility`);
-      const submissionId = store<string>(`${prefix}submission`);
+      const saved = (name: string) =>
+        store<string>(progressKey(campaignId ?? "", connected.address, name));
+      const token = saved("eligibility");
+      const submissionId = parseSubmissionId(saved("submission"));
       if (token) setEligibilityToken(token);
       if (submissionId) setStep({ kind: "claim", submissionId });
       else if (token) setStep({ kind: "answer" });
     });
 
-  /** Sends the IDKit result, unchanged, with the wallet; never logs it. */
   async function verifyEligibility(
-    claimant: Address,
+    binding: SignalBinding,
     idkitResponse: unknown,
   ): Promise<void> {
-    if (!campaignId) return;
     const { data } = await api<{ eligibilityToken: string }>(
-      `/v1/campaigns/${campaignId}/eligibility/verify`,
-      { method: "POST", body: { claimant, idkitResponse } },
+      campaignPath(binding.campaignId, "/eligibility/verify"),
+      {
+        method: "POST",
+        body: {
+          claimant: binding.claimant,
+          signalSalt: binding.salt,
+          idkitResponse,
+        },
+      },
     );
-    store(key("eligibility"), data.eligibilityToken);
+    store(
+      progressKey(binding.campaignId, binding.claimant, "eligibility"),
+      data.eligibilityToken,
+    );
     setEligibilityToken(data.eligibilityToken);
   }
 
   const verifyHuman = () =>
     run(async () => {
       if (!wallet || !campaignId) return;
-      if (WORLD_ID_MODE === "simulated") {
+      // A fresh RP signature per attempt; the signing key stays on the API.
+      const { data } = await api<WorldIdRequest>(
+        campaignPath(campaignId, "/world-id/request"),
+        { method: "POST" },
+      );
+      const binding: SignalBinding = {
+        campaignId,
+        claimant: wallet.address,
+        salt: newWorldIdSignalSalt(),
+      };
+      if (data.mode === "simulated") {
         // Local anvil demo only: the API refuses simulated proofs elsewhere.
-        await verifyEligibility(wallet.address, {
-          action: `vham-campaign-${campaignId}`,
-          simulatedHuman: wallet.address.toLowerCase(),
+        await verifyEligibility(binding, {
+          action: data.action,
+          simulatedHuman: binding.claimant.toLowerCase(),
+          signal: worldIdSignal(binding),
         });
         setStep({ kind: "answer" });
         return;
       }
-      // A fresh RP signature per attempt; the signing key stays on the API.
-      const { data } = await api<WorldIdRequest>(
-        `/v1/campaigns/${campaignId}/world-id/request`,
-        { method: "POST" },
-      );
-      if (!data.appId) throw new Error("World ID is not configured.");
-      setWorldRequest(data);
-      setWidgetOpen(true);
+      setPending({ request: data, binding });
     });
 
   /** Throwing here makes the widget show its error state (host rejected). */
   async function handleWorldIdVerify(result: IDKitResult) {
-    if (!wallet) throw new Error("Connect your wallet first.");
+    if (!pending) throw new Error("Start the verification again.");
     try {
-      await verifyEligibility(wallet.address, result);
+      await verifyEligibility(pending.binding, result);
     } catch (caught) {
       const message = describeError(caught);
       setError(message);
@@ -194,7 +248,7 @@ export default function MissionPage() {
         submissionId: string;
         status: "accepted" | "rejected";
         rejectionCode: string | null;
-      }>(`/v1/campaigns/${campaignId}/submissions`, {
+      }>(campaignPath(campaignId, "/submissions"), {
         method: "POST",
         idempotencyKey: attemptKey,
         body: {
@@ -208,8 +262,12 @@ export default function MissionPage() {
       });
       store(key("attempt"), null);
       if (data.status === "accepted") {
-        store(key("submission"), data.submissionId);
-        setStep({ kind: "claim", submissionId: data.submissionId });
+        const submissionId = parseSubmissionId(data.submissionId);
+        if (!submissionId) {
+          throw new Error("The API returned an invalid submission id.");
+        }
+        store(key("submission"), submissionId);
+        setStep({ kind: "claim", submissionId });
       } else {
         setStep({ kind: "rejected", code: data.rejectionCode ?? "REJECTED" });
       }
@@ -227,7 +285,7 @@ export default function MissionPage() {
       }
       // Re-requesting after expiry returns a fresh authorization.
       const { data: auth } = await api<Authorization>(
-        `/v1/campaigns/${campaignId}/submissions/${step.submissionId}/authorization`,
+        claimAuthorizationPath(campaignId, step.submissionId),
         { method: "POST", body: { eligibilityToken } },
       );
       const hash = await wallet.walletClient.writeContract({
@@ -239,6 +297,7 @@ export default function MissionPage() {
         args: [
           {
             campaignId: BigInt(auth.campaignId),
+            draftRef: auth.draftRef,
             claimant: auth.claimant,
             amount: BigInt(auth.amount),
             nonce: auth.nonce,
@@ -265,7 +324,11 @@ export default function MissionPage() {
   if (!campaignId) {
     return (
       <main className="container">
-        <p className="error">Missing ?campaign=&lt;id&gt; in the link.</p>
+        <p className="error">
+          {link.kind === "invalid"
+            ? "This campaign link is not valid. Ask for a fresh link."
+            : "Missing ?campaign=<id> in the link."}
+        </p>
       </main>
     );
   }
@@ -316,24 +379,25 @@ export default function MissionPage() {
           <p className="note">
             Your reward is bound to this wallet. One person, one reward.
           </p>
-          <button onClick={verifyHuman} disabled={busy || !active}>
-            {WORLD_ID_MODE === "simulated"
-              ? "Verify (local simulation)"
-              : "Verify with World ID"}
+          <button
+            onClick={verifyHuman}
+            disabled={busy || !active || pending !== null}
+          >
+            Verify with World ID
           </button>
         </section>
       )}
 
-      {worldRequest?.appId && (
+      {pending && constraints && (
         <IDKitRequestWidget
-          open={widgetOpen}
-          onOpenChange={setWidgetOpen}
-          app_id={worldRequest.appId}
-          action={worldRequest.action}
-          rp_context={worldRequest.rpContext}
-          environment={worldRequest.environment}
+          open
+          onOpenChange={closeWidget}
+          app_id={pending.request.appId}
+          action={pending.request.action}
+          rp_context={pending.request.rpContext}
+          environment={pending.request.environment}
           allow_legacy_proofs={false}
-          preset={proofOfHuman()}
+          constraints={constraints}
           handleVerify={handleWorldIdVerify}
           onSuccess={() => {
             setError(null);

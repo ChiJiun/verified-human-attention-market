@@ -16,9 +16,16 @@ import {
   registerApiClientRoutes,
   type RateLimitConfig,
 } from "./api-clients/routes.js";
-import { registerErrorModel } from "./errors/catalog.js";
 import {
+  frameworkErrors,
+  registerErrorHandlers,
+  registerErrorModel,
+} from "./errors/catalog.js";
+import {
+  registerSessionCookieGuard,
   sessionAuthenticator,
+} from "./auth/credential.js";
+import {
   verifyEoaSignature,
   type Authenticate,
   type SignatureVerifier,
@@ -44,10 +51,7 @@ import {
   InMemoryEligibilityRepository,
   type EligibilityRepository,
 } from "./eligibility/repository.js";
-import {
-  registerEligibilityRoutes,
-  type WorldIdRequestConfig,
-} from "./eligibility/routes.js";
+import { registerEligibilityRoutes } from "./eligibility/routes.js";
 import {
   InMemorySubmissionRepository,
   type SubmissionRepository,
@@ -70,12 +74,15 @@ import {
   LOGGER_REDACT_PATHS,
   registerInstrumentation,
 } from "./observability/instrumentation.js";
+import { claimAuthorizationObserver } from "./observability/claim-authorizations.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { PayoutAnomalyDetector } from "./observability/payout-anomaly.js";
+import type { WorldIdVerifier } from "./identity/world-id.js";
 import {
-  UnconfiguredWorldIdVerifier,
-  type WorldIdVerifier,
-} from "./identity/world-id.js";
+  worldIdVerifierFor,
+  type WorldIdConfig,
+} from "./identity/world-id-config.js";
+import { authorizeClaim, prepareClaim } from "./claims/service.js";
 
 export interface AppDependencies {
   campaignRepository?: CampaignRepository;
@@ -85,15 +92,19 @@ export interface AppDependencies {
   authRepository?: AuthRepository;
   /** SIWE domain/chain; null or absent = sign-in disabled (fail closed). */
   siwe?: SiweConfig | null;
+  /**
+   * Origin a cookie-authenticated mutation may come from when the browser
+   * sends no Fetch Metadata; null or absent = Fetch Metadata only.
+   */
+  webOrigin?: string | null;
   verifySignature?: SignatureVerifier;
   /** Overrides session lookup (tests of non-auth features). */
   authenticate?: Authenticate;
   claimSigner?: ClaimSigner | null;
   /** Global 24 h claim-liability limit (atomic units); null = none (#23). */
   dailyPayoutLimitAtomic?: bigint | null;
-  worldIdVerifier?: WorldIdVerifier;
-  /** RP signing for IDKit requests (#12); null or absent = disabled. */
-  worldIdRequest?: WorldIdRequestConfig | null;
+  worldId?: WorldIdConfig | null;
+  worldIdVerifierOverride?: WorldIdVerifier;
   /** On-chain integration (RPC, contract, indexed events); null = disabled. */
   chain?: OnchainRouteDependencies["chain"];
   /** HMAC secret for participant keys; eligibility fails closed without it. */
@@ -114,14 +125,32 @@ export interface AppDependencies {
   trustProxyHops?: number;
   close?: () => Promise<void>;
   now?: () => Date;
+  /** Receives the JSON log lines; turns logging on under NODE_ENV=test. */
+  logStream?: { write(line: string): void };
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
+  // Same rule as INDEXER_CONFIRMATIONS: 0 would link unconfirmed creations.
+  const confirmations = dependencies.chain?.confirmations;
+  if (
+    confirmations !== undefined &&
+    (!Number.isSafeInteger(confirmations) || confirmations < 1)
+  ) {
+    throw new Error("chain.confirmations must be a positive integer");
+  }
+
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === "test"
+      process.env.NODE_ENV === "test" && !dependencies.logStream
         ? false
-        : { redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" } },
+        : {
+            redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+            ...(dependencies.logStream && {
+              level: "info",
+              stream: dependencies.logStream,
+            }),
+          },
+    frameworkErrors,
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });
@@ -139,12 +168,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
       (id) => submissionRepository.getById(id),
       (id) => campaignRepository.getById(id),
     );
-  const worldIdVerifier =
-    dependencies.worldIdVerifier ?? new UnconfiguredWorldIdVerifier();
   const now = dependencies.now ?? (() => new Date());
   const authRepository =
     dependencies.authRepository ?? new InMemoryAuthRepository();
   const chainId = dependencies.chainId ?? 84532;
+  const worldIdConfig = dependencies.worldId ?? null;
+  const worldIdVerifier =
+    dependencies.worldIdVerifierOverride ??
+    worldIdVerifierFor(worldIdConfig, chainId);
+  const webOrigin = dependencies.webOrigin ?? null;
   const sessions =
     dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   // API keys (#26) act as their advertiser; otherwise SIWE sessions.
@@ -190,7 +222,12 @@ export function buildApp(dependencies: AppDependencies = {}) {
     return { head, lag };
   }
 
+  registerErrorHandlers(app);
   registerErrorModel(app);
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    return payload;
+  });
   registerApiClientGate(app, {
     clients: apiClientRepository,
     environment: apiEnvironment,
@@ -199,13 +236,19 @@ export function buildApp(dependencies: AppDependencies = {}) {
     metrics,
     now,
   });
+  registerSessionCookieGuard(app, { webOrigin });
 
-  registerInstrumentation(app, {
+  const observeClaim = claimAuthorizationObserver({
     metrics,
     payoutAnomalies:
       dependencies.payoutAnomalies ?? new PayoutAnomalyDetector(),
-    metricsToken: dependencies.metricsToken ?? null,
     now,
+    log: app.log,
+  });
+
+  registerInstrumentation(app, {
+    metrics,
+    metricsToken: dependencies.metricsToken ?? null,
     collect: async () => {
       await chainStatus();
     },
@@ -257,6 +300,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     await registerAuthRoutes(instance, {
       repository: authRepository,
       config: dependencies.siwe ?? null,
+      webOrigin,
       verifySignature: dependencies.verifySignature ?? verifyEoaSignature,
       authenticate,
       now,
@@ -292,12 +336,51 @@ export function buildApp(dependencies: AppDependencies = {}) {
       now,
     });
 
+    // Campaigns linked on another deployment are retired (ADR-0011).
+    const deployment = dependencies.chain
+      ? {
+          chainId: dependencies.chain.chain.chainId,
+          contractAddress: dependencies.chain.chain.contractAddress,
+        }
+      : null;
+
+    // A reorg beyond the confirmation depth stops all participation and
+    // signing for the deployment until recovery (ADR-0011).
+    const chainHalted = async () =>
+      dependencies.chain
+        ? (await dependencies.chain.events.getHalt(
+            dependencies.chain.chain,
+          )) !== null
+        : false;
+    const claimDependencies = {
+      campaigns: campaignRepository,
+      eligibility: eligibilityRepository,
+      submissions: submissionRepository,
+      claims: claimRepository,
+      signer: dependencies.claimSigner ?? null,
+      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
+      chainHalted,
+      chain: dependencies.chain
+        ? {
+            chainId: dependencies.chain.chain.chainId,
+            contractAddress: dependencies.chain.chain
+              .contractAddress as `0x${string}`,
+            rpc: dependencies.chain.rpc,
+            events: dependencies.chain.events,
+          }
+        : null,
+      now,
+      observe: observeClaim,
+    };
+
     await registerEligibilityRoutes(instance, {
       campaigns: campaignRepository,
+      deployment,
+      chainHalted,
       eligibility: eligibilityRepository,
       worldId: worldIdVerifier,
       participantKeySecret: dependencies.participantKeySecret ?? null,
-      worldIdRequest: dependencies.worldIdRequest ?? null,
+      worldIdConfig,
       now,
     });
 
@@ -310,29 +393,24 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
     await registerSubmissionRoutes(instance, {
       campaigns: campaignRepository,
-      eligibility: eligibilityRepository,
-      submissions: submissionRepository,
-      now,
-    });
-
-    await registerClaimRoutes(instance, {
-      campaigns: campaignRepository,
+      deployment,
+      chainHalted,
       eligibility: eligibilityRepository,
       submissions: submissionRepository,
       claims: claimRepository,
-      signer: dependencies.claimSigner ?? null,
-      dailyPayoutLimitAtomic: dependencies.dailyPayoutLimitAtomic ?? null,
-      chain: dependencies.chain
-        ? {
-            chainId: dependencies.chain.chain.chainId,
-            contractAddress: dependencies.chain.chain
-              .contractAddress as `0x${string}`,
-            rpc: dependencies.chain.rpc,
-            events: dependencies.chain.events,
-          }
-        : null,
       now,
+      prepareClaim: claimDependencies.chain
+        ? (campaign, claimant) =>
+            prepareClaim(claimDependencies, campaign, claimant)
+        : null,
+      observeClaim,
+      issueAuthorization:
+        claimDependencies.signer && claimDependencies.chain
+          ? (input) => authorizeClaim(claimDependencies, input)
+          : null,
     });
+
+    await registerClaimRoutes(instance, claimDependencies);
   });
 
   if (dependencies.close) {

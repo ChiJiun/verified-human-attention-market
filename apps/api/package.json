@@ -17,7 +17,8 @@
     "retention:start": "node dist/retention-job.js",
     "reconcile": "tsx src/reconcile-job.ts",
     "reconcile:start": "node dist/reconcile-job.js",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "reorg:recover": "tsx src/reorg-recover.ts"
   },
   "dependencies": {
     "@vham/shared": "workspace:*",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "26.6.4",
+    "@worldcoin/idkit-core": "4.4.0",
     "drizzle-kit": "0.31.11",
     "tsx": "4.23.15",
     "typescript": "5.9.3",

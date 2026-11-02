@@ -1,21 +1,39 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildApp } from "../src/app.js";
+import { buildApp, type AppDependencies } from "../src/app.js";
 import { signedInAs } from "./support/auth.js";
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import type { CampaignRecord, CampaignStatus } from "../src/campaigns/types.js";
+import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
   campaignAction,
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
+import {
+  ClaimIssueError,
+  type ClaimIssueInput,
+  type ClaimRepository,
+} from "../src/claims/repository.js";
+import type { ClaimPreparation, ClaimTerms } from "../src/claims/service.js";
+import {
+  SignerUnavailableError,
+  type SignedClaim,
+} from "../src/claims/signer.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
+import {
+  submitCompletion,
+  type SubmissionServiceDependencies,
+} from "../src/submissions/service.js";
+import { FakeChain } from "./support/fake-chain.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
 const WALLET_A = "0x" + "a".repeat(40);
 const WALLET_B = "0x" + "b".repeat(40);
+const SIGNAL_SALT = `0x${"11".repeat(32)}`;
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -82,7 +100,7 @@ const WRONG = [
   { questionId: "q2", choiceId: "b" },
 ];
 
-async function setup() {
+async function setup(chain: AppDependencies["chain"] = null) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const campaigns = new StatusOverrideCampaignRepository();
   const eligibility = new InMemoryEligibilityRepository();
@@ -92,8 +110,9 @@ async function setup() {
     campaignRepository: campaigns,
     eligibilityRepository: eligibility,
     submissionRepository: submissions,
-    worldIdVerifier: new FakeWorldId(),
+    worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: SECRET,
+    chain,
     now: () => now,
   });
   apps.push(app);
@@ -113,6 +132,7 @@ async function setup() {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: { action: campaignAction(campaignId), human },
       },
     });
@@ -134,6 +154,8 @@ async function setup() {
   return {
     app,
     campaigns,
+    eligibility,
+    submissions,
     campaignId,
     verify,
     submit,
@@ -142,6 +164,234 @@ async function setup() {
     },
   };
 }
+
+function signedFor(claimant: string): SignedClaim {
+  return {
+    payload: {
+      campaignId: 1n,
+      draftRef: `0x${"11".repeat(32)}`,
+      claimant: claimant as `0x${string}`,
+      amount: 1000000n,
+      nonce: `0x${"22".repeat(32)}`,
+      issuedAt: 1n,
+      expiresAt: 901n,
+    },
+    signature: `0x${"33".repeat(65)}`,
+    chainId: 84532,
+    contractAddress: `0x${"44".repeat(20)}`,
+  };
+}
+
+const TERMS: ClaimTerms = {
+  campaignId: "prepared-campaign",
+  now: new Date("2026-10-05T10:30:00.000Z"),
+  canIssue: true,
+  alreadyClaimed: false,
+  onchainPaidCompletions: 0,
+  sign: async () => signedFor(WALLET_A),
+};
+const SIGNABLE: ClaimPreparation = {
+  ok: true,
+  payable: true,
+  signing: { state: "ready", terms: TERMS },
+};
+
+function serviceDependencies(
+  s: Awaited<ReturnType<typeof setup>>,
+  prepareClaim: SubmissionServiceDependencies["prepareClaim"],
+  issueOnce: ClaimRepository["issueOnce"] = async () => {
+    throw new Error("no authorization is issued here");
+  },
+): SubmissionServiceDependencies {
+  return {
+    campaigns: s.campaigns,
+    deployment: null,
+    chainHalted: async () => false,
+    eligibility: s.eligibility,
+    submissions: s.submissions,
+    claims: { within: () => ({ issueOnce }) },
+    now: () => new Date("2026-10-05T10:30:00.000Z"),
+    prepareClaim,
+  };
+}
+
+describe("acceptance and authorization are one persisted result (ADR-0011)", () => {
+  it.each([
+    [
+      "the campaign closed since the live check",
+      new ClaimIssueError("CAMPAIGN_NOT_ACTIVE"),
+      409,
+      "CAMPAIGN_NOT_ACTIVE",
+    ],
+    [
+      "the signing service is down",
+      new SignerUnavailableError("signing service unreachable"),
+      503,
+      "SIGNER_UNAVAILABLE",
+    ],
+    [
+      "the campaign cap was reached meanwhile",
+      new ClaimIssueError("CAMPAIGN_CAP_REACHED"),
+      409,
+      "CAMPAIGN_CAP_REACHED",
+    ],
+    [
+      "the daily payout limit is reached",
+      new ClaimIssueError("DAILY_LIMIT_REACHED"),
+      503,
+      "DAILY_LIMIT_REACHED",
+    ],
+  ])(
+    "records nothing when %s, and accepts the same request once signing works",
+    async (_reason, refusal, status, code) => {
+      const s = await setup();
+      const token = await s.verify("human-1", WALLET_A);
+      let refuse = true;
+      const issued: ClaimIssueInput[] = [];
+      const claim = signedFor(WALLET_A);
+      const dependencies = serviceDependencies(
+        s,
+        async () => SIGNABLE,
+        async (input) => {
+          issued.push(input);
+          if (refuse) {
+            throw refusal;
+          }
+          return { created: true, claim };
+        },
+      );
+      const input = {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_A,
+        idempotencyKey: "attempt-1",
+        answers: CORRECT,
+      };
+
+      // Correct answers, but no authorization can be issued: the acceptance
+      // is rolled back, the attempt is not consumed and the reason is given.
+      expect(await submitCompletion(dependencies, input)).toEqual({
+        ok: false,
+        status,
+        code,
+      });
+      expect(issued).toHaveLength(1);
+      expect(await s.submissions.findAcceptedByEligibility(token)).toBeNull();
+      expect(await s.submissions.countByEligibility(token)).toBe(0);
+      expect(
+        await s.submissions.findByIdempotencyKey(s.campaignId, "attempt-1"),
+      ).toBeNull();
+
+      // The same request succeeds once the authorization can be signed, and
+      // the signature is returned with the acceptance.
+      refuse = false;
+      const accepted = await submitCompletion(dependencies, input);
+      expect(accepted).toMatchObject({
+        ok: true,
+        created: true,
+        submission: { result: "accepted" },
+      });
+      if (!accepted.ok) return;
+      expect(accepted.claim).toBe(claim);
+      expect(issued).toEqual([
+        { ...TERMS, submissionId: issued[0]?.submissionId },
+        { ...TERMS, submissionId: accepted.submission.id },
+      ]);
+
+      // A replay returns the stored acceptance without signing again.
+      expect(await submitCompletion(dependencies, input)).toMatchObject({
+        ok: true,
+        created: false,
+        claim: null,
+      });
+      expect(issued).toHaveLength(2);
+    },
+  );
+
+  it("never calls the signer for a rejected completion", async () => {
+    const s = await setup();
+    const token = await s.verify("human-2", WALLET_B);
+    let calls = 0;
+    const outcome = await submitCompletion(
+      serviceDependencies(
+        s,
+        async () => SIGNABLE,
+        async () => {
+          calls += 1;
+          throw new SignerUnavailableError("signing service unreachable");
+        },
+      ),
+      {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_B,
+        idempotencyKey: "wrong-1",
+        answers: WRONG,
+      },
+    );
+    expect(outcome).toMatchObject({
+      ok: true,
+      submission: { result: "rejected", rejectionCode: "COMPREHENSION_FAILED" },
+      claim: null,
+    });
+    expect(calls).toBe(0);
+    expect(await s.submissions.countByEligibility(token)).toBe(1);
+  });
+
+  it.each([
+    [
+      "the chain cannot be read",
+      { ok: false as const, status: 503, code: "CHAIN_UNAVAILABLE" },
+    ],
+    [
+      "the contract would not pay the campaign",
+      {
+        ok: true as const,
+        payable: false,
+        signing: { state: "unconfigured" as const },
+      },
+    ],
+  ])(
+    "records no attempt when %s, before the answers are evaluated",
+    async (_reason, preparation) => {
+      const s = await setup();
+      const token = await s.verify("human-3", WALLET_A);
+      const dependencies = serviceDependencies(s, async () => preparation);
+      const request = {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_A,
+        answers: WRONG,
+      };
+
+      expect(
+        await submitCompletion(dependencies, {
+          ...request,
+          idempotencyKey: "pre-1",
+        }),
+      ).toEqual(
+        preparation.ok
+          ? { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" }
+          : preparation,
+      );
+      expect(await s.submissions.countByEligibility(token)).toBe(0);
+
+      const recorded = await submitCompletion(
+        serviceDependencies(s, async () => ({
+          ok: true,
+          payable: true,
+          signing: { state: "unconfigured" },
+        })),
+        { ...request, idempotencyKey: "pre-2" },
+      );
+      expect(recorded).toMatchObject({
+        ok: true,
+        created: true,
+        submission: { result: "rejected" },
+      });
+    },
+  );
+});
 
 describe("POST /v1/campaigns/:id/submissions", () => {
   it("records quality reason codes for advertisers but never shows them to participants (#25)", async () => {
@@ -203,6 +453,53 @@ describe("POST /v1/campaigns/:id/submissions", () => {
       claimant: WALLET_A,
       claim: { status: "pending_authorization" },
     });
+  });
+
+  it("accepts with pending_authorization and no code when a chain is configured but no claim signer", async () => {
+    const contractAddress = `0x${"c1".repeat(20)}`;
+    const rpc = new FakeChain(contractAddress);
+    const { campaigns, campaignId, verify, submit } = await setup({
+      rpc,
+      chain: {
+        chainId: 84532,
+        contractAddress,
+        usdcAddress: `0x${"d1".repeat(20)}`,
+      },
+      events: new InMemoryChainEventRepository(),
+      now: () => new Date("2026-10-05T10:30:00.000Z"),
+    });
+    const advertiser = campaignPayload.advertiser.toLowerCase();
+    const reward = BigInt(campaignPayload.rewardPerCompletion);
+    await campaigns.linkOnchain(campaignId, {
+      onchainCampaignId: "1",
+      contractAddress,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    rpc.campaignIdByDraft.set(`${advertiser}:${draftRefFor(campaignId)}`, {
+      id: 1,
+      block: 0n,
+    });
+    rpc.campaignStructs.set("1", {
+      advertiser,
+      fundedBudget: reward * BigInt(campaignPayload.maxCompletions),
+      rewardPerCompletion: reward,
+      maxCompletions: campaignPayload.maxCompletions,
+      startTime: Date.parse(campaignPayload.startAt) / 1000,
+      endTime: Date.parse(campaignPayload.endAt) / 1000,
+    });
+
+    const response = await submit("chain-without-signer", {
+      eligibilityToken: await verify("human-1", WALLET_A),
+      claimant: WALLET_A,
+      answers: CORRECT,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = response.json<{ status: string; claim: unknown }>();
+    expect(body.status).toBe("accepted");
+    expect(body.claim).toEqual({ status: "pending_authorization", code: null });
   });
 
   it("replays the original outcome for the same idempotency key", async () => {

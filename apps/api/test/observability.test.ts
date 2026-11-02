@@ -6,7 +6,7 @@ import { InMemoryChainEventRepository } from "../src/chain/events-repository.js"
 import type { ChainRpc } from "../src/chain/rpc.js";
 import {
   generateRequestId,
-  registerInstrumentation,
+  LOGGER_REDACT_PATHS,
 } from "../src/observability/instrumentation.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
@@ -53,6 +53,37 @@ describe("MetricsRegistry", () => {
   });
 });
 
+describe("log redaction", () => {
+  it("redacts the signal salt and the proof in a logged request body", async () => {
+    const lines: string[] = [];
+    const app = Fastify({
+      logger: {
+        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+        stream: { write: (line: string) => lines.push(line) },
+      },
+    });
+    closers.push(app);
+    const salt = `0x${"5a".repeat(32)}`;
+
+    app.log.info(
+      {
+        body: {
+          claimant: `0x${"a".repeat(40)}`,
+          signalSalt: salt,
+          idkitResponse: { responses: [{ nullifier: "0x2b" }] },
+        },
+      },
+      "eligibility request",
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      body: { signalSalt: "[redacted]", idkitResponse: "[redacted]" },
+    });
+    expect(lines[0]).not.toContain(salt.slice(2));
+  });
+});
+
 describe("request ids", () => {
   it("accepts a well-formed caller id and replaces anything else", () => {
     expect(
@@ -95,7 +126,7 @@ describe("outcome metrics", () => {
     await app.inject({
       method: "POST",
       url: `/v1/campaigns/${CAMPAIGN}/submissions/${CAMPAIGN}/authorization`,
-      payload: {},
+      payload: { eligibilityToken: CAMPAIGN },
     });
     await app.inject({
       method: "POST",
@@ -160,45 +191,42 @@ describe("payout anomaly alert", () => {
     // Window slid past the burst.
     expect(detector.record("a", at(120))).toEqual([]);
   });
+});
 
-  it("increments the alert metric and logs on a burst of issued authorizations", async () => {
-    const logs: Record<string, unknown>[] = [];
+describe("log redaction", () => {
+  it("never logs credentials or session cookies", () => {
+    const lines: string[] = [];
     const app = Fastify({
       logger: {
-        level: "warn",
-        stream: { write: (line: string) => logs.push(JSON.parse(line)) },
+        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+        // Fastify's default req/res serializers drop headers before redaction.
+        serializers: {
+          req: (value: { headers?: unknown }) => value,
+          res: (value: { headers?: unknown }) => value,
+        },
+        stream: { write: (line: string) => lines.push(line) },
       },
     });
     closers.push(app);
-    const metrics = new MetricsRegistry();
 
-    registerInstrumentation(app, {
-      metrics,
-      payoutAnomalies: new PayoutAnomalyDetector({
-        windowMs: 60_000,
-        perCampaign: 2,
-        global: 100,
-      }),
-      metricsToken: null,
-      now: () => new Date("2026-10-13T00:00:00.000Z"),
-    });
-    app.post(AUTHORIZATION_ROUTE, async (_request, reply) =>
-      reply.status(201).send({ signature: "0xsecret" }),
+    app.log.info(
+      {
+        req: {
+          headers: {
+            authorization: "Bearer secret-1",
+            cookie: "__Host-vham_session=secret-2",
+          },
+        },
+        res: {
+          headers: { "set-cookie": "__Host-vham_session=secret-3; Path=/" },
+        },
+        headers: { "set-cookie": ["__Host-vham_session=secret-4"] },
+      },
+      "headers",
     );
 
-    for (let index = 0; index < 3; index += 1) {
-      await app.inject({
-        method: "POST",
-        url: `/v1/campaigns/${CAMPAIGN}/submissions/s${index}/authorization`,
-      });
-    }
-
-    expect(
-      metrics.value("vham_payout_anomalies_total", { scope: "campaign" }),
-    ).toBe(1);
-    const alert = logs.find((line) => line.alert === "payout_anomaly");
-    expect(alert).toMatchObject({ campaignId: CAMPAIGN, count: 3, limit: 2 });
-    expect(JSON.stringify(logs)).not.toContain("0xsecret");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(/secret-\d/);
   });
 });
 

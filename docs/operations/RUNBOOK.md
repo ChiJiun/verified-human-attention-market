@@ -35,8 +35,8 @@ API (`/metrics`):
 | `vham_campaign_links_total`                                       | outcome               | On-chain create/fund link (`TX_REVERTED`, `PARAMETERS_MISMATCH`, …). |
 | `vham_eligibility_verifications_total`                            | outcome               | World ID (`PROVIDER_UNAVAILABLE`, `VERIFICATION_FAILED`, …).         |
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
-| `vham_claim_authorizations_total`                                 | outcome               | Claim signing (`SIGNER_MISMATCH`, `CHAIN_UNAVAILABLE`, …).           |
-| `vham_payout_anomalies_total`                                     | scope                 | Authorization bursts (campaign / global).                            |
+| `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
+| `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
 | `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
 
 Worker (`INDEXER_METRICS_PORT`):
@@ -48,6 +48,17 @@ Worker (`INDEXER_METRICS_PORT`):
 | `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`.       |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
+
+`vham_claim_authorizations_total` counts each call of the claim service, whichever
+route made it: acceptance in `POST .../submissions` (a refusal there answers
+503/409 and records nothing), a `POST .../submissions` replay (a refusal answers
+200 with `claim.code`), and `POST .../authorization`. Requests rejected before the
+service runs (invalid body, rate limit) appear only in `vham_http_requests_total`.
+`success` covers new and stored authorizations; only newly signed ones feed
+`vham_payout_anomalies_total`.
+Each refusal that points at an operator problem is logged once at error level
+with the request id (`event="submissions"` or `event="claim_authorizations"`),
+and so is the anomaly line.
 
 Claim transaction failures happen in the participant's wallet, not the API;
 they surface as authorizations that expire unredeemed (reissued on retry), i.e.
@@ -61,7 +72,7 @@ they surface as authorizations that expire unredeemed (reissued on retry), i.e.
 More than `perCampaign` (10) authorizations for one campaign, or `global` (50)
 overall, within 5 minutes. Possible signer abuse or a fraud wave.
 
-1. Check `vham_submissions_total` and logs (`alert="payout_anomaly"`, `campaignId`).
+1. Check `vham_submissions_total` (accepted completions) and logs (`alert="payout_anomaly"`, `campaignId`).
 2. If unexpected: run [Emergency pause](#emergency-pause). To also stop
    issuance, unset the signer (`CLAIM_SIGNER_URL` / `CLAIM_SIGNER_PRIVATE_KEY`)
    and restart the API (claims then return `503 AUTHORIZATION_UNAVAILABLE`).
@@ -123,9 +134,28 @@ claim issuance still reads the contract directly.
 ### VhamReorgBeyondConfirmations
 
 The worker stopped on purpose: a reorg deeper than `INDEXER_CONFIRMATIONS` would
-rewrite confirmed settlement data. Do not just restart. Inspect the reported
-block, then either raise confirmations and re-index from the deploy block, or
-restore the cursor after a manual review.
+rewrite confirmed settlement data. It recorded a halt, so the API already
+refuses new World ID requests, eligibility, completions and claim
+authorizations for this deployment with `503 CHAIN_HALTED` (ADR-0011). The
+worker also refuses to start while the halt is recorded. Do not just restart.
+
+1. Inspect the reported block on a block explorer.
+2. Dry run: `pnpm --filter @vham/api reorg:recover`. It checks every linked
+   campaign against the contract's own `campaignIdByDraft` at the confirmed
+   head and prints which links it would keep and release
+   (`creation_missing`, `id_changed`: the id now belongs to another draft, or
+   `parameters_changed`: same id, different reward, cap or window).
+3. Review the plan, then `pnpm --filter @vham/api reorg:recover -- --apply`:
+   released campaigns return to `draft`, the index is dropped and the halt is
+   marked *recovery applied*. **The halt stays**; the API keeps refusing.
+4. Restart the worker; it rebuilds the index from the deploy block, links
+   canonical creations and re-syncs statuses. Once the index has caught up to
+   the confirmed head and every link verifies, it clears the halt itself
+   (`reorg recovery verified; participation resumes`). Until then it logs why it is
+   waiting. Run `pnpm --filter @vham/api reconcile` afterwards.
+
+Consider raising `INDEXER_CONFIRMATIONS` (used by both the API and the worker)
+if this happens more than once.
 
 ### VhamRpcDown
 
