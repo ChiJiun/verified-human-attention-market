@@ -155,7 +155,7 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 2. 用 Sign-In with Ethereum 登入。重新整理後 session 仍在；沒連錢包時，頁面顯示「Signed in as …」和「Sign out」。「Disconnect」會先登出再中斷錢包；登出失敗時兩者都保留，可以再按一次。
 3. 填寫 campaign（獎勵用十進位 USDC 輸入，內部以整數 atomic units 換算），並設計 1–3 題理解測驗。
 4. 按「Create on-chain」送出 createCampaign，API 驗證交易後完成連結。
-5. 按「Approve & fund」核准並入金。
+5. 按「Approve & fund」核准並入金。錢包給 CampaignManager 的 USDC 額度（allowance）已經達到預算時，按鈕顯示為「Fund campaign」，只送入金。
 6. indexer 確認後，狀態變成 active，頁面會顯示預算與成效。
 7. 想提早結束時按「Close campaign」。關閉後 API 不再發新的領取授權，已發出的授權在到期前仍可在鏈上領取。結束前最後一分鐘不提供這個按鈕，因為交易可能在結束後才上鏈而 revert。
 8. 退款要等到「關閉時間（沒關閉則是結束時間）加 15 分鐘」之後，因為已發出的授權最多還有效 15 分鐘，合約等它們全部過期才放行。這段時間頁面顯示開放時間、倒數和原因。時間到了按「Refund unused budget」，狀態變成 `settled`，未用完的預算回到廣告主錢包。
@@ -168,6 +168,13 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 - 收據顯示 revert，或同一個 nonce 已被另一筆交易用掉（在錢包取消），且重新讀到的 campaign 沒有變化，卡片說明原因，按鈕在鏈上仍允許時重新出現。
 - 錢包的 RPC 可能由不同後端回答，所以要連續兩次檢查得到同一個結論才算數；之後鏈上若仍出現動作的結果，顯示失敗的卡片也會改成完成。
 - 交易只要曾經查到過（知道它的 nonce），在那個 nonce 被用掉之前就一直算「還在確認」，因為它隨時可能上鏈。從來沒查到過、超過 10 分鐘仍查不到的交易，視為可能根本沒送出：一般按鈕仍隱藏，改為提供另外的「Close campaign anyway」／「Refund unused budget anyway」並附警告。再按之前請先看錢包的活動紀錄；重送前仍會模擬，若原交易其實已上鏈，模擬會失敗而不送出，兩筆都還沒上鏈時第二筆只會 revert 並耗 gas。
+
+核准（Approve USDC）與入金（Fund campaign）的交易沒有收據時，依同樣的規則處理（#103）：卡片顯示「還在確認中」，入金按鈕先隱藏，頁面每 10 秒查一次收據、nonce，以及交易要造成的結果，不必重新整理。
+
+- 核准的結果是 allowance（owner 為廣告主、spender 為 CampaignManager）達到預算，也就是 rewardPerCompletion × maxCompletions（atomic units，整數計算）。看到後卡片改成完成，按鈕改為「Fund campaign」，按下後才送入金，頁面不會自動送出。
+- 入金的結果是鏈上的 campaign 變成 `active`、`fundedBudget` 等於預算，或 API 的索引已經看到入金。入金送出後，按鈕在看到這個結果之前都保持隱藏。
+- revert、被取代、兩次檢查一致、失敗卡片之後改成完成，以及從未查到的交易 10 分鐘後改提供「Approve & fund anyway」／「Fund campaign anyway」，都和關閉、退款相同。入金前頁面一律重新讀鏈；原本的入金其實已上鏈時，頁面說明已入金，不會送出。兩筆核准都上鏈只是把額度再設一次並耗 gas；兩筆入金都送出時，第二筆會被合約以 `InvalidCampaignStatus` 拒絕並耗 gas，USDC 不會被扣兩次。
+- 等待入金期間，頁面每次重新整理都會讀 allowance 和 campaign，用來決定按鈕顯示「Approve & fund」還是「Fund campaign」。
 
 一個動作進行中時，其他按鈕（包含「Close campaign」與「Refund unused budget」）只會變成停用，不會消失，連點也不會點到滑進同一位置的「Refresh」。
 
