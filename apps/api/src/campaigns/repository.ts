@@ -238,6 +238,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
   }
 
   async linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord> {
+    const contractAddress = link.contractAddress.toLowerCase();
     let row: typeof campaigns.$inferSelect | undefined;
 
     try {
@@ -245,7 +246,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
         .update(campaigns)
         .set({
           onchainCampaignId: link.onchainCampaignId,
-          onchainContractAddress: link.contractAddress,
+          onchainContractAddress: contractAddress,
           publishTxHash: link.publishTxHash,
           status: link.status,
           updatedAt: link.updatedAt,
@@ -274,7 +275,7 @@ export class PostgresCampaignRepository implements CampaignRepository {
 
     if (
       existing.onchainCampaignId !== link.onchainCampaignId ||
-      existing.onchainContractAddress !== link.contractAddress
+      existing.onchainContractAddress !== contractAddress
     ) {
       throw new CampaignLinkConflictError("ALREADY_LINKED");
     }
@@ -441,6 +442,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
   }
 
   async linkOnchain(id: string, link: OnchainLink): Promise<CampaignRecord> {
+    const contractAddress = link.contractAddress.toLowerCase();
     const existing = this.records.get(id);
 
     if (!existing) {
@@ -450,7 +452,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     if (existing.onchainCampaignId !== null) {
       if (
         existing.onchainCampaignId !== link.onchainCampaignId ||
-        existing.onchainContractAddress !== link.contractAddress
+        existing.onchainContractAddress !== contractAddress
       ) {
         throw new CampaignLinkConflictError("ALREADY_LINKED");
       }
@@ -460,7 +462,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     for (const record of this.records.values()) {
       if (
         record.chainId === existing.chainId &&
-        record.onchainContractAddress === link.contractAddress &&
+        record.onchainContractAddress === contractAddress &&
         record.onchainCampaignId === link.onchainCampaignId
       ) {
         throw new CampaignLinkConflictError("ONCHAIN_CAMPAIGN_ALREADY_LINKED");
@@ -470,7 +472,7 @@ export class InMemoryCampaignRepository implements CampaignRepository {
     const updated: CampaignRecord = {
       ...existing,
       onchainCampaignId: link.onchainCampaignId,
-      onchainContractAddress: link.contractAddress,
+      onchainContractAddress: contractAddress,
       publishTxHash: link.publishTxHash,
       status: link.status,
       updatedAt: link.updatedAt,

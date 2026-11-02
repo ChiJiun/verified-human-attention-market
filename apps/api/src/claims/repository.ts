@@ -162,11 +162,15 @@ export class PostgresClaimRepository implements ClaimRepository {
 
   async issueOnce(input: ClaimIssueInput): Promise<ClaimIssueResult> {
     return this.db.transaction(async (tx) => {
+      // FOR UPDATE would conflict with the KEY SHARE lock that every
+      // acceptance in flight holds on this row through its submission's
+      // foreign key, and concurrent acceptances would deadlock. NO KEY
+      // UPDATE still excludes other issuers and every update of the row.
       const [campaign] = await tx
         .select()
         .from(campaigns)
         .where(eq(campaigns.id, input.campaignId))
-        .for("update")
+        .for("no key update")
         .limit(1);
 
       if (!campaign || !campaign.onchainCampaignId) {

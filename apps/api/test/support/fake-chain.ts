@@ -1,3 +1,5 @@
+import { toFunctionSelector } from "viem";
+
 import { EVENT_TOPICS, FUNCTION_SELECTORS } from "../../src/chain/abi.js";
 import {
   RpcError,
@@ -12,6 +14,11 @@ export const word = (value: bigint | number) =>
 
 export const addressWord = (address: string) =>
   `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+
+const AUTHORIZED_SIGNER_SELECTOR = toFunctionSelector("authorizedSigner()");
+const CLAIMED_WALLET_SELECTOR = toFunctionSelector(
+  "claimedWallet(uint256,address)",
+);
 
 type LogSpec = { topics: string[]; data: string };
 
@@ -82,6 +89,7 @@ export class FakeChain implements ChainRpc {
    * earlier block sees nothing; a reorg below it removes it).
    */
   readonly campaignIdByDraft = new Map<string, { id: number; block: bigint }>();
+  signer: string | null = null;
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
     string,
@@ -280,6 +288,18 @@ export class FakeChain implements ChainRpc {
       return word(
         entry && (block === undefined || entry.block <= block) ? entry.id : 0,
       );
+    }
+
+    if (
+      to === this.contract &&
+      data === AUTHORIZED_SIGNER_SELECTOR &&
+      this.signer !== null
+    ) {
+      return addressWord(this.signer);
+    }
+
+    if (to === this.contract && data.startsWith(CLAIMED_WALLET_SELECTOR)) {
+      return word(0);
     }
 
     if (

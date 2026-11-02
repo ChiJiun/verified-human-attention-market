@@ -7,9 +7,12 @@ import postgres from "postgres";
 
 import * as schema from "./schema.js";
 
-export function createDatabase(databaseUrl: string) {
+export function createDatabase(
+  databaseUrl: string,
+  options: { max?: number } = {},
+) {
   const client = postgres(databaseUrl, {
-    max: 10,
+    max: options.max ?? 10,
     prepare: false,
   });
   const db = drizzle(client, { schema });
