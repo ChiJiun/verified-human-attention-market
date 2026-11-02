@@ -198,6 +198,10 @@ export function buildApp(dependencies: AppDependencies = {}) {
   );
   const chainHead = metrics.gauge("vham_chain_head_block", "Latest RPC block");
   const rpcUp = metrics.gauge("vham_rpc_up", "1 when the chain RPC answers");
+  const haltedGauge = metrics.gauge(
+    "vham_chain_halted",
+    "1 while a reorg beyond the confirmation depth halts the deployment",
+  );
 
   /** Head and confirmed-cursor lag; throws when the RPC is unreachable. */
   async function chainStatus() {
@@ -220,6 +224,21 @@ export function buildApp(dependencies: AppDependencies = {}) {
     const lag = cursor ? head - cursor.latestConfirmedBlock : null;
     if (lag !== null) indexerLag.set(Number(lag));
     return { head, lag };
+  }
+
+  /**
+   * Whether a deep-reorg halt is recorded (ADR-0011). A gauge, so the alert
+   * holds for as long as the halt does, whichever scrape sees it (#77).
+   */
+  async function haltStatus() {
+    if (!chain) return null;
+
+    const halt = await chain.events.getHalt({
+      chainId: chain.chain.chainId,
+      contractAddress: chain.chain.contractAddress,
+    });
+    haltedGauge.set(halt ? 1 : 0);
+    return halt !== null;
   }
 
   registerErrorHandlers(app);
@@ -250,7 +269,11 @@ export function buildApp(dependencies: AppDependencies = {}) {
     metrics,
     metricsToken: dependencies.metricsToken ?? null,
     collect: async () => {
-      await chainStatus();
+      // The halt is read even when the RPC is down.
+      const results = await Promise.allSettled([chainStatus(), haltStatus()]);
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+      }
     },
   });
 
@@ -269,6 +292,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
   app.get("/health/ready", async (_request, reply) => {
     const checks: Record<string, string> = { process: "ok" };
     let indexerLagBlocks: string | null | undefined;
+    let halted: boolean | null = null;
 
     try {
       await campaignRepository.ping();
@@ -285,6 +309,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
       } catch {
         checks.chain = "error";
       }
+
+      // The halt lives in the database. A halt does not fail readiness: the
+      // instance still serves (sign-in, drafts, analytics, and a retryable
+      // 503 CHAIN_HALTED to participants); it is alerted on (#77).
+      try {
+        halted = await haltStatus();
+      } catch {
+        checks.database = "error";
+      }
     }
 
     const healthy = Object.values(checks).every((value) => value === "ok");
@@ -293,6 +326,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
       status: healthy ? "ok" : "error",
       checks,
       ...(indexerLagBlocks === undefined ? {} : { indexerLagBlocks }),
+      ...(halted === null ? {} : { chainHalted: halted }),
     });
   });
 

@@ -71,6 +71,18 @@ groups:
           summary: No successful indexer pass in 5 minutes
           runbook: docs/operations/RUNBOOK.md#vhamindexerstalled
 
+      # From the API's halt state, so it fires on every scrape for as long as
+      # the deployment is halted, even after the worker has exited (#77).
+      - alert: VhamChainHalted
+        expr: max(vham_chain_halted) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Deployment halted by a deep reorg; participants get 503 CHAIN_HALTED
+          runbook: docs/operations/RUNBOOK.md#vhamchainhalted
+
+      # Early signal from the worker; it exits right after, so a missed scrape
+      # misses this one. VhamChainHalted is the one that stays.
       - alert: VhamReorgBeyondConfirmations
         expr: increase(vham_indexer_passes_total{result="reorg_beyond_confirmations"}[1h]) > 0
         labels:

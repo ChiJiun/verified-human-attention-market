@@ -8,7 +8,7 @@
 | Where          | Endpoint                        | Notes                                                             |
 | -------------- | ------------------------------- | ----------------------------------------------------------------- |
 | API liveness   | `GET /health/live`              | Process only.                                                     |
-| API readiness  | `GET /health/ready`             | Database + chain RPC; `indexerLagBlocks`. 503 on failure.         |
+| API readiness  | `GET /health/ready`             | Database + chain RPC; `indexerLagBlocks`, `chainHalted`. 503 on a failed check, not on a halt. |
 | API metrics    | `GET /metrics`                  | Bearer `METRICS_TOKEN` when set.                                  |
 | Worker metrics | `:INDEXER_METRICS_PORT/metrics` | Unset port = disabled.                                            |
 | Logs           | stdout, JSON                    | `requestId` on every API line; worker lines carry `level`, `msg`. |
@@ -38,6 +38,7 @@ API (`/metrics`):
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
 | `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
+| `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded (read on scrape, RPC up or not). |
 
 Worker (`INDEXER_METRICS_PORT`):
 
@@ -45,7 +46,7 @@ Worker (`INDEXER_METRICS_PORT`):
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
-| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`.       |
+| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`, `halted`. |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -131,6 +132,29 @@ RPC health. Raise `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
 sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
 claim issuance still reads the contract directly.
 
+At startup the worker checks the chain, the contract code and the contract
+version. An unreachable or failing RPC is retried with backoff up to 60 s
+(`startup chain check failed; retrying`) instead of crash-looping; a wrong
+chain id, missing code or a pre-ADR-0011 contract stops it at once. No pass
+metrics exist until that check passes, so a worker stuck there shows up as
+VhamRpcDown on the API or as a missing worker scrape target, not as a stall.
+A worker that logs `waiting for the deployment lock` is waiting for another
+worker or a `reorg:recover --apply` on the same deployment to finish.
+
+### VhamChainHalted
+
+`vham_chain_halted` is 1: a halt is recorded for the configured deployment
+(`indexer_halts`), so the API answers World ID requests, eligibility,
+completions and claim authorizations with `503 CHAIN_HALTED`. It stays 1 until
+the worker clears the halt after a verified recovery, so it fires on any scrape
+and does not depend on catching the worker's counter (which exits right after
+recording the halt). Follow [VhamReorgBeyondConfirmations](#vhamreorgbeyondconfirmations).
+
+`/health/ready` reports `"chainHalted": true` but stays 200 on purpose: the
+instance can still serve sign-in, drafts, analytics and a retryable
+`CHAIN_HALTED` to participants, and a 503 would make the load balancer drop
+every API instance at once. Alert on the gauge, not on readiness.
+
 ### VhamReorgBeyondConfirmations
 
 The worker stopped on purpose: a reorg deeper than `INDEXER_CONFIRMATIONS` would
@@ -139,20 +163,49 @@ refuses new World ID requests, eligibility, completions and claim
 authorizations for this deployment with `503 CHAIN_HALTED` (ADR-0011). The
 worker also refuses to start while the halt is recorded. Do not just restart.
 
+The steps below use the built API (`pnpm --filter @vham/api build`, then the
+`:start` scripts, which run `node dist/...`), as a production image has no
+`tsx`. From a source checkout, `reorg:recover` (without `:start`) runs the same
+code with `tsx`. Both need `DATABASE_URL`, the chain variables
+(`EVM_CHAIN_ID`, `EVM_RPC_URL`, `USDC_ADDRESS`, `CAMPAIGN_MANAGER_ADDRESS`,
+`CAMPAIGN_MANAGER_DEPLOY_BLOCK`) and the same `INDEXER_CONFIRMATIONS` as the
+API and the worker.
+
 1. Inspect the reported block on a block explorer.
-2. Dry run: `pnpm --filter @vham/api reorg:recover`. It checks every linked
-   campaign against the contract's own `campaignIdByDraft` at the confirmed
-   head and prints which links it would keep and release
+2. Make sure no indexer worker runs for this deployment: after a detected
+   reorg it has exited by itself; for a recovery you start yourself, stop it
+   and anything that restarts it (systemd unit, container restart policy).
+3. Dry run: `pnpm --filter @vham/api reorg:recover:start`. It checks every
+   linked campaign against the contract's own `campaignIdByDraft` at the
+   confirmed head and prints which links it would keep and release
    (`creation_missing`, `id_changed`: the id now belongs to another draft, or
-   `parameters_changed`: same id, different reward, cap or window).
-3. Review the plan, then `pnpm --filter @vham/api reorg:recover -- --apply`:
+   `parameters_changed`: same id, different reward, cap or window). A
+   `warning` field means a worker (or another `--apply`) still holds the
+   deployment.
+4. Review the plan, then
+   `pnpm --filter @vham/api reorg:recover:start -- --apply`. It first records
+   the halt again (or records one, if you start recovery without a detected
+   reorg), so the API refuses participation before anything changes; then
    released campaigns return to `draft`, the index is dropped and the halt is
    marked *recovery applied*. **The halt stays**; the API keeps refusing.
-4. Restart the worker; it rebuilds the index from the deploy block, links
-   canonical creations and re-syncs statuses. Once the index has caught up to
-   the confirmed head and every link verifies, it clears the halt itself
-   (`reorg recovery verified; participation resumes`). Until then it logs why it is
-   waiting. Run `pnpm --filter @vham/api reconcile` afterwards.
+   `--apply` takes the deployment lock (a PostgreSQL advisory lock that every
+   running worker holds) and refuses with `mode: "refused"` and exit code 1
+   while a worker holds it: go back to step 2.
+5. Start the worker (`pnpm --filter @vham/api indexer:start`). It rebuilds the
+   index from the deploy block, links canonical creations and re-syncs
+   statuses. It clears the halt itself
+   (`reorg recovery verified; participation resumes`) only when the stored
+   index has caught up to the confirmed head, every link verifies, and every
+   link's indexed funding and payouts equal the contract's. Until then it logs
+   why it is waiting (`reorg recovery not verified yet`); VhamChainHalted
+   resolves when the halt is gone.
+6. Run `pnpm --filter @vham/api reconcile:start` afterwards.
+
+If `--apply` is run again during a rebuild (the worker must be stopped for
+that), the rebuild that was running can no longer clear the halt; the
+restarted worker rebuilds again. Index writes that would land on a reset index
+are refused (`Index cursor moved`), so a halt is never cleared over an index
+with a gap.
 
 Consider raising `INDEXER_CONFIRMATIONS` (used by both the API and the worker)
 if this happens more than once.

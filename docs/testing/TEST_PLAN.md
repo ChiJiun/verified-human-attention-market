@@ -106,7 +106,8 @@ Lost RPC response, concurrent resend and a same-parameter creation for another d
 - World ID provider unavailable [`world-id.test.ts`: `PROVIDER_UNAVAILABLE`, no eligibility written];
 - signer unavailable [`claims.test.ts`, `remote-signer.test.ts`; acceptance rolled back];
 - indexer restart / provider outage mid-pass [`indexer-contract.ts`: resumes without losing or duplicating events];
-- stale chain state / reorg [`indexer-contract.ts`: shallow reorg orphans events, deep reorg halts, logs read across a reorg are never committed; `onchain.test.ts`: recovery];
+- stale chain state / reorg [`indexer-contract.ts`: shallow reorg orphans events, deep reorg halts, logs read across a reorg are never committed, a batch read before an index reset never lands after it, one holder per deployment lock; `onchain.test.ts`: recovery, `--apply` refused while a worker holds the deployment, a recovery applied during a worker pass never clears the halt over an incomplete index (#77)];
+- halt alerting [`observability.test.ts`: `vham_chain_halted` on every scrape, readiness reports `chainHalted` and stays 200 (#77)]; startup RPC retry [`chain-config.test.ts`, `onchain.test.ts`: only `RpcUnavailableError` is retried];
 - pause and signer rotation drill [e2e].
 
 # CI Gate
