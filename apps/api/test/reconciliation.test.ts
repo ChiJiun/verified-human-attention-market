@@ -72,7 +72,12 @@ async function setup(options: {
   const events = new InMemoryChainEventRepository();
   await events.commitConfirmedRange(
     scope,
-    { from: 1n, to: 20n, toBlockHash: `0x${"20".padStart(64, "0")}` },
+    {
+      from: 1n,
+      to: 20n,
+      toBlockHash: `0x${"20".padStart(64, "0")}`,
+      expectedCursor: null,
+    },
     options.events,
   );
   const calls: (bigint | undefined)[] = [];

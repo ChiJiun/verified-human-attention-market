@@ -1,6 +1,12 @@
 import type { CampaignRepository } from "../campaigns/repository.js";
-import { readOnchainCampaign } from "../campaigns/onchain.js";
-import { reconcileCampaignEvents } from "../chain/campaign-state.js";
+import {
+  readOnchainCampaign,
+  type OnchainCampaign,
+} from "../campaigns/onchain.js";
+import {
+  reconcileCampaignEvents,
+  type OnchainCampaignState,
+} from "../chain/campaign-state.js";
 import type {
   ChainEventRepository,
   ChainScope,
@@ -43,6 +49,37 @@ export interface ReconciliationReport {
 }
 
 const hex = (value: string) => `0x${value.replace(/^0x/i, "")}`.toLowerCase();
+
+/**
+ * Where one campaign's indexed confirmed state disagrees with the contract
+ * struct read at the cursor's block; empty when they agree. Also used before
+ * a reorg halt is cleared (ADR-0011, #77).
+ */
+export function indexMismatches(
+  onchain: OnchainCampaign | null,
+  confirmed: OnchainCampaignState,
+): string[] {
+  if (!onchain) {
+    return confirmed.status === "not_found"
+      ? []
+      : ["indexed campaign missing on-chain"];
+  }
+
+  return [
+    ["fundedBudget", onchain.fundedBudget, confirmed.funded],
+    ["paidRewards", onchain.paidRewards, confirmed.paidRewards],
+    [
+      "paidCompletions",
+      String(onchain.paidCompletions),
+      String(confirmed.paidCompletions),
+    ],
+  ]
+    .filter(([, chain, indexed]) => chain !== indexed)
+    .map(
+      ([field, chain, indexed]) =>
+        `${field}: contract ${chain}, indexed ${indexed}`,
+    );
+}
 
 export async function checkReconciliation(dependencies: {
   campaigns: Pick<CampaignRepository, "listLinked">;
@@ -94,27 +131,8 @@ export async function checkReconciliation(dependencies: {
         cursor.latestConfirmedBlock,
       );
 
-      if (!onchain) {
-        if (confirmed.status !== "not_found") {
-          finding("INDEX_MISMATCH", "indexed campaign missing on-chain");
-        }
-      } else {
-        const mismatches = [
-          ["fundedBudget", onchain.fundedBudget, confirmed.funded],
-          ["paidRewards", onchain.paidRewards, confirmed.paidRewards],
-          [
-            "paidCompletions",
-            String(onchain.paidCompletions),
-            String(confirmed.paidCompletions),
-          ],
-        ].filter(([, chain, indexed]) => chain !== indexed);
-
-        for (const [field, chain, indexed] of mismatches) {
-          finding(
-            "INDEX_MISMATCH",
-            `${field}: contract ${chain}, indexed ${indexed}`,
-          );
-        }
+      for (const mismatch of indexMismatches(onchain, confirmed)) {
+        finding("INDEX_MISMATCH", mismatch);
       }
     } catch {
       finding("CHAIN_READ_FAILED", "campaigns(id) at confirmed block failed");

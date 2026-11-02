@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gte, inArray, lte, ne, sql } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import {
@@ -11,9 +11,11 @@ import {
   byChainOrder,
   campaignIdOf,
   identity,
+  IndexCursorMovedError,
   type ChainEventRepository,
   type ChainScope,
   type ConfirmationStatus,
+  type DeploymentLock,
   type IndexedEvent,
   type IndexerCursor,
   type ChainHalt,
@@ -103,12 +105,99 @@ export class PostgresChainEventRepository implements ChainEventRepository {
     return rows.length > 0;
   }
 
-  async clearHalt(scope: ChainScope): Promise<void> {
-    await this.db.delete(indexerHalts).where(this.haltWhere(scope));
+  async clearHalt(
+    scope: ChainScope,
+    verified: { recoveryAppliedAt: Date; indexedThrough: bigint },
+  ): Promise<boolean> {
+    // One statement: the halt and the cursor are read from one snapshot.
+    const rows = await this.db
+      .delete(indexerHalts)
+      .where(
+        and(
+          this.haltWhere(scope),
+          eq(indexerHalts.recoveryAppliedAt, verified.recoveryAppliedAt),
+          exists(
+            this.db
+              .select({ chainId: reconciliationState.chainId })
+              .from(reconciliationState)
+              .where(
+                and(
+                  eq(reconciliationState.chainId, scope.chainId),
+                  eq(
+                    reconciliationState.contractAddress,
+                    scope.contractAddress,
+                  ),
+                  gte(
+                    reconciliationState.latestConfirmedBlock,
+                    Number(verified.indexedThrough),
+                  ),
+                ),
+              ),
+          ),
+        ),
+      )
+      .returning({ chainId: indexerHalts.chainId });
+    return rows.length > 0;
+  }
+
+  /**
+   * A session-level advisory lock on a reserved connection: it lives exactly
+   * as long as the holder's session, so a crashed worker never leaves it
+   * behind. It is an operational guard; index writes are fenced by the
+   * cursor and the halt is cleared conditionally, so a lost lock is safe.
+   */
+  async lockDeployment(scope: ChainScope): Promise<DeploymentLock | null> {
+    const key = `vham:deployment:${scope.chainId}:${scope.contractAddress}`;
+    const connection = await this.db.$client.reserve();
+    try {
+      const [row] = await connection<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtext(${key}::text)) AS locked`;
+      if (!row?.locked) {
+        connection.release();
+        return null;
+      }
+    } catch (error) {
+      connection.release();
+      throw error;
+    }
+
+    let held = true;
+    return {
+      release: async () => {
+        if (!held) return;
+        held = false;
+        try {
+          await connection`SELECT pg_advisory_unlock(hashtext(${key}::text))`;
+        } finally {
+          connection.release();
+        }
+      },
+    };
+  }
+
+  /**
+   * Serializes index writes and resets for one deployment, then checks that
+   * the cursor is still the one the writer extends (IndexCursorMovedError).
+   */
+  private async lockedCursor(
+    tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
+    scope: ChainScope,
+    expected: bigint | null | undefined,
+  ): Promise<IndexerCursor | null> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`vham:index:${scope.chainId}:${scope.contractAddress}`}::text))`,
+    );
+    const cursor = await this.getCursorWith(tx, scope);
+    const actual = cursor?.latestConfirmedBlock ?? null;
+    if (expected !== undefined && actual !== expected) {
+      throw new IndexCursorMovedError(expected, actual);
+    }
+    return cursor;
   }
 
   async resetIndex(scope: ChainScope): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await this.lockedCursor(tx, scope, undefined);
       await tx
         .delete(chainEvents)
         .where(
@@ -152,10 +241,17 @@ export class PostgresChainEventRepository implements ChainEventRepository {
 
   async commitConfirmedRange(
     scope: ChainScope,
-    range: { from: bigint; to: bigint; toBlockHash: string },
+    range: {
+      from: bigint;
+      to: bigint;
+      toBlockHash: string;
+      expectedCursor: bigint | null;
+    },
     events: IndexedEvent[],
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await this.lockedCursor(tx, scope, range.expectedCursor);
+
       if (events.length > 0) {
         await tx
           .insert(chainEvents)
@@ -210,10 +306,11 @@ export class PostgresChainEventRepository implements ChainEventRepository {
 
   async replaceObservedTail(
     scope: ChainScope,
-    range: { from: bigint; to: bigint },
+    range: { from: bigint; to: bigint; expectedCursor: bigint | null },
     events: IndexedEvent[],
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const cursor = await this.lockedCursor(tx, scope, range.expectedCursor);
       const current = new Set(events.map(identity));
       const previous = await tx
         .select({
@@ -259,7 +356,6 @@ export class PostgresChainEventRepository implements ChainEventRepository {
           });
       }
 
-      const cursor = await this.getCursorWith(tx, scope);
       if (cursor) {
         await this.upsertCursor(tx, scope, {
           ...cursor,

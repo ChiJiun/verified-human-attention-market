@@ -4,11 +4,17 @@ import { PostgresCampaignRepository } from "./campaigns/repository.js";
 import {
   loadChainConfig,
   parseConfirmations,
+  RpcUnavailableError,
   verifyChainConnection,
 } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { ReorgBeyondConfirmationsError } from "./chain/indexer.js";
-import { recordHaltWithRetry, runWorkerPass } from "./chain/worker-pass.js";
+import {
+  ChainHaltedError,
+  recordHaltWithRetry,
+  retryWithBackoff,
+  runWorkerPass,
+} from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 import { MetricsRegistry } from "./observability/metrics.js";
@@ -30,8 +36,50 @@ if (!databaseUrl || !chainConfig) {
   );
 }
 
+let stopping = false;
+const stop = () => {
+  stopping = true;
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+
+const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
+  console.log(
+    JSON.stringify({
+      level,
+      time: new Date().toISOString(),
+      msg: message,
+      ...extra,
+    }),
+  );
+
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
 // Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
-await verifyChainConnection(chainConfig);
+// An unreachable or failing RPC is retried with backoff (up to 60 s apart)
+// instead of crash-looping; a wrong chain, missing code or an old contract
+// still stops the worker at once.
+const verified = await retryWithBackoff(
+  async () => {
+    await verifyChainConnection(chainConfig);
+    return true;
+  },
+  {
+    retryable: (error) => error instanceof RpcUnavailableError,
+    stopping: () => stopping,
+    onFailure: (attempt, error, retryInMs) =>
+      log("warn", "startup chain check failed; retrying", {
+        attempt,
+        error: errorMessage(error),
+        retryInMs,
+      }),
+  },
+);
+
+if (verified === null) {
+  process.exit(0);
+}
 
 const confirmations = parseConfirmations(process.env.INDEXER_CONFIRMATIONS);
 const pollMs = Number(process.env.INDEXER_POLL_MS ?? 5_000);
@@ -143,22 +191,8 @@ const FINDING_KINDS = [
 ] as const;
 let lastReconciliationAt = 0;
 
-let stopping = false;
-const stop = () => {
-  stopping = true;
-};
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
-
-const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
-  console.log(
-    JSON.stringify({
-      level,
-      time: new Date().toISOString(),
-      msg: message,
-      ...extra,
-    }),
-  );
+const RECOVERY_ACTION =
+  "Run `pnpm --filter @vham/api reorg:recover:start` (dry run), then with `-- --apply`, then restart this worker (RUNBOOK: VhamReorgBeyondConfirmations).";
 
 // A recorded deep reorg must be recovered first (ADR-0011). After
 // `reorg:recover --apply` the worker rebuilds; the halt stays until verified.
@@ -172,11 +206,34 @@ if (existingHalt?.recoveryAppliedAt) {
   log("error", "indexer halted by a reorg beyond the confirmation depth", {
     block: existingHalt.block.toString(),
     since: existingHalt.at.toISOString(),
-    action:
-      "Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+    action: RECOVERY_ACTION,
   });
   process.exit(1);
 }
+
+// One worker per deployment, never next to `reorg:recover --apply` (#77).
+// Held until this process ends; a second worker waits for it.
+const lock = await retryWithBackoff(
+  async () => {
+    const held = await repository.lockDeployment(scope);
+    if (!held) {
+      throw new Error(
+        "another indexer worker or `reorg:recover --apply` holds this deployment",
+      );
+    }
+    return held;
+  },
+  {
+    retryable: () => true,
+    stopping: () => stopping,
+    onFailure: (attempt, error, retryInMs) =>
+      log("warn", "waiting for the deployment lock", {
+        attempt,
+        error: errorMessage(error),
+        retryInMs,
+      }),
+  },
+);
 
 let backoffMs = pollMs;
 
@@ -299,8 +356,21 @@ while (!stopping) {
       result:
         error instanceof ReorgBeyondConfirmationsError
           ? "reorg_beyond_confirmations"
-          : "failure",
+          : error instanceof ChainHaltedError
+            ? "halted"
+            : "failure",
     });
+
+    if (error instanceof ChainHaltedError) {
+      // A halt without recovery was recorded while this worker ran (possible
+      // only if its deployment lock was lost): the pass wrote nothing.
+      log("error", "indexer halted by a reorg beyond the confirmation depth", {
+        block: error.halt.block.toString(),
+        since: error.halt.at.toISOString(),
+        action: RECOVERY_ACTION,
+      });
+      break;
+    }
 
     if (error instanceof ReorgBeyondConfirmationsError) {
       // Do not guess: settlement data may be wrong. Record the halt so the
@@ -326,14 +396,15 @@ while (!stopping) {
       });
       log("error", error.message, {
         block: error.blockNumber.toString(),
-        action:
-          "Participation is halted. Run `pnpm --filter @vham/api reorg:recover` (dry run), then with `-- --apply`, then restart this worker.",
+        action: `Participation is halted. ${RECOVERY_ACTION}`,
       });
       break;
     }
 
+    // IndexCursorMovedError lands here too: the index was reset under this
+    // pass; nothing was written, and the next pass reads the halt again.
     log("warn", "indexer pass failed; retrying", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
       retryInMs: backoffMs,
     });
     backoffMs = Math.min(backoffMs * 2, 60_000);
@@ -342,5 +413,6 @@ while (!stopping) {
   await new Promise((resolve) => setTimeout(resolve, backoffMs));
 }
 
+await lock?.release();
 metricsServer?.close();
 await database.close();

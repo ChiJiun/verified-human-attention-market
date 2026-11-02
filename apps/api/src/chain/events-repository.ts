@@ -25,25 +25,57 @@ export interface ChainScope {
   contractAddress: string;
 }
 
+/**
+ * The stored cursor is not the one the writer extends: `reorg:recover
+ * --apply` reset the index, or another writer moved it, after the writer
+ * read it. Nothing was written; the next pass starts from the stored cursor.
+ * Every write extends the cursor it read, so the index stays contiguous from
+ * the deploy block (#77).
+ */
+export class IndexCursorMovedError extends Error {
+  constructor(
+    readonly expected: bigint | null,
+    readonly actual: bigint | null,
+  ) {
+    super(
+      `Index cursor moved (expected ${expected ?? "none"}, found ${actual ?? "none"}); nothing written`,
+    );
+    this.name = "IndexCursorMovedError";
+  }
+}
+
+/** Held by one indexer worker, or by `reorg:recover --apply`. */
+export interface DeploymentLock {
+  release(): Promise<void>;
+}
+
 export interface ChainEventRepository {
   getCursor(scope: ChainScope): Promise<IndexerCursor | null>;
   /**
    * Atomically stores the canonical events of a confirmed block range,
    * orphans previously observed events in that range that are no longer
-   * canonical, and advances the cursor.
+   * canonical, and advances the cursor. `expectedCursor` is the confirmed
+   * block the caller read from the cursor (null: no cursor, so the range
+   * starts at the deploy block); IndexCursorMovedError otherwise.
    */
   commitConfirmedRange(
     scope: ChainScope,
-    range: { from: bigint; to: bigint; toBlockHash: string },
+    range: {
+      from: bigint;
+      to: bigint;
+      toBlockHash: string;
+      expectedCursor: bigint | null;
+    },
     events: IndexedEvent[],
   ): Promise<void>;
   /**
    * Replaces the unconfirmed tail (blocks >= from): previously observed
    * events not seen again are orphaned. Never downgrades confirmed events.
+   * Refuses like commitConfirmedRange when the cursor moved.
    */
   replaceObservedTail(
     scope: ChainScope,
-    range: { from: bigint; to: bigint },
+    range: { from: bigint; to: bigint; expectedCursor: bigint | null },
     events: IndexedEvent[],
   ): Promise<void>;
   listCampaignEvents(
@@ -70,13 +102,28 @@ export interface ChainEventRepository {
    * there is no halt.
    */
   markRecoveryApplied(scope: ChainScope, at: Date): Promise<boolean>;
-  /** Only the worker, after the rebuilt index and every link verify. */
-  clearHalt(scope: ChainScope): Promise<void>;
+  /**
+   * Only the worker, after the rebuilt index and every link verify. Deletes
+   * the halt only while its `recoveryAppliedAt` is still the one the worker
+   * rebuilt for (a recovery applied again, or a new halt, keeps it) and the
+   * stored cursor still reaches `indexedThrough` (an index reset since the
+   * verification keeps it). Returns whether it was deleted.
+   */
+  clearHalt(
+    scope: ChainScope,
+    verified: { recoveryAppliedAt: Date; indexedThrough: bigint },
+  ): Promise<boolean>;
   /**
    * Drops every indexed event and the cursor for `scope`, so the worker
    * rebuilds the index from the deploy block. Never touches the halt.
    */
   resetIndex(scope: ChainScope): Promise<void>;
+  /**
+   * Takes the deployment for one indexer worker or one `reorg:recover
+   * --apply`; null while another process holds it. Released by `release()`
+   * or when the holder's process (database session) ends.
+   */
+  lockDeployment(scope: ChainScope): Promise<DeploymentLock | null>;
 }
 
 export interface ChainHalt {
@@ -106,6 +153,7 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
   private readonly events = new Map<string, StoredEvent & ChainScope>();
   private readonly cursors = new Map<string, IndexerCursor>();
   private readonly halts = new Map<string, ChainHalt>();
+  private readonly locks = new Set<string>();
 
   async haltForReorg(scope: ChainScope, block: bigint, at: Date) {
     this.halts.set(this.key(scope), { block, at, recoveryAppliedAt: null });
@@ -122,8 +170,44 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
     return true;
   }
 
-  async clearHalt(scope: ChainScope): Promise<void> {
+  async clearHalt(
+    scope: ChainScope,
+    verified: { recoveryAppliedAt: Date; indexedThrough: bigint },
+  ): Promise<boolean> {
+    const halt = this.halts.get(this.key(scope));
+    const cursor = this.cursors.get(this.key(scope));
+    if (
+      halt?.recoveryAppliedAt?.getTime() !==
+        verified.recoveryAppliedAt.getTime() ||
+      !cursor ||
+      cursor.latestConfirmedBlock < verified.indexedThrough
+    ) {
+      return false;
+    }
     this.halts.delete(this.key(scope));
+    return true;
+  }
+
+  async lockDeployment(scope: ChainScope): Promise<DeploymentLock | null> {
+    const key = this.key(scope);
+    if (this.locks.has(key)) return null;
+    this.locks.add(key);
+    let held = true;
+    return {
+      release: async () => {
+        if (held) this.locks.delete(key);
+        held = false;
+      },
+    };
+  }
+
+  /** Same check as the PostgreSQL repository's, inside its transaction. */
+  private expectCursor(scope: ChainScope, expected: bigint | null) {
+    const actual =
+      this.cursors.get(this.key(scope))?.latestConfirmedBlock ?? null;
+    if (actual !== expected) {
+      throw new IndexCursorMovedError(expected, actual);
+    }
   }
 
   async resetIndex(scope: ChainScope): Promise<void> {
@@ -156,9 +240,15 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
 
   async commitConfirmedRange(
     scope: ChainScope,
-    range: { from: bigint; to: bigint; toBlockHash: string },
+    range: {
+      from: bigint;
+      to: bigint;
+      toBlockHash: string;
+      expectedCursor: bigint | null;
+    },
     events: IndexedEvent[],
   ): Promise<void> {
+    this.expectCursor(scope, range.expectedCursor);
     const canonical = new Set(events.map(identity));
 
     for (const stored of this.inScope(scope)) {
@@ -189,9 +279,10 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
 
   async replaceObservedTail(
     scope: ChainScope,
-    range: { from: bigint; to: bigint },
+    range: { from: bigint; to: bigint; expectedCursor: bigint | null },
     events: IndexedEvent[],
   ): Promise<void> {
+    this.expectCursor(scope, range.expectedCursor);
     const current = new Set(events.map(identity));
 
     for (const stored of this.inScope(scope)) {

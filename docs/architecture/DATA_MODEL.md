@@ -136,11 +136,11 @@ Unique key: `(chain_id, tx_hash, log_index)`. Also `contract_address` and decode
 
 ## reconciliation_state
 
-Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), `latest_observed_block` and `updated_at`. Each confirmed batch commits events and cursor in one transaction.
+Primary key `(chain_id, contract_address)`. Stores `latest_confirmed_block`, its `latest_confirmed_block_hash` (a mismatch means a reorg deeper than the confirmation depth, and the indexer stops for an operator), `latest_observed_block` and `updated_at`. Each confirmed batch commits events and cursor in one transaction. Every write names the confirmed block it extends; a transaction-scoped advisory lock serializes writes and index resets per deployment, and a write whose cursor moved (an index reset by `reorg:recover --apply`) is refused, so the index stays contiguous from the deploy block (#77).
 
 ## indexer_halts
 
-Primary key `(chain_id, contract_address)`; migration 0012. `halted_block`, `halted_at`, `recovery_applied_at`. A row means a reorg deeper than the confirmation depth was detected: the API refuses participation and signing with `CHAIN_HALTED`. It lives apart from `reconciliation_state` so that dropping the index never drops the halt. `reorg:recover -- --apply` deletes the deployment's events and cursor and sets `recovery_applied_at`; the worker refuses to start without it, and deletes the row only after the rebuilt index has caught up and every link verifies (ADR-0011). Recording a new halt resets `recovery_applied_at`.
+Primary key `(chain_id, contract_address)`; migration 0012. `halted_block`, `halted_at`, `recovery_applied_at`. A row means a reorg deeper than the confirmation depth was detected: the API refuses participation and signing with `CHAIN_HALTED`. It lives apart from `reconciliation_state` so that dropping the index never drops the halt. `reorg:recover -- --apply` records the halt again, then deletes the deployment's events and cursor and sets `recovery_applied_at` (later than any earlier application); the worker refuses to start without it, and deletes the row only after the rebuilt index has caught up and every link verifies (ADR-0011). That delete is conditional: the row must still carry the `recovery_applied_at` the worker rebuilt for, and the cursor must still reach the block it verified (#77). Recording a new halt resets `recovery_applied_at`. A running worker and `--apply` hold a session-level advisory lock per deployment (no table).
 
 ## auth_nonces, auth_sessions (#37)
 
