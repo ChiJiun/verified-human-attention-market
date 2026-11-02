@@ -1,38 +1,68 @@
+import type { WorldIdSignal } from "@vham/shared/world-id";
+import { hexToBytes, type Hex } from "viem";
 import { z } from "zod";
+
+import { hashToField } from "./rp-signature.js";
 
 /**
  * World ID backend verification (ADR-0007).
  *
- * Verified against the official docs on 2026-10-12:
- * https://docs.world.org/world-id/idkit/integrate and
- * https://docs.world.org/world-id/reference/api
- *
- * - The IDKit result is forwarded unchanged to
- *   POST {base}/api/v4/verify/{rp_id}.
- * - Nullifiers are scoped per app + action. Using one action per campaign
- *   gives exactly the campaign-scoped duplicate-human policy we need, without
- *   any cross-campaign identifier.
+ * Re-checked on 2026-10-21 against https://docs.world.org/world-id/idkit/integrate
+ * (forward the IDKit result unchanged; nullifiers are scoped per app and
+ * action, and the backend checks their reuse) and
+ * https://docs.world.org/api-reference/developer-portal/verify
+ * (POST /api/v4/verify/{rp_id}, the 4.0 item fields, the 400 body with
+ * `code`, `detail` and per-result `code`).
  *
  * Raw proofs are never logged or persisted by this module.
  */
 
 export type WorldIdEnvironment = "production" | "staging";
 
+export type WorldIdRpId = `rp_${string}` & { readonly __brand: "WorldIdRpId" };
+export type WorldIdAppId = `app_${string}` & {
+  readonly __brand: "WorldIdAppId";
+};
+
+/**
+ * Stricter than IDKit 4.4.0's `normalizeRpId` (@worldcoin/idkit-core
+ * dist/index.js lines 2458-2466), which also takes a `+` sign and leading
+ * zeros past 16 digits: every id accepted here is one IDKit accepts.
+ */
+export function parseWorldIdRpId(value: string): WorldIdRpId | null {
+  return /^rp_[0-9a-fA-F]{1,16}$/.test(value) ? (value as WorldIdRpId) : null;
+}
+
+/**
+ * IDKit 4.4.0's `validateConfig` requires `app_id` to start with `app_`
+ * (dist/index.js lines 2528-2530).
+ */
+export function parseWorldIdAppId(value: string): WorldIdAppId | null {
+  return /^app_\S+$/.test(value) ? (value as WorldIdAppId) : null;
+}
+
 export type WorldIdFailureCode =
   | "WORLD_ID_NOT_CONFIGURED"
   | "INVALID_PROOF_PAYLOAD"
   | "ACTION_MISMATCH"
   | "ENVIRONMENT_MISMATCH"
+  | "SIGNAL_MISMATCH"
   | "VERIFICATION_FAILED"
   | "PROVIDER_UNAVAILABLE";
 
+export interface WorldRefusalCodes {
+  code: string | null;
+  resultCodes: string[];
+}
+
 export type WorldIdResult =
   | { ok: true; /** Decimal string. Never persisted raw. */ nullifier: string }
-  | { ok: false; code: WorldIdFailureCode };
+  | { ok: false; code: WorldIdFailureCode; worldCodes?: WorldRefusalCodes };
 
 export interface WorldIdVerifier {
   verify(request: {
     action: string;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult>;
 }
@@ -42,9 +72,23 @@ export function campaignAction(campaignId: string): string {
   return `vham-campaign-${campaignId}`;
 }
 
+/**
+ * The `signal_hash` IDKit 4.4.0 puts in a result for this signal
+ * (`hashSignal` in @worldcoin/idkit-core): a 0x hex signal is hashed as
+ * bytes, not as text.
+ */
+export function signalHash(signal: WorldIdSignal): Hex {
+  return hashToField(hexToBytes(signal));
+}
+
+/**
+ * The page requests only proof_of_human, whose issuer schema id is 1 in
+ * IDKit 4.4.0 (`CREDENTIAL_SCHEMA_IDS`, @worldcoin/idkit-core dist/index.js
+ * line 2556). Other credentials may carry other nullifiers per human.
+ */
 const responseItemV4Schema = z.looseObject({
-  identifier: z.string(),
-  issuer_schema_id: z.number().int(),
+  identifier: z.literal("proof_of_human"),
+  issuer_schema_id: z.literal(1),
   nullifier: z.string().min(1),
   expires_at_min: z.number().int(),
   proof: z.array(z.string()).length(5),
@@ -57,6 +101,50 @@ const idkitResponseSchema = z.looseObject({
   environment: z.string().optional(),
   responses: z.array(responseItemV4Schema).min(1).max(10),
 });
+
+const FIELD_HEX = /^0x[0-9a-fA-F]{1,64}$/;
+
+const WORLD_CODE = /^[a-z0-9_]{1,64}$/;
+
+const worldCodesSchema = z.looseObject({
+  code: z.unknown(),
+  results: z.array(z.looseObject({ code: z.unknown() })).optional(),
+});
+
+function worldCode(value: unknown): string | null {
+  return typeof value === "string" && WORLD_CODE.test(value) ? value : null;
+}
+
+async function worldCodesOf(
+  response: Response,
+): Promise<WorldRefusalCodes | null> {
+  try {
+    const body = worldCodesSchema.safeParse(await response.json());
+
+    if (!body.success) {
+      return null;
+    }
+
+    const code = worldCode(body.data.code);
+    const resultCodes = (body.data.results ?? [])
+      .map((result) => worldCode(result.code))
+      .filter((value): value is string => value !== null);
+
+    return code === null && resultCodes.length === 0
+      ? null
+      : { code, resultCodes };
+  } catch {
+    return null;
+  }
+}
+
+async function refusedBy(response: Response): Promise<WorldIdResult> {
+  const worldCodes = await worldCodesOf(response);
+
+  return worldCodes === null
+    ? { ok: false, code: "VERIFICATION_FAILED" }
+    : { ok: false, code: "VERIFICATION_FAILED", worldCodes };
+}
 
 const verifyResponseSchema = z.looseObject({
   success: z.boolean(),
@@ -72,8 +160,7 @@ const verifyResponseSchema = z.looseObject({
     .optional(),
 });
 
-/** Normalizes hex (0x…) or decimal nullifiers to a canonical decimal string. */
-export function normalizeNullifier(value: string): string | null {
+export function normalizeFieldElement(value: string): string | null {
   const trimmed = value.trim();
 
   if (!/^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$/.test(trimmed)) {
@@ -84,7 +171,7 @@ export function normalizeNullifier(value: string): string | null {
 }
 
 export interface HttpWorldIdVerifierOptions {
-  rpId: string;
+  rpId: WorldIdRpId;
   environment: WorldIdEnvironment;
   baseUrl?: string;
   timeoutMs?: number;
@@ -97,10 +184,6 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly options: HttpWorldIdVerifierOptions) {
-    if (!/^(rp|app)_[A-Za-z0-9_-]+$/.test(options.rpId)) {
-      throw new Error("World ID rp_id/app_id has an unexpected format");
-    }
-
     this.baseUrl = (options.baseUrl ?? "https://developer.world.org").replace(
       /\/+$/,
       "",
@@ -111,6 +194,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const parsed = idkitResponseSchema.safeParse(request.idkitResponse);
@@ -129,9 +213,22 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
       return { ok: false, code: "ENVIRONMENT_MISMATCH" };
     }
 
+    const expectedSignalHash = BigInt(signalHash(request.signal));
+
+    if (
+      !parsed.data.responses.every(
+        (response) =>
+          response.signal_hash !== undefined &&
+          FIELD_HEX.test(response.signal_hash) &&
+          BigInt(response.signal_hash) === expectedSignalHash,
+      )
+    ) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
+    }
+
     const submittedNullifiers = new Set(
       parsed.data.responses
-        .map((response) => normalizeNullifier(response.nullifier))
+        .map((response) => normalizeFieldElement(response.nullifier))
         .filter((value): value is string => value !== null),
     );
 
@@ -153,7 +250,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
     }
 
     if (response.status === 400) {
-      return { ok: false, code: "VERIFICATION_FAILED" };
+      return refusedBy(response);
     }
 
     if (!response.ok) {
@@ -194,7 +291,7 @@ export class HttpWorldIdVerifier implements WorldIdVerifier {
 
     for (const candidate of candidates) {
       const normalized =
-        candidate === undefined ? null : normalizeNullifier(candidate);
+        candidate === undefined ? null : normalizeFieldElement(candidate);
 
       // Only accept a nullifier the user actually submitted and World verified.
       if (normalized !== null && submittedNullifiers.has(normalized)) {
@@ -217,12 +314,8 @@ export class UnconfiguredWorldIdVerifier implements WorldIdVerifier {
 export const LOCAL_DEV_CHAIN_ID = 31337;
 
 /**
- * Local-development stand-in for World ID, for demos on anvil only.
- *
- * The "proof" is `{ action, simulatedHuman }`. It proves nothing, so the
- * constructor refuses any chain other than the local anvil chain, where no
- * real value exists. The server also refuses to start in this mode
- * elsewhere.
+ * Local-development stand-in for World ID. It proves nothing about a human,
+ * so its constructor refuses every chain but the local anvil chain.
  */
 export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
   constructor(chainId: number) {
@@ -235,12 +328,14 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
 
   async verify(request: {
     action: string;
+    signal: WorldIdSignal;
     idkitResponse: unknown;
   }): Promise<WorldIdResult> {
     const proof = z
       .object({
         action: z.string(),
         simulatedHuman: z.string().min(1).max(100),
+        signal: z.string().optional(),
       })
       .safeParse(request.idkitResponse);
 
@@ -250,6 +345,10 @@ export class LocalSimulatedWorldIdVerifier implements WorldIdVerifier {
 
     if (proof.data.action !== request.action) {
       return { ok: false, code: "ACTION_MISMATCH" };
+    }
+
+    if (proof.data.signal?.toLowerCase() !== request.signal) {
+      return { ok: false, code: "SIGNAL_MISMATCH" };
     }
 
     return {

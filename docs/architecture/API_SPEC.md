@@ -186,10 +186,11 @@ Lifecycle status (`active`, `closed`, `settled`, `cancelled`) is derived only fr
 
 ## POST /v1/campaigns/:id/world-id/request
 
-Returns what IDKit needs to open a request (ADR-0007, #12):
+No request body. Returns what IDKit needs to open a request (ADR-0007, #12):
 
 ```json
 {
+  "mode": "live",
   "appId": "app_…",
   "action": "vham-campaign-<campaignId>",
   "environment": "production",
@@ -197,7 +198,11 @@ Returns what IDKit needs to open a request (ADR-0007, #12):
 }
 ```
 
-`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (needs `WORLD_ID_RP_ID` + `RP_SIGNING_KEY`), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
+`mode` names the response shape. A `live` response always has an `appId`. With `WORLD_ID_MODE=simulated` (local anvil only) the response is `{ "mode": "simulated", "action" }`, with no `appId`, `environment`, or `rpContext`.
+
+The response carries no signal. The page derives the wallet-bound signal itself from the campaign id, the claimant and a 32-byte salt it draws (`@vham/shared/world-id`, ADR-0007 update 2026-10-21), passes the signal to IDKit, and sends the salt with the proof to `eligibility/verify`.
+
+`404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_NOT_OPEN` (ended, not draft/active, or linked on a retired deployment), `503 WORLD_ID_NOT_CONFIGURED` (none of `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID` is set; a partial or malformed set stops the API at startup), `503 CHAIN_HALTED`. Moderation-gated; sensitive rate-limit bucket.
 
 ## POST /v1/campaigns/:id/eligibility/verify
 
@@ -206,24 +211,36 @@ See ADR-0007. Request:
 ```json
 {
   "claimant": "0x...",
+  "signalSalt": "0x<32 bytes>",
   "idkitResponse": { "protocol_version": "4.0", "action": "vham-campaign-<campaignId>", "...": "forwarded unchanged" }
 }
 ```
 
+`signalSalt` is the salt the client drew for this proof: 32 random bytes as `0x` hex, either case. The expected signal is
+
+```text
+keccak256(abi.encode(string "vham:world-id-signal:v2", string campaignId, address claimant, bytes32 signalSalt))
+```
+
+with the ABI types `(string, string, address, bytes32)` and the campaign id in lowercase (`worldIdSignal` in `@vham/shared/world-id`). A client passes this signal to IDKit as the `0x` hex string, for example `CredentialRequest("proof_of_human", { signal })`; IDKit hashes a `0x` string as bytes, not as text, and the result's `signal_hash` is `keccak256(signal bytes) >> 8` as 32 bytes. The salt is never stored, logged, or sent to World.
+
+`signalSalt` became required within `/v1` (#71). This is a recorded exception to the versioning rule in API_CONTRACT.md; see ADR-0007, update 2026-10-21.
+
 Backend:
 
-1. accepts only `idkitResponse.protocol_version == "4.0"` whose `responses` items have the 4.0 shape: `identifier`, `issuer_schema_id`, `nullifier`, `expires_at_min`, and a `proof` array of exactly 5 strings. A legacy 3.0 result, or a 4.0 result that carries a 3.0 item, returns `400 INVALID_PROOF_PAYLOAD` without a call to World. The backend then checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
-2. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`;
-3. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
-4. returns an opaque eligibility token.
+1. accepts only `idkitResponse.protocol_version == "4.0"` whose `responses` items have the 4.0 shape: `identifier` `"proof_of_human"` with `issuer_schema_id` 1 (any other credential is refused), `nullifier`, `expires_at_min`, and a `proof` array of exactly 5 strings. A legacy 3.0 result, or a 4.0 result that carries a 3.0 item, returns `400 INVALID_PROOF_PAYLOAD` without a call to World. The backend then checks `idkitResponse.action == "vham-campaign-<campaignId>"` and the environment;
+2. checks that every credential's `signal_hash`, `0x` hex only, is the hash of the signal derived from this `claimant` and `signalSalt` (`403 SIGNAL_MISMATCH` without a call to World: the result does not match this wallet, campaign and salt, or carries no signal hash);
+3. verifies via `POST https://developer.world.org/api/v4/verify/{rp_id}`; on a 400 from World it logs World's `code` and per-result codes, never the `detail` text;
+4. stores only `HMAC(PARTICIPANT_KEY_SECRET, campaignId ‖ nullifier)` plus the claimant wallet;
+5. returns an opaque eligibility token.
 
 Responses:
 
 | Status | Body / code |
 | --- | --- |
 | 201 / 200 (replay) | `{ "eligibilityToken", "campaignId", "claimant", "expiresAt" }` |
-| 400 | `INVALID_ELIGIBILITY_REQUEST`, `INVALID_PROOF_PAYLOAD` |
-| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH` |
+| 400 | `INVALID_ELIGIBILITY_REQUEST` (missing or malformed `claimant`, `signalSalt`, or `idkitResponse`), `INVALID_PROOF_PAYLOAD` |
+| 403 | `VERIFICATION_FAILED`, `ACTION_MISMATCH`, `ENVIRONMENT_MISMATCH`, `SIGNAL_MISMATCH` |
 | 404 | `CAMPAIGN_NOT_FOUND` |
 | 409 | `CAMPAIGN_NOT_OPEN`, `PARTICIPANT_WALLET_MISMATCH`, `WALLET_ALREADY_BOUND` |
 | 503 | `WORLD_ID_NOT_CONFIGURED`, `PROVIDER_UNAVAILABLE`, `CHAIN_HALTED` |

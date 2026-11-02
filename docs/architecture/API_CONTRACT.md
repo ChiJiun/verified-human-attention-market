@@ -105,6 +105,9 @@ campaign, submission, claim and PostgreSQL tests.
   new enum values in responses. Clients must ignore unknown fields.
 - Breaking changes (removing or renaming fields, changing types or
   semantics, making optional input required) require `/v2`.
+  Recorded exception: `signalSalt` became required on
+  `POST /v1/campaigns/:id/eligibility/verify` before any external client
+  existed (#71, ADR-0007 update 2026-10-21).
 - A deprecated endpoint or field is announced in the changelog and served
   with `Deprecation: true` and `Sunset: <HTTP date>` headers for at least
   90 days in the sandbox and 180 days in live before removal. (Policy only:

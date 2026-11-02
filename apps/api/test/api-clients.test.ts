@@ -422,6 +422,7 @@ describe("error model (#26)", () => {
       "rpc.ts",
       "signer.ts",
       "world-id.ts",
+      "world-id-config.ts",
       "catalog.ts",
       // Reconciliation finding kinds, not HTTP error codes.
       "check.ts",

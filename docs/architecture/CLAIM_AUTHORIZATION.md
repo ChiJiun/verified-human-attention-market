@@ -20,7 +20,7 @@ sequenceDiagram
     participant S as Claim Signer
     participant C as Reward Contract
 
-    U->>API: POST eligibility/verify(claimant, IDKit result)
+    U->>API: POST eligibility/verify(claimant, signalSalt, IDKit result)
     API->>W: verify World ID proof
     W-->>API: valid / invalid
     API-->>U: eligibilityToken

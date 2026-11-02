@@ -1,9 +1,13 @@
+import {
+  isWorldIdSignalSalt,
+  type WorldIdSignalSalt,
+} from "@vham/shared/world-id";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
 import { campaignAction } from "../identity/world-id.js";
-import type { RpSigner } from "../identity/rp-signature.js";
+import type { WorldIdConfig } from "../identity/world-id-config.js";
 import {
   verifyEligibility,
   type EligibilityServiceDependencies,
@@ -14,30 +18,20 @@ const UUID_PATTERN =
 
 const verifyEligibilitySchema = z.object({
   claimant: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address"),
+  signalSalt: z.custom<WorldIdSignalSalt>(
+    isWorldIdSignalSalt,
+    "signalSalt must be 32 bytes as 0x hex",
+  ),
   // Forwarded to World ID unchanged; validated by the verifier.
   idkitResponse: z.unknown(),
 });
 
-export interface WorldIdRequestConfig {
-  signer: RpSigner;
-  rpId: string;
-  appId: string | null;
-  /** Must match what the verifier expects; defaults to production. */
-  environment?: "production" | "staging";
-}
-
 export async function registerEligibilityRoutes(
   app: FastifyInstance,
   dependencies: EligibilityServiceDependencies & {
-    /** RP signing for IDKit requests; null = not configured (#12). */
-    worldIdRequest?: WorldIdRequestConfig | null;
+    worldIdConfig: WorldIdConfig | null;
   },
 ) {
-  /**
-   * Everything IDKit needs to open a World ID request for this campaign:
-   * the campaign action and a fresh RP signature (rp_context). The signing
-   * key never leaves the server (ADR-0007).
-   */
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/world-id/request",
     async (request, reply) => {
@@ -46,10 +40,11 @@ export async function registerEligibilityRoutes(
           error: { code, message, requestId: request.id },
         });
 
-      const config = dependencies.worldIdRequest ?? null;
-      const campaign = UUID_PATTERN.test(request.params.id)
-        ? await dependencies.campaigns.getById(request.params.id)
-        : null;
+      if (!UUID_PATTERN.test(request.params.id)) {
+        return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
+      }
+
+      const campaign = await dependencies.campaigns.getById(request.params.id);
 
       if (!campaign) {
         return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
@@ -73,6 +68,8 @@ export async function registerEligibilityRoutes(
         );
       }
 
+      const config = dependencies.worldIdConfig;
+
       if (!config) {
         return fail(
           503,
@@ -82,12 +79,18 @@ export async function registerEligibilityRoutes(
       }
 
       const action = campaignAction(campaign.id);
+
+      if (config.mode === "simulated") {
+        return reply.send({ mode: "simulated", action });
+      }
+
       const signature = await config.signer.sign({ action, now });
 
       return reply.send({
+        mode: "live",
         appId: config.appId,
         action,
-        environment: config.environment ?? "production",
+        environment: config.environment,
         rpContext: {
           rp_id: config.rpId,
           nonce: signature.nonce,
@@ -118,7 +121,7 @@ export async function registerEligibilityRoutes(
         return reply.status(400).send({
           error: {
             code: "INVALID_ELIGIBILITY_REQUEST",
-            message: "claimant and idkitResponse are required",
+            message: "claimant, signalSalt and idkitResponse are required",
             requestId: request.id,
           },
         });
@@ -127,10 +130,18 @@ export async function registerEligibilityRoutes(
       const outcome = await verifyEligibility(dependencies, {
         campaignId: request.params.id,
         claimantAddress: parsed.data.claimant,
+        signalSalt: parsed.data.signalSalt,
         idkitResponse: parsed.data.idkitResponse,
       });
 
       if (!outcome.ok) {
+        if (outcome.code === "VERIFICATION_FAILED") {
+          request.log.warn(
+            { worldIdOutcome: outcome.code, worldCodes: outcome.worldCodes },
+            "World ID refused the proof",
+          );
+        }
+
         // Never echo proof material back or into logs.
         return reply.status(outcome.status).send({
           error: {
