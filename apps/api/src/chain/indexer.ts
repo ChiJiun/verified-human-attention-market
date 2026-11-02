@@ -3,7 +3,7 @@ import type {
   ChainEventRepository,
   IndexedEvent,
 } from "./events-repository.js";
-import type { ChainRpc, RawLog } from "./rpc.js";
+import type { BlockHeader, ChainRpc, RawLog } from "./rpc.js";
 
 export interface IndexerConfig {
   chainId: number;
@@ -81,6 +81,69 @@ function decode(
 }
 
 /**
+ * The committed block `number` must still have `hash`. Another hash is a
+ * reorg deeper than the confirmation depth. No block at all is a node that
+ * has not reached it yet (lagging behind a load balancer), not a reorg:
+ * retried, so a lagging node never causes a halt that needs an operator.
+ */
+async function expectCommitted(rpc: ChainRpc, number: bigint, hash: string) {
+  const block = await rpc.getBlock(number);
+
+  if (!block) {
+    throw new InconsistentChainReadError(number);
+  }
+
+  if (block.hash !== hash) {
+    throw new ReorgBeyondConfirmationsError(number);
+  }
+}
+
+/** Header reads in flight at once while checking a range's chain. */
+const HEADER_CONCURRENCY = 8;
+
+/**
+ * The headers of `from`..`top.number` as one chain ending at `top`: each
+ * header must be the parent of the next by hash, so headers that different
+ * nodes answered from different forks never pass as one chain (a missing
+ * header or a broken link is an InconsistentChainReadError). Read by number
+ * with bounded concurrency rather than by walking `parentHash`, which could
+ * only be sequential. Cost: one eth_getBlockByNumber per block of the range,
+ * i.e. up to INDEXER_MAX_BLOCK_RANGE per batch on a backfill and a few per
+ * pass once caught up.
+ */
+async function linkedHeaders(
+  rpc: ChainRpc,
+  from: bigint,
+  top: BlockHeader,
+): Promise<Map<bigint, BlockHeader>> {
+  const headers = new Map<bigint, BlockHeader>([[top.number, top]]);
+  const numbers: bigint[] = [];
+
+  for (let number = from; number < top.number; number += 1n) {
+    numbers.push(number);
+  }
+
+  for (let start = 0; start < numbers.length; start += HEADER_CONCURRENCY) {
+    const chunk = numbers.slice(start, start + HEADER_CONCURRENCY);
+    const read = await Promise.all(chunk.map((number) => rpc.getBlock(number)));
+    read.forEach((header, index) => {
+      if (!header) {
+        throw new InconsistentChainReadError(chunk[index]!);
+      }
+      headers.set(chunk[index]!, header);
+    });
+  }
+
+  for (let number = top.number; number > from; number -= 1n) {
+    if (headers.get(number)!.parentHash !== headers.get(number - 1n)!.hash) {
+      throw new InconsistentChainReadError(number - 1n);
+    }
+  }
+
+  return headers;
+}
+
+/**
  * One idempotent indexing pass (issue #17).
  *
  * - Confirmed ranges are committed batch by batch together with the cursor,
@@ -88,14 +151,17 @@ function decode(
  *   losing or duplicating events: (chain, tx, logIndex) is the identity.
  * - The cursor stores the hash of the last confirmed block; if it changes,
  *   the pass stops with ReorgBeyondConfirmationsError instead of guessing.
- *   Every batch must also continue that chain: the parent of its first
- *   block is the last committed block. A deeper reorg during the pass is
- *   therefore a halt too, and a batch read from another fork than the
- *   committed chain is retried; neither is ever committed.
+ * - The committed index is one hash-linked chain (issue #76): a batch's
+ *   headers must link to each other by hash up to the range end, its first
+ *   block's parent must be the last committed block, and every log must
+ *   carry the hash of its block in that chain. A deeper reorg during the
+ *   pass is therefore a halt too, and a batch whose reads came from
+ *   different forks or nodes is retried; neither is ever committed. Any
+ *   later rewrite of a committed block changes the cursor block's hash.
  * - A confirmed batch is committed only if the hash of its last block is the
- *   same before and after eth_getLogs (and matches the logs of that block),
- *   so logs read across a reorg or a provider node switch are never stored
- *   under a block hash they do not belong to.
+ *   same before and after eth_getLogs, so logs read across a reorg or a
+ *   provider node switch are never stored under a block hash they do not
+ *   belong to.
  * - The unconfirmed tail is re-read on every pass; events that disappear in
  *   a shallow reorg are marked "orphaned" and never count as settlement.
  */
@@ -120,11 +186,11 @@ export async function indexOnce(
   let storedCursor = cursor?.latestConfirmedBlock ?? null;
 
   if (cursor?.latestConfirmedBlockHash) {
-    const block = await rpc.getBlock(cursor.latestConfirmedBlock);
-
-    if (!block || block.hash !== cursor.latestConfirmedBlockHash) {
-      throw new ReorgBeyondConfirmationsError(cursor.latestConfirmedBlock);
-    }
+    await expectCommitted(
+      rpc,
+      cursor.latestConfirmedBlock,
+      cursor.latestConfirmedBlockHash,
+    );
   }
 
   let confirmedEvents = 0;
@@ -138,11 +204,13 @@ export async function indexOnce(
         ? from + config.maxBlockRange - 1n
         : safeHead;
 
-    // Header, logs, header again: if the chain reorganizes between these
-    // calls (or a load-balanced RPC answers from different forks), logs of
-    // a stale fork could be committed under the new fork's block hash and
-    // never be detected later. Every log must sit in the canonical block of
-    // its height, and the range end must not move while reading.
+    // Header, logs, the range's chain, header again: if the chain
+    // reorganizes between these calls (or a load-balanced RPC answers from
+    // different forks), logs of a stale fork could be committed under the
+    // new fork's block hash and never be detected later. Every log must sit
+    // in the hash-linked chain that ends at the range end, that chain must
+    // extend the committed one, and the range end must not move while
+    // reading.
     const toBlock = await rpc.getBlock(to);
 
     if (!toBlock) {
@@ -154,34 +222,23 @@ export async function indexOnce(
       fromBlock: from,
       toBlock: to,
     });
-    const canonicalHashes = new Map<bigint, string>([[to, toBlock.hash]]);
-
-    for (const log of logs) {
-      if (!canonicalHashes.has(log.blockNumber)) {
-        const block = await rpc.getBlock(log.blockNumber);
-        canonicalHashes.set(log.blockNumber, block?.hash ?? "");
-      }
-      if (
-        canonicalHashes.get(log.blockNumber) !== log.blockHash.toLowerCase()
-      ) {
-        throw new InconsistentChainReadError(log.blockNumber);
-      }
-    }
+    const headers = await linkedHeaders(rpc, from, toBlock);
 
     // The range must extend the committed chain. If it does not, the last
     // committed block is re-read: replaced means a reorg deeper than the
-    // confirmation depth (halt, as at the start of the pass); unchanged
-    // means the reads came from different forks (retry).
-    if (committedHash !== null) {
-      const first = from === to ? toBlock : await rpc.getBlock(from);
+    // confirmation depth (halt, as at the start of the pass); unchanged or
+    // missing means the reads came from different nodes (retry).
+    if (
+      committedHash !== null &&
+      headers.get(from)!.parentHash !== committedHash
+    ) {
+      await expectCommitted(rpc, confirmedThrough, committedHash);
+      throw new InconsistentChainReadError(from);
+    }
 
-      if (!first || first.parentHash !== committedHash) {
-        const committed = await rpc.getBlock(confirmedThrough);
-
-        if (!committed || committed.hash !== committedHash) {
-          throw new ReorgBeyondConfirmationsError(confirmedThrough);
-        }
-        throw new InconsistentChainReadError(from);
+    for (const log of logs) {
+      if (headers.get(log.blockNumber)?.hash !== log.blockHash.toLowerCase()) {
+        throw new InconsistentChainReadError(log.blockNumber);
       }
     }
 

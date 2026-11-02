@@ -11,6 +11,7 @@ import {
   ReorgBeyondConfirmationsError,
   type IndexerConfig,
 } from "../../src/chain/indexer.js";
+import type { ChainRpc } from "../../src/chain/rpc.js";
 import { FakeChain, logs } from "./fake-chain.js";
 
 const ADVERTISER = "0x" + "a".repeat(40);
@@ -466,5 +467,115 @@ export function defineIndexerContract(harness: IndexerHarness) {
     expect((await indexOnce(chain, repository, config)).confirmedThrough).toBe(
       chain.head - 3n,
     );
+  });
+
+  it("retries, without a halt, when a lagging node lacks the committed block", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope } = fixture;
+    const cursor = await indexedWithMoreBlocks(fixture, 6);
+    const getBlock = chain.getBlock.bind(chain);
+    let lagging = true;
+    chain.getBlock = async (number) =>
+      lagging && number === cursor.latestConfirmedBlock
+        ? null
+        : getBlock(number);
+
+    await expect(indexOnce(chain, repository, config)).rejects.toBeInstanceOf(
+      InconsistentChainReadError,
+    );
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+
+    lagging = false;
+    expect((await indexOnce(chain, repository, config)).confirmedThrough).toBe(
+      chain.head - 3n,
+    );
+  });
+
+  /**
+   * A load-balanced RPC: header reads `staleAt` and, with `staleLogs`, the
+   * logs come from a node still on another fork; the rest is canonical.
+   */
+  function balanced(
+    canonical: FakeChain,
+    stale: FakeChain,
+    staleAt: (number: bigint) => boolean,
+    staleLogs = false,
+  ): ChainRpc {
+    return {
+      blockNumber: () => canonical.blockNumber(),
+      getBlock: (number) =>
+        (staleAt(number) ? stale : canonical).getBlock(number),
+      getLogs: (query) => (staleLogs ? stale : canonical).getLogs(query),
+      getTransactionReceipt: (hash) => canonical.getTransactionReceipt(hash),
+      call: (to, data, block) => canonical.call(to, data, block),
+    };
+  }
+
+  it("never commits a range whose headers came from two forks (issue #76)", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope } = fixture;
+    // A node that missed the reorg below keeps the old fork.
+    const stale = new FakeChain(chain.contract, 10);
+    for (const node of [chain, stale]) {
+      node.mine(1, [logs.created(1, ADVERTISER)]);
+      node.mine(10);
+    }
+    await indexOnce(chain, repository, config);
+    const cursor = (await repository.getCursor(scope))!;
+
+    // The canonical chain replaces the committed block; the stale node does
+    // not. It answers the cursor check and the batch's first header, so the
+    // first block's parent is still the committed block.
+    chain.reorg(cursor.latestConfirmedBlock - 1n);
+    chain.mine(6);
+    stale.mine(6);
+    const mixed = balanced(
+      chain,
+      stale,
+      (number) => number <= cursor.latestConfirmedBlock + 1n,
+    );
+
+    await expect(indexOnce(mixed, repository, config)).rejects.toBeInstanceOf(
+      InconsistentChainReadError,
+    );
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+
+    // Read consistently, the replaced block is a halt.
+    expect(await reorgError(indexOnce(chain, repository, config))).toBe(
+      cursor.latestConfirmedBlock,
+    );
+  });
+
+  it("never commits logs from another fork inside a range (issue #76)", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope, state } = fixture;
+    const stale = new FakeChain(chain.contract, 10);
+    chain.mine(1, [logs.created(1, ADVERTISER)]);
+    stale.mine(1, [logs.created(1, ADVERTISER)]);
+    const fork = chain.head + 1n;
+
+    // From here the chains differ: the stale node's fork funds the campaign.
+    chain.reorg(fork);
+    chain.mine(3);
+    await indexOnce(chain, repository, config);
+    const cursor = (await repository.getCursor(scope))!;
+    expect(cursor.latestConfirmedBlock).toBe(fork - 1n);
+    chain.mine(5);
+    stale.mine(1, [logs.funded(1, 10n * USDC)]);
+    stale.mine(7);
+
+    // Its logs, and the header of the block holding them, come from the
+    // stale node; the range end is canonical.
+    const mixed = balanced(chain, stale, (number) => number === fork, true);
+
+    await expect(indexOnce(mixed, repository, config)).rejects.toBeInstanceOf(
+      InconsistentChainReadError,
+    );
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+    expect((await state()).confirmed.funded).toBe("0");
+
+    // The canonical chain alone: no funding was ever confirmed.
+    await indexOnce(chain, repository, config);
+    expect((await state()).confirmed.funded).toBe("0");
   });
 }
