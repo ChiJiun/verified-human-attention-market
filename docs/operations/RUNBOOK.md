@@ -129,7 +129,10 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health. Raise `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
 sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
-claim issuance still reads the contract directly.
+claim issuance still reads the contract directly. Linking a new campaign
+(`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
+contract at the worker's latest confirmed block, so advertisers get
+`202 reconciling` until the worker has indexed their creation (issue #76).
 
 ### VhamReorgBeyondConfirmations
 

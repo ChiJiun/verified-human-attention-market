@@ -106,7 +106,7 @@ Lost RPC response, concurrent resend and a same-parameter creation for another d
 - World ID provider unavailable [`world-id.test.ts`: `PROVIDER_UNAVAILABLE`, no eligibility written];
 - signer unavailable [`claims.test.ts`, `remote-signer.test.ts`; acceptance rolled back];
 - indexer restart / provider outage mid-pass [`indexer-contract.ts`: resumes without losing or duplicating events];
-- stale chain state / reorg [`indexer-contract.ts`: shallow reorg orphans events, deep reorg halts, logs read across a reorg are never committed; `onchain.test.ts`: recovery];
+- stale chain state / reorg [`indexer-contract.ts`: shallow reorg orphans events, deep reorg halts, logs read across a reorg are never committed; `onchain.test.ts`: recovery; links are read at the indexed block's hash, so an RPC node on a stale fork cannot cause a link, no link is made ahead of a lagging worker and a deeper reorg under a link is a recorded halt; a stale link is answered `409 LINK_NOT_CANONICAL` and released by auto-link (issue #76)];
 - pause and signer rotation drill [e2e].
 
 # CI Gate
