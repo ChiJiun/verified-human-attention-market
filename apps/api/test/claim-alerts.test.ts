@@ -58,6 +58,7 @@ class SignerChain extends FakeChain {
 }
 
 const SALT = "claim-alerts-secret-0123456789abcdef";
+const SIGNAL_SALT = `0x${"33".repeat(32)}`;
 
 interface LogLine {
   level: number;
@@ -97,7 +98,7 @@ async function setup(options: {
     },
     authenticate: signedInAs(),
     campaignRepository: campaigns,
-    worldIdVerifier: new FakeWorldId(),
+    worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: SALT,
     claimSigner: options.claimSigner,
     dailyPayoutLimitAtomic: options.dailyPayoutLimitAtomic ?? null,
@@ -173,6 +174,7 @@ async function setup(options: {
       url: `/v1/campaigns/${campaignId}/eligibility/verify`,
       payload: {
         claimant,
+        signalSalt: SIGNAL_SALT,
         idkitResponse: {
           action: campaignAction(campaignId),
           human: `claim-alerts-human-${human}`,

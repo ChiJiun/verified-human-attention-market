@@ -1,3 +1,4 @@
+import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
