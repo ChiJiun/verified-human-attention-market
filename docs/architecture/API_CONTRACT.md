@@ -62,8 +62,10 @@ Fixed one-minute windows, per API instance:
 Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and
 `RateLimit-Reset` (seconds). Over the limit: `429 RATE_LIMITED` with
 `Retry-After`; counted in `vham_rate_limited_total{bucket}`. Behind a reverse
-proxy set `TRUST_PROXY_HOPS` so limits apply to the client IP. Health and
-metrics endpoints are exempt.
+proxy set `TRUST_PROXY_HOPS` so limits apply to the client IP; browser traffic
+comes through the web app's `/api` rewrite, and the production topology for it
+is in RUNBOOK.md ("Client addresses behind the web app"). Health and metrics
+endpoints are exempt.
 
 ## Errors
 
