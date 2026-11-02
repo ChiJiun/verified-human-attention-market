@@ -12,7 +12,7 @@ import {
   ReorgBeyondConfirmationsError,
   type IndexerConfig,
 } from "../../src/chain/indexer.js";
-import type { ChainRpc } from "../../src/chain/rpc.js";
+import { RpcError, type ChainRpc } from "../../src/chain/rpc.js";
 import { FakeChain, logs, word } from "./fake-chain.js";
 
 const ADVERTISER = "0x" + "a".repeat(40);
@@ -494,22 +494,22 @@ export function defineIndexerContract(harness: IndexerHarness) {
 
   /**
    * A load-balanced RPC: header reads `staleAt` and, with `logs`, the range
-   * logs (with `blockLogs`, the logs by block hash) come from a node still on
-   * another fork or behind; the rest is canonical.
+   * logs (with `receipts`, the receipts by block hash) come from a node still
+   * on another fork or behind; the rest is canonical.
    */
   function balanced(
     canonical: FakeChain,
     stale: FakeChain,
     staleAt: (number: bigint) => boolean,
-    from: { logs?: boolean; blockLogs?: boolean } = {},
+    from: { logs?: boolean; receipts?: boolean } = {},
   ): ChainRpc {
     return {
       blockNumber: () => canonical.blockNumber(),
       getBlock: (number) =>
         (staleAt(number) ? stale : canonical).getBlock(number),
       getLogs: (query) => (from.logs ? stale : canonical).getLogs(query),
-      getBlockLogs: (query) =>
-        (from.blockLogs ? stale : canonical).getBlockLogs(query),
+      getBlockReceipts: (hash) =>
+        (from.receipts ? stale : canonical).getBlockReceipts(hash),
       getTransactionReceipt: (hash) => canonical.getTransactionReceipt(hash),
       call: (to, data, block) => canonical.call(to, data, block),
     };
@@ -605,24 +605,25 @@ export function defineIndexerContract(harness: IndexerHarness) {
     const fundingBlock = chain.mine(1, [logs.funded(1, 10n * USDC)]);
     chain.mine(6);
     const rpc = balanced(chain, lagging, () => false, { logs: true });
-    const queries = chain.blockLogsCalls;
+    const queries = chain.receiptsCalls;
 
     const error = await inconsistent(indexOnce(rpc, repository, config));
     expect(error.blockNumber).toBe(fundingBlock);
     expect(error.message).toMatch(/omitted 1 event/);
     // Only the block whose bloom holds the event was read by hash.
-    expect(chain.blockLogsCalls - queries).toBe(1);
+    expect(chain.receiptsCalls - queries).toBe(1);
     expect(await repository.getCursor(scope)).toEqual(cursor);
     expect((await state()).confirmed.funded).toBe("0");
 
-    // Asked by hash, the lagging node fails for a block it does not have.
-    await expect(
+    // Asked by hash, the lagging node has no receipts for a block it lacks.
+    const missing = await inconsistent(
       indexOnce(
-        balanced(chain, lagging, () => false, { logs: true, blockLogs: true }),
+        balanced(chain, lagging, () => false, { logs: true, receipts: true }),
         repository,
         config,
       ),
-    ).rejects.toThrow(/unknown block/);
+    );
+    expect(missing.message).toMatch(/has no receipts/);
     expect(await repository.getCursor(scope)).toEqual(cursor);
 
     // Once the node has caught up, the next pass commits the range in full.
@@ -633,6 +634,139 @@ export function defineIndexerContract(harness: IndexerHarness) {
     );
     expect((await state()).confirmed.funded).toBe("10000000");
   });
+
+  it("never takes an empty answer for a block with events as a bloom false positive (#102)", async () => {
+    const { chain, config, repository, scope, state } = setup(harness);
+    const block = chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    // The provider's log index lags behind its node: eth_getLogs answers
+    // nothing for the block. The node has the header but not yet the
+    // receipts (a syncing node answers [] for them).
+    const readLogs = chain.getLogs.bind(chain);
+    const readReceipts = chain.getBlockReceipts.bind(chain);
+    let indexed = false;
+    let synced = false;
+    chain.getLogs = async (query) =>
+      (await readLogs(query)).filter(
+        (log) => indexed || log.blockNumber !== block,
+      );
+    chain.getBlockReceipts = async (hash) => (synced ? readReceipts(hash) : []);
+
+    const unsynced = await inconsistent(indexOnce(chain, repository, config));
+    expect(unsynced.blockNumber).toBe(block);
+    expect(unsynced.message).toMatch(/not one for each/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    // The receipts prove the event the log index has not served yet.
+    synced = true;
+    const lagging = await inconsistent(indexOnce(chain, repository, config));
+    expect(lagging.message).toMatch(/omitted 1 event/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    indexed = true;
+    await indexOnce(chain, repository, config);
+    expect((await state()).confirmed.status).toBe("created");
+    expect(
+      (await repository.listCampaignEvents(scope, "1")).map(
+        (stored) => stored.event.name,
+      ),
+    ).toEqual(["CampaignCreated"]);
+  });
+
+  /** Replaces the receipts of `block` (or its header) for one pass. */
+  type ReceiptFault = (
+    chain: FakeChain,
+    block: bigint,
+    readReceipts: FakeChain["getBlockReceipts"],
+  ) => void;
+
+  const receiptFaults: [string, RegExp, ReceiptFault][] = [
+    [
+      "a node without the block (null)",
+      /has no receipts/,
+      (chain) => {
+        chain.getBlockReceipts = async () => null;
+      },
+    ],
+    [
+      "a receipt short",
+      /2 transactions in order/,
+      (chain, _block, readReceipts) => {
+        chain.getBlockReceipts = async (hash) =>
+          ((await readReceipts(hash)) ?? []).slice(0, 1);
+      },
+    ],
+    [
+      "receipts of another block",
+      /answered for another block/,
+      (chain, block, readReceipts) => {
+        chain.getBlockReceipts = async (hash) =>
+          ((await readReceipts(hash)) ?? []).map((receipt) => ({
+            ...receipt,
+            blockNumber: block + 1n,
+          }));
+      },
+    ],
+    [
+      "a receipt without its log",
+      /do not rebuild its logsBloom/,
+      (chain, _block, readReceipts) => {
+        chain.getBlockReceipts = async (hash) =>
+          ((await readReceipts(hash)) ?? []).map((receipt, index) =>
+            index === 1 ? { ...receipt, logs: [] } : receipt,
+          );
+      },
+    ],
+    [
+      "an RPC without eth_getBlockReceipts",
+      /eth_getBlockReceipts by block hash failed \(.*does not exist/,
+      (chain) => {
+        chain.getBlockReceipts = async () => {
+          throw new RpcError(
+            "eth_getBlockReceipts error: the method eth_getBlockReceipts does not exist/is not available",
+          );
+        };
+      },
+    ],
+    [
+      "a header without a transaction list",
+      /lists no transactions/,
+      (chain, block) => {
+        const getBlock = chain.getBlock.bind(chain);
+        chain.getBlock = async (number) => {
+          const header = await getBlock(number);
+          return header && number === block
+            ? { ...header, transactionCount: null }
+            : header;
+        };
+      },
+    ],
+  ];
+
+  it.each(receiptFaults)(
+    "never commits a flagged block on receipts from %s (#102)",
+    async (_label, reason, fault) => {
+      const { chain, config, repository, scope, state } = setup(harness);
+      const block = chain.mine(1, [
+        logs.created(1, ADVERTISER),
+        logs.funded(1, 10n * USDC),
+      ]);
+      chain.mine(10);
+      const getBlock = chain.getBlock;
+      const readReceipts = chain.getBlockReceipts;
+      fault(chain, block, readReceipts.bind(chain));
+
+      const error = await inconsistent(indexOnce(chain, repository, config));
+      expect(error.blockNumber).toBe(block);
+      expect(error.message).toMatch(reason);
+      expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+      chain.getBlock = getBlock;
+      chain.getBlockReceipts = readReceipts;
+      await indexOnce(chain, repository, config);
+      expect((await state()).confirmed.funded).toBe("10000000");
+    },
+  );
 
   it("never commits a range whose answer left out one of a block's events (#102)", async () => {
     const { chain, config, repository, scope, state } = setup(harness);
@@ -676,11 +810,31 @@ export function defineIndexerContract(harness: IndexerHarness) {
 
     const error = await inconsistent(indexOnce(chain, repository, config));
     expect(error.blockNumber).toBe(block);
-    expect(error.message).toMatch(/by the block's hash does not/);
+    expect(error.message).toMatch(/receipts do not hold/);
     expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
   });
 
-  it("never commits an event that its block's bloom rules out (#102)", async () => {
+  it("never commits a range whose answer holds an event twice (#102)", async () => {
+    const { chain, config, repository, scope, state } = setup(harness);
+    const block = chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    const readLogs = chain.getLogs.bind(chain);
+    chain.getLogs = async (query) => {
+      const answer = await readLogs(query);
+      return [...answer, ...answer.filter((log) => log.blockNumber === block)];
+    };
+
+    const error = await inconsistent(indexOnce(chain, repository, config));
+    expect(error.blockNumber).toBe(block);
+    expect(error.message).toMatch(/same event twice/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    chain.getLogs = readLogs;
+    await indexOnce(chain, repository, config);
+    expect((await state()).confirmed.status).toBe("created");
+  });
+
+  it("never commits a block whose bloom rules out its event or is invalid (#102)", async () => {
     const { chain, config, repository, scope } = setup(harness);
     const block = chain.mine(1, [logs.created(1, ADVERTISER)]);
     chain.mine(10);
@@ -690,45 +844,57 @@ export function defineIndexerContract(harness: IndexerHarness) {
     expect(error.blockNumber).toBe(block);
     expect(error.message).toMatch(/logsBloom rules out/);
     expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    // A header without a valid bloom cannot be checked at all.
+    chain.setLogsBloom(block, "0x");
+    const invalid = await inconsistent(indexOnce(chain, repository, config));
+    expect(invalid.blockNumber).toBe(block);
+    expect(invalid.message).toMatch(/no valid logsBloom/);
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
   });
 
-  it("pays one query by hash for a bloom false positive, then commits (#102)", async () => {
+  /**
+   * Puts the contract's address (an event the indexer does not read) and an
+   * indexed topic (from another contract) into a block's bloom, although
+   * the block holds no event of the contract: a bloom false positive.
+   */
+  const falsePositive = () => [
+    { topics: [word(1)], data: "0x" },
+    { ...logs.funded(1, 999n * USDC), address: OTHER_CONTRACT },
+  ];
+
+  it("commits a bloom false positive after one receipts query (#102)", async () => {
     const { chain, config, repository, scope } = setup(harness);
-    // The contract's address (an event the indexer does not read) and an
-    // indexed topic (from another contract) put both in the block's bloom,
-    // although the block holds no event of the contract.
-    chain.mine(1, [
-      { topics: [word(1)], data: "0x" },
-      { ...logs.funded(1, 999n * USDC), address: OTHER_CONTRACT },
-    ]);
+    chain.mine(1, falsePositive());
     chain.mine(10);
 
     const result = await indexOnce(chain, repository, config);
 
     expect(result.confirmedThrough).toBe(chain.head - 3n);
-    expect(result.blockLogQueries).toBe(1);
-    expect(chain.blockLogsCalls).toBe(1);
+    expect(result.receiptQueries).toBe(1);
+    expect(chain.receiptsCalls).toBe(1);
     expect(result.skippedLogs).toBe(1);
     expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
   });
 
-  it("reads each block by hash at most once when the bloom rules nothing out (#102)", async () => {
+  it("reads the receipts of each flagged block once and of no other block (#102)", async () => {
     const { chain, config, repository, state } = setup(harness);
-    chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
-    chain.mine(10);
-    // Saturated blooms (a busy chain), and a header without a valid one.
-    for (let number = 0n; number <= chain.head; number += 1n) {
-      chain.setLogsBloom(number, `0x${"f".repeat(512)}`);
+    const first = chain.mine(1, [
+      logs.created(1, ADVERTISER),
+      logs.funded(1, 10n * USDC),
+    ]);
+    // From here every block is flagged, as on a chain with full blooms.
+    for (let count = 0; count < 12; count += 1) {
+      chain.mine(1, falsePositive());
     }
-    chain.setLogsBloom(config.deployBlock, "0x");
 
     const result = await indexOnce(chain, repository, config);
 
     expect(result.confirmedThrough).toBe(chain.head - 3n);
-    expect(result.blockLogQueries).toBe(
-      Number(result.confirmedThrough - config.deployBlock + 1n),
+    expect(result.receiptQueries).toBe(
+      Number(result.confirmedThrough - first + 1n),
     );
-    expect(chain.blockLogsCalls).toBe(result.blockLogQueries);
+    expect(chain.receiptsCalls).toBe(result.receiptQueries);
     expect((await state()).confirmed.funded).toBe("10000000");
   });
 }

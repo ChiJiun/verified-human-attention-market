@@ -5,6 +5,7 @@ import { logsBloom } from "../../src/chain/bloom.js";
 import {
   RpcError,
   type BlockHeader,
+  type BlockReceipt,
   type BlockRef,
   type ChainRpc,
   type RawLog,
@@ -100,8 +101,8 @@ export class FakeChain implements ChainRpc {
   private txCounter = 0;
   failGetLogsAfter: number | null = null;
   getLogsCalls = 0;
-  /** eth_getLogs requests by block hash (EIP-234). */
-  blockLogsCalls = 0;
+  /** eth_getBlockReceipts requests. */
+  receiptsCalls = 0;
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
@@ -220,7 +221,7 @@ export class FakeChain implements ChainRpc {
     return node;
   }
 
-  /** Replaces a block's header bloom (e.g. a saturated or a wrong one). */
+  /** Replaces a block's header bloom with a wrong or invalid one. */
   setLogsBloom(number: bigint, bloom: string) {
     this.blocks[Number(number)]!.logsBloom = bloom;
   }
@@ -237,6 +238,8 @@ export class FakeChain implements ChainRpc {
           hash: block.hash,
           parentHash: this.blocks[Number(number) - 1]?.hash ?? word(0),
           logsBloom: block.logsBloom,
+          // One transaction per log.
+          transactionCount: block.logs.length,
         }
       : null;
   }
@@ -277,33 +280,22 @@ export class FakeChain implements ChainRpc {
       .filter((log) => log.address === query.address.toLowerCase());
   }
 
-  /** EIP-234: one block by hash; a block this node lacks is an error. */
-  async getBlockLogs(query: {
-    blockHash: string;
-    address: string;
-    topics: readonly (string | readonly string[] | null)[];
-  }): Promise<RawLog[]> {
-    this.blockLogsCalls += 1;
-    const block = this.blocks.find(
-      (candidate) => candidate.hash === query.blockHash,
-    );
+  /**
+   * eth_getBlockReceipts by hash: one receipt per transaction (here, one
+   * per log). Like geth, null for a block this node does not have.
+   */
+  async getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null> {
+    this.receiptsCalls += 1;
+    const block = this.blocks.find((candidate) => candidate.hash === blockHash);
 
-    if (!block) {
-      throw new RpcError(`unknown block ${query.blockHash}`);
-    }
-
-    return this.rawLogs(block).filter(
-      (log) =>
-        log.address === query.address.toLowerCase() &&
-        query.topics.every((wanted, position) => {
-          const topic = log.topics[position];
-          if (wanted === null) return true;
-          if (topic === undefined) return false;
-          return typeof wanted === "string"
-            ? wanted === topic
-            : wanted.includes(topic);
-        }),
-    );
+    return block
+      ? this.rawLogs(block).map((log, transactionIndex) => ({
+          transactionIndex,
+          blockNumber: block.number,
+          blockHash: block.hash,
+          logs: [log],
+        }))
+      : null;
   }
 
   async getTransactionReceipt(

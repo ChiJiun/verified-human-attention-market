@@ -20,10 +20,20 @@ export interface BlockHeader {
   parentHash: string;
   /** 256-byte bloom of the block's log addresses and topics, 0x hex. */
   logsBloom: string;
+  /** Transactions in the block; null if the node did not list them. */
+  transactionCount: number | null;
 }
 
 export interface TransactionReceipt {
   status: "success" | "reverted";
+  blockNumber: bigint;
+  blockHash: string;
+  logs: RawLog[];
+}
+
+/** One receipt of eth_getBlockReceipts: what it says about its block. */
+export interface BlockReceipt {
+  transactionIndex: number;
   blockNumber: bigint;
   blockHash: string;
   logs: RawLog[];
@@ -46,17 +56,13 @@ export interface ChainRpc {
     toBlock: bigint;
   }): Promise<RawLog[]>;
   /**
-   * eth_getLogs of exactly one block, by its hash (EIP-234): the answer is
-   * that block's logs whichever node gives it, since a block's logs are fixed
-   * by its hash, and a node that does not have the block fails instead of
-   * answering for another one. `topics` is the eth_getLogs topic filter
-   * (each position: one topic, alternatives, or null for any).
+   * eth_getBlockReceipts of exactly one block, by its hash: every receipt,
+   * so every log, of that block whichever node answers (the hash fixes
+   * them). Null when the node does not have the block. A node that has the
+   * header but not (all) the receipts may answer fewer; the caller checks
+   * them against the header.
    */
-  getBlockLogs(query: {
-    blockHash: string;
-    address: string;
-    topics: readonly (string | readonly string[] | null)[];
-  }): Promise<RawLog[]>;
+  getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null>;
   getTransactionReceipt(hash: string): Promise<TransactionReceipt | null>;
   /** eth_call at `block` (default: latest). */
   call(to: string, data: string, block?: BlockRef): Promise<string>;
@@ -92,10 +98,13 @@ export class JsonRpcClient implements ChainRpc {
     private readonly url: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMs = 15_000,
+    /** Called before every request, e.g. to count requests by method. */
+    private readonly onRequest?: (method: string) => void,
   ) {}
 
   private async request(method: string, params: unknown[]): Promise<unknown> {
     let response: Response;
+    this.onRequest?.(method);
 
     try {
       response = await this.fetchImpl(this.url, {
@@ -149,21 +158,13 @@ export class JsonRpcClient implements ChainRpc {
       number: BigInt(String(block.number)),
       hash: String(block.hash).toLowerCase(),
       parentHash: String(block.parentHash).toLowerCase(),
-      // Validated where it is used: the indexer reads a malformed or missing
-      // bloom as "may hold anything".
+      // Both validated where they are used: the indexer refuses a flagged
+      // block without a valid bloom or a transaction list.
       logsBloom: String(block.logsBloom ?? "").toLowerCase(),
+      transactionCount: Array.isArray(block.transactions)
+        ? block.transactions.length
+        : null,
     };
-  }
-
-  private async logs(filter: Record<string, unknown>): Promise<RawLog[]> {
-    const logs = await this.request("eth_getLogs", [filter]);
-
-    // `null` (e.g. for an unknown block hash) is not "no logs".
-    if (!Array.isArray(logs)) {
-      throw new RpcError("eth_getLogs returned no log list");
-    }
-
-    return (logs as Record<string, unknown>[]).map(parseLog);
   }
 
   async getLogs(query: {
@@ -171,23 +172,39 @@ export class JsonRpcClient implements ChainRpc {
     fromBlock: bigint;
     toBlock: bigint;
   }): Promise<RawLog[]> {
-    return this.logs({
-      address: query.address,
-      fromBlock: toHex(query.fromBlock),
-      toBlock: toHex(query.toBlock),
-    });
+    const logs = await this.request("eth_getLogs", [
+      {
+        address: query.address,
+        fromBlock: toHex(query.fromBlock),
+        toBlock: toHex(query.toBlock),
+      },
+    ]);
+
+    // `null` is not "no logs".
+    if (!Array.isArray(logs)) {
+      throw new RpcError("eth_getLogs returned no log list");
+    }
+
+    return (logs as Record<string, unknown>[]).map(parseLog);
   }
 
-  async getBlockLogs(query: {
-    blockHash: string;
-    address: string;
-    topics: readonly (string | readonly string[] | null)[];
-  }): Promise<RawLog[]> {
-    return this.logs({
-      blockHash: query.blockHash,
-      address: query.address,
-      topics: query.topics,
-    });
+  async getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null> {
+    const receipts = await this.request("eth_getBlockReceipts", [blockHash]);
+
+    if (receipts === null) {
+      return null;
+    }
+
+    if (!Array.isArray(receipts)) {
+      throw new RpcError("eth_getBlockReceipts returned no receipt list");
+    }
+
+    return (receipts as Record<string, unknown>[]).map((receipt) => ({
+      transactionIndex: Number(BigInt(String(receipt.transactionIndex))),
+      blockNumber: BigInt(String(receipt.blockNumber)),
+      blockHash: String(receipt.blockHash).toLowerCase(),
+      logs: (receipt.logs as Record<string, unknown>[]).map(parseLog),
+    }));
   }
 
   async getTransactionReceipt(

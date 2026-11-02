@@ -97,7 +97,6 @@ const maxBlockRange = BigInt(process.env.INDEXER_MAX_BLOCK_RANGE ?? 2_000);
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresChainEventRepository(database.db);
-const rpc = new JsonRpcClient(chainConfig.rpcUrl);
 const campaigns = new PostgresCampaignRepository(database.db);
 const scope = {
   chainId: chainConfig.chainId,
@@ -144,11 +143,15 @@ const passes = metrics.counter(
   "vham_indexer_passes_total",
   "Indexer passes by result",
 );
-// The cost of proving committed ranges complete (#102): one eth_getLogs by
-// block hash per block whose logsBloom may hold an event.
-const blockLogQueries = metrics.counter(
-  "vham_indexer_block_log_queries_total",
-  "eth_getLogs requests by block hash made by successful passes",
+// Every RPC request of the worker by method, failed passes included: what
+// a pass costs, e.g. one eth_getBlockReceipts per block whose logsBloom may
+// hold an event (#102).
+const rpcRequests = metrics.counter(
+  "vham_indexer_rpc_requests_total",
+  "RPC requests made by the indexer worker, by method",
+);
+const rpc = new JsonRpcClient(chainConfig.rpcUrl, fetch, undefined, (method) =>
+  rpcRequests.inc({ method }),
 );
 const metricsPort = process.env.INDEXER_METRICS_PORT
   ? Number(process.env.INDEXER_METRICS_PORT)
@@ -306,9 +309,8 @@ while (!stopping) {
       confirmedEvents: result.confirmedEvents,
       observedEvents: result.observedEvents,
       skippedLogs: result.skippedLogs,
-      blockLogQueries: result.blockLogQueries,
+      receiptQueries: result.receiptQueries,
     });
-    blockLogQueries.inc({}, result.blockLogQueries);
 
     if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
       log("info", "campaigns reconciled", {
