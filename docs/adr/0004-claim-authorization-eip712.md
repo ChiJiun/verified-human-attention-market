@@ -1,6 +1,6 @@
 # ADR-0004: Backend-Signed EIP-712 Claim Authorization
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0011 (2026-10-15), which adds `draftRef` to the signed payload and a `WrongDraft` check on-chain
 - **Date:** 2026-10-05
 - **Scope:** POC → MVP
 
@@ -20,6 +20,7 @@ The user submits this authorization to the reward contract.
 ```text
 ClaimAuthorization {
   uint256 campaignId;
+  bytes32 draftRef;   // added by ADR-0011
   address claimant;
   uint256 amount;
   bytes32 nonce;
@@ -27,6 +28,8 @@ ClaimAuthorization {
   uint64 expiresAt;
 }
 ```
+
+The current type string and typehash are kept in `docs/architecture/CLAIM_AUTHORIZATION.md` and pinned by `test_ClaimAuthorizationTypehashMatchesBackend`.
 
 The EIP-712 domain binds the signature to:
 
@@ -46,7 +49,8 @@ The reward contract MUST verify:
 - authorization was issued before the campaign's close/end issuance deadline;
 - nonce has not been consumed;
 - amount matches permitted campaign accounting;
-- funded budget is sufficient.
+- funded budget is sufficient;
+- `campaignIdByDraft[advertiser][draftRef] == campaignId` (ADR-0011), so an authorization signed for a draft can never pay from a campaign another draft obtained under the same id after a deep reorg.
 
 The contract marks the nonce consumed before transferring funds.
 

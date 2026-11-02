@@ -2,61 +2,35 @@
 
 > Status: System Design  
 > Target: POC → MVP
+>
+> Reconciled with `packages/contracts/src/CampaignManager.sol`: 2026-10-19
 
 ## Design Goal
 
 Keep the financial layer small, deterministic, and independently testable.
 
-## Proposed Contracts
+## Contract Layout
 
-### 1. CampaignFactory
-
-Responsibilities:
-
-- create campaign instances/records;
-- emit canonical campaign-created event;
-- maintain approved implementation/configuration references if required.
-
-### 2. CampaignEscrow / CampaignManager
-
-For the first implementation, **CampaignEscrow and lifecycle management may be one contract** to reduce deployment and call complexity.
-
-Responsibilities:
-
-- accept approved USDC;
-- track funded budget;
-- track paid rewards;
-- track campaign lifecycle;
-- close/expire campaign;
-- refund unused funds.
-
-### 3. RewardDistributor
-
-May be integrated into CampaignEscrow for POC, or separated if tests show the boundary is valuable.
-
-Responsibilities:
-
-- verify EIP-712 authorization;
-- consume nonce;
-- enforce campaign state and budget;
-- transfer reward token;
-- emit claim event.
-
-## Recommended POC Simplification
-
-Start with:
+The design once foresaw three contracts (a factory, an escrow and a reward distributor). The implementation is **one contract, `CampaignManager`**, which holds all three responsibilities: campaign records and the canonical creation event, USDC escrow and lifecycle, and EIP-712 claim verification with payout. Splitting it is not planned until an interface boundary proves valuable.
 
 ```
 CampaignManager
-  ├─ createCampaign
-  ├─ fundCampaign
-  ├─ claim
-  ├─ closeCampaign
-  ├─ refund
-  └─ pause
+  ├─ createCampaign(reward, maxCompletions, startTime, endTime, draftRef)
+  ├─ fundCampaign(campaignId, amount, draftRef)
+  ├─ claim(authorization, signature)
+  ├─ closeCampaign(campaignId)
+  ├─ cancelCampaign(campaignId)          // unfunded draft only
+  ├─ refundUnusedBudget(campaignId)
+  ├─ pause() / unpause()                 // owner
+  ├─ setAuthorizedSigner(newSigner)      // owner
+  ├─ transferOwnership(newOwner)         // owner
+  └─ views: campaigns, campaignIdByDraft, consumedNonces, claimedWallet,
+            statusOf, domainSeparator, hashClaimAuthorization,
+            rewardToken, authorizedSigner, owner, paused, campaignCount,
+            maxRewardPerCompletion, maxCompletionsPerCampaign, maxCampaignBudget
 ```
 
-Do not split into multiple deployed contracts until the interfaces justify it.
+Constants: `MIN_CAMPAIGN_DURATION = 15 minutes`, `MAX_CAMPAIGN_DURATION = 24 hours`, `MAX_AUTHORIZATION_TTL = 15 minutes`, EIP-712 domain name `Verified Human Attention Market`, version `1`.
 
 ## Campaign Struct
 
@@ -117,9 +91,17 @@ function closeCampaign(uint256 campaignId) external;
 
 function refundUnusedBudget(uint256 campaignId) external;
 
-function pause() external;
-function unpause() external;
+function pause() external;                                // owner
+function unpause() external;                              // owner
+function setAuthorizedSigner(address newSigner) external; // owner
+function transferOwnership(address newOwner) external;    // owner
+
+function statusOf(uint256 campaignId) external view returns (CampaignStatus); // Active past endTime reads as Expired
+function domainSeparator() external view returns (bytes32);
+function hashClaimAuthorization(ClaimAuthorization calldata a) external view returns (bytes32);
 ```
+
+`whenNotPaused` guards `createCampaign`, `fundCampaign`, `claim` and `refundUnusedBudget`. `closeCampaign` and `cancelCampaign` are not paused: an advertiser can always stop new issuance.
 
 ## Exposure Limits (ADR-0006)
 
@@ -129,7 +111,7 @@ Immutable constructor parameters bound every campaign:
 - `maxCompletionsPerCampaign`
 - `maxCampaignBudget` (`reward × completions`)
 
-`createCampaign` reverts with `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`, with `InvalidDraftRef` for a zero reference, and with `DraftAlreadyCreated(campaignId)` when the sender already created a campaign for that reference (ADR-0011). `fundCampaign` rejects campaigns whose `endTime` has passed and reverts with `WrongDraft` unless `campaignIdByDraft[msg.sender][draftRef] == campaignId`, so after a deep reorg an advertiser cannot fund another of their drafts that took the same id (ADR-0011). `cancelCampaign` cancels an unfunded draft. `claim` reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][authorization.draftRef] == authorization.campaignId`, so an authorization never pays from a campaign created for another draft (ADR-0011; EIP-712 type in CLAIM_AUTHORIZATION.md).
+`createCampaign` reverts with `InvalidReward` / `InvalidCompletionLimit` for zero values, `RewardAboveLimit`, `CompletionsAboveLimit`, or `BudgetAboveLimit`, `InvalidCampaignWindow` when `startTime < block.timestamp`, `endTime <= startTime` or the duration is outside 15 minutes – 24 hours, `InvalidDraftRef` for a zero reference, and `DraftAlreadyCreated(campaignId)` when the sender already created a campaign for that reference (ADR-0011). `fundCampaign` requires exactly `rewardPerCompletion × maxCompletions` (`InvalidFundingAmount`), a `Draft` that is not funded yet (`InvalidCampaignStatus`, `AlreadyFunded`), rejects campaigns whose `endTime` has passed (`CampaignAlreadyEnded`) and reverts with `WrongDraft` unless `campaignIdByDraft[msg.sender][draftRef] == campaignId`, so after a deep reorg an advertiser cannot fund another of their drafts that took the same id (ADR-0011). `cancelCampaign` cancels an unfunded draft. `claim` reverts with `WrongDraft` unless `campaignIdByDraft[advertiser][authorization.draftRef] == authorization.campaignId`, so an authorization never pays from a campaign created for another draft (ADR-0011; EIP-712 type in CLAIM_AUTHORIZATION.md).
 
 ## Events
 
@@ -144,8 +126,13 @@ event RewardClaimed(
 );
 event CampaignClosed(uint256 indexed campaignId);
 event CampaignRefunded(uint256 indexed campaignId, uint256 amount);
+event CampaignCancelled(uint256 indexed campaignId);
 event SignerUpdated(address indexed previousSigner, address indexed newSigner);
+event PausedStateChanged(bool paused);
+event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 ```
+
+Topics and function selectors are pinned in `test/EventTopics.t.sol` and derived at runtime from the exported ABI by the API (`apps/api/src/chain/abi.ts`).
 
 ## Core Invariants
 
@@ -181,10 +168,10 @@ This avoids pretending that an off-chain signed authorization is an on-chain `re
 
 ## Access Control
 
-- advertiser controls own campaign close/cancel where permitted;
-- protocol admin can pause;
-- authorized signer can only authorize claims, not withdraw funds;
-- admin should not have arbitrary campaign-withdraw authority.
+- advertiser controls own campaign fund/close/cancel/refund;
+- the owner can only `pause` / `unpause`, rotate the signer and transfer ownership (ADR-0008); there is no owner withdrawal path and the exposure limits are immutable (ADR-0006);
+- the authorized signer can only authorize claims, not withdraw funds;
+- a participant can only be paid to `msg.sender` and only once per campaign.
 
 ## Token Scope
 

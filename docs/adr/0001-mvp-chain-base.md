@@ -85,5 +85,5 @@ Checked on 2026-10-05:
 
 - [x] Base accepted as the POC/MVP working default.
 - [x] Current official documentation confirms Base support for USDC and current World ID external verification capability.
-- [ ] Re-confirm exact testnet/mainnet USDC contract addresses immediately before deployment.
-- [ ] Re-confirm concrete World ID SDK/package versions immediately before implementation.
+- [x] Re-confirm exact testnet USDC contract address immediately before deployment — done 2026-10-14 for Base Sepolia (`docs/deployment/TESTNET.md`); the mainnet address is re-checked when Base mainnet is enabled (currently refused by `loadChainConfig`).
+- [x] Re-confirm concrete World ID SDK/package versions immediately before implementation — `@worldcoin/idkit` 4.4.0, v4 verify endpoint (ADR-0007, checked 2026-10-13/14).

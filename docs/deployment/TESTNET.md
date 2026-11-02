@@ -54,7 +54,7 @@ Raising a limit requires a new deployment and an ADR update.
 ## Keys
 
 - **Deployer / owner:** use a Foundry encrypted keystore (`cast wallet import deployer --interactive`). Never put a private key in `.env` or the repository.
-- **Claim signer:** a separate key whose **address** goes in `CLAIM_SIGNER_ADDRESS`. The private key is configured only on the API (`CLAIM_SIGNER_PRIVATE_KEY`, #10) and must never be the deployer key.
+- **Claim signer:** a separate key whose **address** goes in `CLAIM_SIGNER_ADDRESS`. On Base Sepolia the private key may be configured on the API as `CLAIM_SIGNER_PRIVATE_KEY` (#10); for real funds the key lives in a KMS behind a signing service (`CLAIM_SIGNER_URL`, ADR-0008) and plaintext keys are refused. It must never be the deployer key.
 
 ## Deploy
 

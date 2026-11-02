@@ -20,15 +20,18 @@ sequenceDiagram
     participant S as Claim Signer
     participant C as Reward Contract
 
-    U->>API: submit(campaign, proof, answers, claimant)
+    U->>API: POST eligibility/verify(claimant, IDKit result)
     API->>W: verify World ID proof
     W-->>API: valid / invalid
+    API-->>U: eligibilityToken
+    U->>API: POST submissions(eligibilityToken, claimant, answers)
+    API->>C: eth_call: live campaign state
     API->>V: evaluate mission
     V-->>API: pass / reject
     API->>API: idempotency + duplicate-human check
-    API->>S: sign bounded ClaimAuthorization
+    API->>S: sign bounded ClaimAuthorization (same DB transaction)
     S-->>API: EIP-712 signature
-    API-->>U: authorization + signature
+    API-->>U: accepted + authorization + signature
     U->>C: claim(authorization, signature)
     C->>C: verify signer/domain/expiry/nonce/budget
     C-->>U: USDC
@@ -82,23 +85,25 @@ The signed payload includes both `issuedAt` and `expiresAt`. The contract verifi
 - `expiresAt > block.timestamp`;
 - `expiresAt > issuedAt`;
 - `expiresAt - issuedAt <= MAX_AUTHORIZATION_TTL`;
-- `issuedAt` is no later than the campaign's issuance deadline (manual `closedAt` or natural `endTime`).
+- `campaign.startTime <= issuedAt`, and `issuedAt` is no later than the campaign's issuance deadline (manual `closedAt` or natural `endTime`).
 
 This closes an important refund race: after the issuance deadline plus the maximum authorization TTL, every honestly issued authorization must have expired, so unused budget can be refunded without an on-chain reservation transaction for every authorization.
 
 ## Idempotency
 
-The authorization is signed in the same request that accepts the completion
-and returned with it (ADR-0011): the contract pays an authorization issued up
-to `closedAt`, so a close after acceptance cannot strand the participant. If
-signing fails there, the response says `pending_authorization` with a reason
-code and `POST .../authorization` can be called again.
+The authorization is signed inside the database transaction that records the
+accepted completion and returned with it (ADR-0011): the contract pays an
+authorization issued up to `closedAt`, so a close after acceptance cannot
+strand the participant. If it cannot be signed there, the acceptance is rolled
+back and the request fails with the reason (see "At acceptance" below);
+`POST .../authorization` serves replays and reissues for stored acceptances.
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
 authorization request returns the same active signature.
 
-Before signing, the service reads **live** contract state via `eth_call`: the
+Before signing, the service reads **live** contract state via `eth_call`:
+`campaignIdByDraft(advertiser, draftRef)` (must still name the linked id), the
 current `authorizedSigner`, `campaigns(id)` (paid completions, `closedAt`,
 `endTime`) and `claimedWallet(id, claimant)`. Indexed events lag by the
 confirmation depth; these reads do not. RPC failures fail closed.

@@ -107,8 +107,6 @@ Done on `main`:
 - M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
 - #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
 
-- #19 closed 2026-10-15: `CampaignManager` is deployed on Base Sepolia and recorded in `packages/contracts/deployments/84532.json`
-
 Next, in dependency order:
 
 1. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md, deploy, and re-run the flow (World ID needs the owner's scan). Then close M1 (#12, #13; #19 was closed on 2026-10-15) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Missing UX: close/refund buttons in the advertiser page.
@@ -154,6 +152,7 @@ This is a baseline engagement test, not a claim that comprehension questions pro
 ```text
 ClaimAuthorization {
   campaignId
+  draftRef      // ADR-0011
   claimant
   amount
   nonce
@@ -175,6 +174,15 @@ max 10 test USDC funding
 ```
 
 These are test parameters, not final pricing.
+
+### ADR-0006 to ADR-0011 (accepted later; read the files)
+
+- **ADR-0006** — the three exposure limits are immutable constructor parameters of `CampaignManager`.
+- **ADR-0007** — World ID: one action per campaign, backend v4 verification, HMAC participant keys, IDKit 4.4.0 with RP-signed requests.
+- **ADR-0008** — signer custody (KMS behind a signing service in production), role separation, 24 h payout limit.
+- **ADR-0009** — campaign-scoped quality flags only; no cross-campaign reputation without a new ADR.
+- **ADR-0011** — idempotent on-chain creation per draft (`draftRef`): `createCampaign`, `fundCampaign` and `ClaimAuthorization` all carry it; deployments are kept apart in the database; a reorg beyond the confirmation depth halts the deployment until recovery; acceptance and claim authorization are one persisted result.
+- ADR-0010 (passive accrual) is **proposed only** (PR #61) and is not a decision.
 
 ---
 
@@ -447,14 +455,14 @@ Current database stack:
 - PostgreSQL
 - Drizzle ORM / Drizzle migrations
 
-Current logical tables include:
+Current logical tables (see `docs/architecture/DATA_MODEL.md`):
 
-- campaigns
-- eligibility
-- submissions
-- answers
-- chain_events
-- reconciliation_state
+- campaigns, missions
+- eligibility, submissions, answers
+- chain_events, reconciliation_state, indexer_halts
+- auth_nonces, auth_sessions
+- campaign_moderation, campaign_reports, moderation_actions
+- api_clients
 
 Do not modify production schema manually without a migration.
 
@@ -487,7 +495,12 @@ Current contract tests cover:
 - post-close authorization rejection;
 - pause behavior;
 - funding fuzzing;
-- stateful budget/completion invariants.
+- stateful budget/completion invariants;
+- exposure limits (ADR-0006): reward / completions / budget above limit, boundaries, invalid constructor limits, fuzzed creation;
+- cancel of an unfunded draft, no cancel once funded, no funding after end;
+- signer rotation revokes old signatures; typehash pinned against the backend;
+- draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
+- deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.
 
