@@ -11,32 +11,17 @@ import {
   SignerUnavailableError,
   type ClaimSigner,
 } from "../src/claims/signer.js";
-import {
-  campaignAction,
-  type WorldIdResult,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
+import { campaignAction } from "../src/identity/world-id.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
-import { signedInAs } from "./support/auth.js";
+import { signedInAs, TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
 import { FakeChain } from "./support/fake-chain.js";
+import { FakeWorldId } from "./support/world-id.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
-
-class FakeWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? { ok: true, nullifier: proof.human }
-      : { ok: false, code: "ACTION_MISMATCH" };
-  }
-}
 
 class SignerChain extends FakeChain {
   onchainSigner: string | null = null;
@@ -73,7 +58,6 @@ const WARN = 40;
 const REAL = createClaimSigner(`0x${"11".repeat(32)}`);
 const OTHER_SIGNER = `0x${"44".repeat(20)}`;
 const CONTRACT = `0x${"c8".repeat(20)}`;
-const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const CORRECT = [{ questionId: "q1", choiceId: "a" }];
 const wallet = (n: number) =>
   `0x${(0x8900 + n).toString(16).padStart(40, "0")}`;

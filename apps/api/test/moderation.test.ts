@@ -4,8 +4,8 @@ import { buildApp } from "../src/app.js";
 import type { Authenticate } from "../src/auth/siwe.js";
 import type { ModerationConfig } from "../src/moderation/routes.js";
 import { checkContentUrl } from "../src/moderation/url-policy.js";
+import { TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
 
-const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const TRUSTED = "0x" + "77".repeat(20);
 const OPERATOR = "0x" + "0e".repeat(20);
 const STRANGER = "0x" + "5a".repeat(20);

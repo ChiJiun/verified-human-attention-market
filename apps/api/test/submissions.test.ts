@@ -7,11 +7,7 @@ import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import type { CampaignRecord, CampaignStatus } from "../src/campaigns/types.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
-import {
-  campaignAction,
-  type WorldIdResult,
-  type WorldIdVerifier,
-} from "../src/identity/world-id.js";
+import { campaignAction } from "../src/identity/world-id.js";
 import {
   ClaimIssueError,
   type ClaimIssueInput,
@@ -28,6 +24,7 @@ import {
   type SubmissionServiceDependencies,
 } from "../src/submissions/service.js";
 import { FakeChain } from "./support/fake-chain.js";
+import { FakeWorldId } from "./support/world-id.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
@@ -46,18 +43,6 @@ class StatusOverrideCampaignRepository extends InMemoryCampaignRepository {
   override async getById(id: string): Promise<CampaignRecord | null> {
     const record = await super.getById(id);
     return record ? { ...record, status: this.status } : null;
-  }
-}
-
-class FakeWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? { ok: true, nullifier: proof.human }
-      : { ok: false, code: "ACTION_MISMATCH" };
   }
 }
 
