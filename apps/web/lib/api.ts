@@ -76,6 +76,8 @@ export function describeError(error: unknown): string {
       "The on-chain campaign does not match this draft. Use the values shown.",
     ADVERTISER_MISMATCH: "The transaction was sent from a different wallet.",
     ALREADY_LINKED: "This draft is already linked to an on-chain campaign.",
+    LINK_NOT_CANONICAL:
+      "This draft's on-chain link no longer matches the chain and is being reconciled. Check again in a few minutes.",
     AUTH_NOT_CONFIGURED: "Sign-in is disabled on this API (SIWE_DOMAIN).",
     NONCE_INVALID_OR_USED: "Sign-in expired. Please try again.",
     WRONG_DOMAIN:

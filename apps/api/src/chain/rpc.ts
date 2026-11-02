@@ -27,6 +27,13 @@ export interface TransactionReceipt {
   logs: RawLog[];
 }
 
+/**
+ * A block number, or a block hash (EIP-1898): a read by hash is the state of
+ * exactly that block whichever node answers, and fails on a node that does
+ * not have it.
+ */
+export type BlockRef = bigint | { blockHash: string };
+
 export interface ChainRpc {
   blockNumber(): Promise<bigint>;
   getBlock(number: bigint): Promise<BlockHeader | null>;
@@ -37,7 +44,7 @@ export interface ChainRpc {
   }): Promise<RawLog[]>;
   getTransactionReceipt(hash: string): Promise<TransactionReceipt | null>;
   /** eth_call at `block` (default: latest). */
-  call(to: string, data: string, block?: bigint): Promise<string>;
+  call(to: string, data: string, block?: BlockRef): Promise<string>;
 }
 
 /** Transport or provider failure. Always safe to retry: reads only. */
@@ -165,11 +172,15 @@ export class JsonRpcClient implements ChainRpc {
     };
   }
 
-  async call(to: string, data: string, block?: bigint): Promise<string> {
+  async call(to: string, data: string, block?: BlockRef): Promise<string> {
     return String(
       await this.request("eth_call", [
         { to, data },
-        block === undefined ? "latest" : `0x${block.toString(16)}`,
+        block === undefined
+          ? "latest"
+          : typeof block === "bigint"
+            ? toHex(block)
+            : { blockHash: block.blockHash },
       ]),
     ).toLowerCase();
   }

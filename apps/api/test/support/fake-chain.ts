@@ -4,6 +4,7 @@ import { EVENT_TOPICS, FUNCTION_SELECTORS } from "../../src/chain/abi.js";
 import {
   RpcError,
   type BlockHeader,
+  type BlockRef,
   type ChainRpc,
   type RawLog,
   type TransactionReceipt,
@@ -273,10 +274,22 @@ export class FakeChain implements ChainRpc {
     return null;
   }
 
-  async call(to: string, data: string, block?: bigint): Promise<string> {
+  /**
+   * EIP-1898: a node fails for a block hash it does not have (here: one of
+   * another fork) instead of answering from its own chain.
+   */
+  private numberOf(blockHash: string): bigint {
+    const block = this.blocks.find((candidate) => candidate.hash === blockHash);
+    if (!block) throw new RpcError(`header not found: ${blockHash}`);
+    return block.number;
+  }
+
+  async call(to: string, data: string, at?: BlockRef): Promise<string> {
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
     }
+
+    const block = typeof at === "object" ? this.numberOf(at.blockHash) : at;
 
     if (
       to === this.contract &&
