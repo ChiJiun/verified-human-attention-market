@@ -38,11 +38,18 @@ import {
   describeChainError,
   describeSimulationFailure,
   formatRemaining,
+  observeSettlementTx,
   readSettlement,
+  resolveSettlementTx,
   SETTLEMENT_CALLS,
+  SETTLEMENT_POLL_MS,
+  SETTLEMENT_TX_MESSAGES,
+  settlementButton,
+  settlementEffectVisible,
   type ChainSettlement,
   type SettlementAction,
   type SettlementTarget,
+  type SettlementTxOutcome,
 } from "../../lib/settlement";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
@@ -114,6 +121,15 @@ type ChainView =
   | { state: "failed"; message: string };
 
 const UNREAD: ChainView = { state: "unread" };
+
+/** A close or refund whose receipt did not arrive while waiting (#86). */
+interface UnresolvedSettlement {
+  action: SettlementAction;
+  hash: Hash;
+  sentAtMs: number;
+  deployment: Deployment;
+  target: SettlementTarget;
+}
 
 function settlementTarget(analytics: Analytics): SettlementTarget | null {
   return analytics.onchainCampaignId === null
@@ -230,6 +246,10 @@ export default function AdvertiserPage() {
   const [awaitingEffect, setAwaitingEffect] = useState<SettlementAction | null>(
     null,
   );
+  /** A close or refund whose outcome is unknown; checked until it settles. */
+  const [unresolved, setUnresolved] = useState<UnresolvedSettlement | null>(
+    null,
+  );
   const chainReads = useRef(0);
   const auth = useAdvertiserSession(wallet, setError);
   const activeSession = auth.active;
@@ -330,6 +350,120 @@ export default function AdvertiserPage() {
   useEffect(() => {
     void readChain();
   }, [readChain]);
+
+  /**
+   * Ends the wait for an unknown close or refund outcome. Only the card that
+   * still shows this transaction changes. A failed one offers the action
+   * again if the chain still allows it; a done one keeps it hidden until a
+   * chain read shows the effect (below).
+   */
+  const settleUnresolved = useCallback(
+    (
+      pending: UnresolvedSettlement,
+      outcome: Exclude<SettlementTxOutcome, "pending">,
+    ) => {
+      const { label, done } = SETTLEMENT_CALLS[pending.action];
+      setUnresolved((current) =>
+        current?.hash === pending.hash ? null : current,
+      );
+      setTx((current) =>
+        current.state !== "reconciling" || current.hash !== pending.hash
+          ? current
+          : outcome === "done"
+            ? { state: "done", label: done, hash: pending.hash }
+            : {
+                state: "failed",
+                label,
+                message: SETTLEMENT_TX_MESSAGES[outcome],
+              },
+      );
+      if (outcome !== "done") {
+        setAwaitingEffect((current) =>
+          current === pending.action ? null : current,
+        );
+      }
+    },
+    [],
+  );
+
+  // Once the chain (or the API's index of it) shows the status the awaited
+  // action produces, the wait is over, whichever transaction caused it (#86).
+  const onchainStatus =
+    chainView.state === "read" ? chainView.onchain.reading.storedStatus : null;
+  useEffect(() => {
+    if (
+      !awaitingEffect ||
+      ![
+        onchainStatus,
+        analytics?.settlement?.pending.status,
+        analytics?.status,
+      ].some((status) => settlementEffectVisible(awaitingEffect, status))
+    ) {
+      return;
+    }
+    setAwaitingEffect(null);
+    if (unresolved?.action === awaitingEffect) {
+      settleUnresolved(unresolved, "done");
+    }
+  }, [awaitingEffect, onchainStatus, analytics, unresolved, settleUnresolved]);
+
+  // While the card says "reconciling", poll the receipt, the sender's nonce
+  // and the campaign, so a late, replaced or dropped transaction resolves
+  // without a reload. Nothing is ever sent from here.
+  useEffect(() => {
+    if (!unresolved || !wallet) return;
+    const pending = unresolved;
+    let stopped = false;
+    let checking = false;
+    let txNonce: number | null = null;
+
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const observation = await observeSettlementTx(
+          wallet,
+          pending.deployment.chainId,
+          pending.hash,
+          txNonce,
+        );
+        txNonce = observation.txNonce;
+        let storedStatus: string | null = null;
+        const read = ++chainReads.current;
+        try {
+          const settlement = await readSettlement(
+            wallet,
+            pending.deployment,
+            pending.target,
+          );
+          storedStatus = settlement.reading.storedStatus;
+          if (!stopped && read === chainReads.current) {
+            setChainView({ state: "read", onchain: settlement });
+          }
+        } catch {
+          // Unknown for now; the next check reads again.
+        }
+        const outcome = resolveSettlementTx({
+          action: pending.action,
+          storedStatus,
+          observation,
+          elapsedMs: Date.now() - pending.sentAtMs,
+        });
+        if (!stopped && outcome !== "pending") {
+          settleUnresolved(pending, outcome);
+          void refresh();
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    const timer = setInterval(() => void check(), SETTLEMENT_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [unresolved, wallet, refresh, settleUnresolved]);
 
   async function run(action: () => Promise<void>) {
     setError(null);
@@ -717,7 +851,7 @@ export default function AdvertiserPage() {
     analytics: Analytics,
     target: SettlementTarget,
     action: SettlementAction,
-  ): Promise<Address> {
+  ): Promise<{ manager: Address; deployment: Deployment }> {
     const { data: chainInfo } = await api<{
       chainId: number;
       campaignManager: Address;
@@ -751,12 +885,12 @@ export default function AdvertiserPage() {
         "This is no longer available. The page has been updated.",
       );
     }
-    return chainInfo.campaignManager;
+    return { manager: chainInfo.campaignManager, deployment: configured };
   }
 
   async function sendSettlementOnce(
     wallet: Wallet,
-    manager: Address,
+    { manager, deployment }: { manager: Address; deployment: Deployment },
     target: SettlementTarget,
     action: SettlementAction,
   ) {
@@ -788,11 +922,15 @@ export default function AdvertiserPage() {
       );
     }
 
+    const sentAtMs = Date.now();
     setAwaitingEffect(action);
     setTx({ state: "pending", label, hash });
     const mined = await waitForTx(wallet.publicClient, hash);
     if (mined.kind === "pending") {
+      // Not a failure: checked until the receipt, the sender's nonce or the
+      // campaign's status settles it.
       setTx({ state: "reconciling", label, hash });
+      setUnresolved({ action, hash, sentAtMs, deployment, target });
       return;
     }
     if (mined.kind === "reverted") {
@@ -809,13 +947,13 @@ export default function AdvertiserPage() {
       if (!wallet || !activeSession || !analytics) return;
       const target = settlementTarget(analytics);
       if (!target) return;
-      const manager = await prepareSettlement(
+      const prepared = await prepareSettlement(
         wallet,
         analytics,
         target,
         action,
       );
-      await sendSettlementOnce(wallet, manager, target, action);
+      await sendSettlementOnce(wallet, prepared, target, action);
     });
 
   const apiStatus = analytics?.settlement?.pending.status;
@@ -833,10 +971,19 @@ export default function AdvertiserPage() {
     apiStatus !== "settled"
       ? refundAvailability(onchain.reading)
       : null;
-  const closeOffered =
-    closeVerdict?.kind === "available" && !busy && awaitingEffect !== "close";
-  const refundOffered =
-    refundVerdict?.kind === "available" && !busy && awaitingEffect !== "refund";
+  const blocked = busy || wrongNetwork;
+  const closeButton = settlementButton(
+    "close",
+    closeVerdict,
+    awaitingEffect,
+    blocked,
+  );
+  const refundButton = settlementButton(
+    "refund",
+    refundVerdict,
+    awaitingEffect,
+    blocked,
+  );
 
   return (
     <main className="container">
@@ -1020,18 +1167,21 @@ export default function AdvertiserPage() {
                   Approve &amp; fund
                 </button>
               )}
-            {closeOffered && (
+            {closeButton !== "hidden" && (
               <button
                 className="secondary"
                 onClick={() => settle("close")}
-                disabled={wrongNetwork}
+                disabled={closeButton === "disabled"}
                 title="Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
               >
                 Close campaign
               </button>
             )}
-            {refundOffered && (
-              <button onClick={() => settle("refund")} disabled={wrongNetwork}>
+            {refundButton !== "hidden" && (
+              <button
+                onClick={() => settle("refund")}
+                disabled={refundButton === "disabled"}
+              >
                 Refund unused budget
               </button>
             )}
