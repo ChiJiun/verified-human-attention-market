@@ -16,10 +16,12 @@ import { buildApp } from "./app.js";
 import {
   loadChainConfig,
   parseConfirmations,
+  RpcUnavailableError,
   verifyChainConnection,
 } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
 import { JsonRpcClient } from "./chain/rpc.js";
+import { retryWithBackoff, sleepUntilAborted } from "./chain/worker-pass.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
 import { PostgresModerationRepository } from "./moderation/repository.js";
@@ -37,7 +39,41 @@ if (!databaseUrl) {
 const chainConfig = loadChainConfig(process.env);
 
 if (chainConfig) {
-  await verifyChainConnection(chainConfig);
+  // Like the indexer worker: an unreachable or failing RPC is retried with
+  // backoff (up to 60 s apart) instead of crash-looping; a wrong chain,
+  // missing code or an older contract still stops the API at once. SIGTERM
+  // ends the wait.
+  const startup = new AbortController();
+  const abortStartup = () => startup.abort();
+  process.once("SIGINT", abortStartup);
+  process.once("SIGTERM", abortStartup);
+  const verified = await retryWithBackoff(
+    async () => {
+      await verifyChainConnection(chainConfig);
+      return true;
+    },
+    {
+      retryable: (error) => error instanceof RpcUnavailableError,
+      stopping: () => startup.signal.aborted,
+      sleep: sleepUntilAborted(startup.signal),
+      onFailure: (attempt, error, retryInMs) =>
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            msg: "startup chain check failed; retrying",
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+            retryInMs,
+          }),
+        ),
+    },
+  );
+  process.off("SIGINT", abortStartup);
+  process.off("SIGTERM", abortStartup);
+
+  if (verified === null) {
+    process.exit(0);
+  }
 }
 
 const chainId =
