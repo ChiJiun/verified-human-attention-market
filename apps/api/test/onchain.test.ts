@@ -294,6 +294,70 @@ describe("POST /v1/campaigns/:id/publish", () => {
       ).json(),
     ).toMatchObject({ error: { code: "CHAIN_NOT_CONFIGURED" } });
   });
+
+  it("refuses while this draft's creation is mined but not yet final (#78)", async () => {
+    const { app, chain, createDraft, createOnchain, link } = await setup();
+    const id = await createDraft();
+    const publish = () =>
+      app.inject({ method: "POST", url: `/v1/campaigns/${id}/publish` });
+    const linkByDraft = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${id}/onchain`,
+        payload: {},
+      });
+
+    // Mined, not final: linking (confirmed block) cannot see it yet, so
+    // without this refusal a second tab would get an intent and send a
+    // createCampaign that only reverts (DraftAlreadyCreated).
+    const txHash = createOnchain(1, id, {}, CONTRACT, false);
+    expect((await linkByDraft()).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+    const refused = await publish();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({
+      error: { code: "DRAFT_ALREADY_CREATED", retryable: false },
+    });
+
+    // Once final it links, and the intent stays refused.
+    chain.mine(CONFIRMATIONS);
+    expect((await link(id, txHash)).statusCode).toBe(200);
+    expect((await publish()).json()).toMatchObject({
+      error: { code: "CAMPAIGN_ALREADY_PUBLISHED" },
+    });
+  });
+
+  it("is not blocked by the advertiser's creation for another draft", async () => {
+    const { app, createDraft, createOnchain } = await setup();
+    const id = await createDraft("a");
+    const other = await createDraft("b", {
+      contentUrl: "https://example.com/b",
+    });
+    createOnchain(1, other, {}, CONTRACT, false);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${id}/publish`,
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("refuses with a retryable RPC_UNAVAILABLE when the chain cannot be read", async () => {
+    const { app, chain, createDraft } = await setup();
+    const id = await createDraft();
+    chain.rpcDown = true;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${id}/publish`,
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "RPC_UNAVAILABLE", retryable: true },
+    });
+  });
 });
 
 describe("POST /v1/campaigns/:id/onchain", () => {

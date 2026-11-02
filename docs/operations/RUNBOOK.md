@@ -226,6 +226,43 @@ eligibility is recorded on failure.
 Group `vham_http_requests_total{status=~"5.."}` by route, then search logs for
 `"level":50` with that route's `requestId`s.
 
+## Client addresses behind the web app (#75)
+
+Per-IP rate limits ([API_CONTRACT.md](../architecture/API_CONTRACT.md)) key on
+the client address. The API reads it from `X-Forwarded-For`, counting
+`TRUST_PROXY_HOPS` entries from the end; entries further left are set by the
+caller and ignored.
+
+Browsers reach the API through the web app's `/api/*` rewrite. The rewrite
+forwards `X-Forwarded-For` exactly as it arrived and adds no entry of its own
+(Next 16.3.8; `pnpm --filter @vham/web smoke:forwarded-for` checks this in
+CI). Next's middleware cannot see the peer address, so the web app cannot add
+it itself. With `TRUST_PROXY_HOPS=0`, the default for local development, every
+browser shares the web server's address: one anonymous bucket and one
+sensitive bucket (sign-in, World ID requests, eligibility, reports) for all
+participants.
+
+Production topology:
+
+- A reverse proxy or load balancer in front of the web app appends the client
+  address to `X-Forwarded-For` (or sets it). Direct API clients (API keys)
+  reach the API through a proxy that does the same.
+- The web app's `API_URL` points at the API directly (an internal address),
+  not through the API's proxy, so both paths reach the API with exactly one
+  appended entry. Set `TRUST_PROXY_HOPS` to the number of proxies that append
+  on the way in: `1` in this topology.
+- The web app and the API accept connections only from those proxies. A
+  client that reaches either one directly chooses the last entry itself and
+  with it its own rate-limit bucket.
+- `API_URL` is fixed when the web app is built (the rewrite is written to
+  `.next/routes-manifest.json`); rebuild after changing it.
+
+Check after a deploy: from two different networks, call
+`GET /api/v1/campaigns/00000000-0000-4000-8000-000000000000` through the web
+origin a few times and compare `RateLimit-Remaining`. Each client must count
+down on its own; a shared count means the proxy does not set the header or
+`TRUST_PROXY_HOPS` is wrong.
+
 ## Emergency procedures (#23, ADR-0008)
 
 Both are exercised in CI (`CampaignManager.t.sol` and the local-chain E2E).

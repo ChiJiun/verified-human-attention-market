@@ -8,7 +8,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke:csp": "node scripts/csp-smoke.mjs"
+    "smoke:csp": "node scripts/csp-smoke.mjs",
+    "smoke:forwarded-for": "node scripts/forwarded-for-smoke.mjs"
   },
   "dependencies": {
     "@vham/shared": "workspace:*",

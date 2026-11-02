@@ -4,12 +4,14 @@ import { z } from "zod";
 
 import { reconcileCampaignEvents } from "../chain/campaign-state.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
+import { RpcError } from "../chain/rpc.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
 import {
   draftRefFor,
   linkCampaignByDraft,
   linkCampaignByTransaction,
   publishIntent,
+  readCampaignIdByDraft,
   type OnchainDependencies,
 } from "./onchain.js";
 import { requireWallet } from "../auth/routes.js";
@@ -101,6 +103,34 @@ export async function registerOnchainRoutes(
         return error(409, {
           code: "CAMPAIGN_START_PASSED",
           message: "The contract rejects campaigns whose start time has passed",
+        });
+      }
+
+      // Linking reads the confirmed block, so a creation that is mined but
+      // not final yet is invisible to it. The latest block already shows it:
+      // a second tab or browser gets no intent for a send that could only
+      // revert (DraftAlreadyCreated) and cost gas (#78).
+      let created: string | null;
+      try {
+        created = await readCampaignIdByDraft(
+          dependencies.chain.rpc,
+          dependencies.chain.chain.contractAddress,
+          campaign.advertiserAddress,
+          draftRefFor(campaign.id),
+        );
+      } catch (caught) {
+        if (!(caught instanceof RpcError)) throw caught;
+        return error(503, {
+          code: "RPC_UNAVAILABLE",
+          message: "The chain could not be read; retry shortly",
+        });
+      }
+
+      if (created !== null) {
+        return error(409, {
+          code: "DRAFT_ALREADY_CREATED",
+          message:
+            "This draft's campaign already exists on-chain; link it with POST /v1/campaigns/:id/onchain",
         });
       }
 

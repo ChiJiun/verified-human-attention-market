@@ -341,7 +341,7 @@ The web app's terminal may print `Blocked cross-origin request to Next.js dev re
 
     The call reverts with data `0x1fb09b80` (`NonceAlreadyUsed`). After `expiresAt`, it reverts with `AuthorizationExpired` first and no longer shows the duplicate check. Record the revert. This is a simulation with `eth_call`. It sends no transaction, so the chain holds no rejected claim.
 
-24. **(owner)** After `expiresAt`, reload wallet A's tab, connect wallet A, and press **Claim USDC**. The page says "This reward was already paid to your wallet." (`409 ALREADY_CLAIMED`) and shows the paid state. Record the code. The API answers before the page sends a transaction, so this step does not reach the contract.
+24. **(owner)** Reload wallet A's tab, connect wallet A, and press **Claim USDC**: once before `expiresAt` if there is still time, and once after it. Each time the page says "This reward was already paid to your wallet." and the wallet opens no prompt. In the network panel the `authorization` request answers `409 ALREADY_CLAIMED`. Record the code and the time of each press against `expiresAt`. The API answers before the page simulates or sends a transaction, so this step does not reach the contract (#82).
 25. Open campaign 1's participant link in a new tab and do not connect. The page says that the campaign is `closed` and that rewards can only be earned while it is active. Record a screenshot.
 
 ## Show that a closed campaign refuses a completion
