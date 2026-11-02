@@ -12,20 +12,31 @@ const NULLIFIER_HEX =
   "0x2bf8406809dcefb1486dadc96c0a897db9bab002053054cf64272db512c6fbd8";
 const NULLIFIER_DEC = BigInt(NULLIFIER_HEX).toString(10);
 
+const LEGACY_ITEM = {
+  identifier: "orb",
+  proof: "0xproof",
+  merkle_root: "0xroot",
+  nullifier: NULLIFIER_HEX,
+};
+
+function responseItem(overrides: Record<string, unknown> = {}) {
+  return {
+    identifier: "proof_of_human",
+    issuer_schema_id: 1,
+    proof: ["0x111", "0x222", "0x333", "0x444", "0x555"],
+    nullifier: NULLIFIER_HEX,
+    expires_at_min: 1791194400,
+    ...overrides,
+  };
+}
+
 function idkitResponse(overrides: Record<string, unknown> = {}) {
   return {
-    protocol_version: "3.0",
+    protocol_version: "4.0",
     nonce: "0x1234",
     action: ACTION,
     environment: "production",
-    responses: [
-      {
-        identifier: "orb",
-        proof: "0xproof",
-        merkle_root: "0xroot",
-        nullifier: NULLIFIER_HEX,
-      },
-    ],
+    responses: [responseItem()],
     ...overrides,
   };
 }
@@ -35,6 +46,22 @@ function jsonResponse(status: number, body: unknown) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function worldAccepting() {
+  return vi.fn(async () =>
+    jsonResponse(200, {
+      success: true,
+      environment: "production",
+      results: [
+        {
+          identifier: "proof_of_human",
+          success: true,
+          nullifier: NULLIFIER_HEX,
+        },
+      ],
+    }),
+  );
 }
 
 function verifierWith(fetchImpl: typeof fetch) {
@@ -55,7 +82,7 @@ describe("HttpWorldIdVerifier", () => {
         environment: "production",
         results: [
           {
-            identifier: "orb",
+            identifier: "proof_of_human",
             success: true,
             nullifier: NULLIFIER_HEX,
           },
@@ -107,9 +134,116 @@ describe("HttpWorldIdVerifier", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("refuses a legacy World ID 3.0 result without calling World", async () => {
+    const legacyNullifier = "0x0123456789abcdef";
+    const fetchMock = vi.fn(async () =>
+      jsonResponse(200, {
+        success: true,
+        environment: "production",
+        results: [
+          { identifier: "orb", success: true, nullifier: legacyNullifier },
+        ],
+      }),
+    );
+
+    const result = await verifierWith(
+      fetchMock as unknown as typeof fetch,
+    ).verify({
+      action: ACTION,
+      idkitResponse: idkitResponse({
+        protocol_version: "3.0",
+        responses: [
+          {
+            identifier: "orb",
+            proof: "0xproof",
+            merkle_root: "0xroot",
+            nullifier: legacyNullifier,
+          },
+        ],
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a legacy item", [LEGACY_ITEM]],
+    ["a legacy item next to a 4.0 item", [responseItem(), LEGACY_ITEM]],
+  ])(
+    "refuses a 4.0 payload that carries %s without calling World",
+    async (_label, responses) => {
+      const fetchMock = worldAccepting();
+
+      const result = await verifierWith(
+        fetchMock as unknown as typeof fetch,
+      ).verify({
+        action: ACTION,
+        idkitResponse: idkitResponse({ responses }),
+      });
+
+      expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["a proof of four elements", { proof: ["0x1", "0x2", "0x3", "0x4"] }],
+    [
+      "a proof of six elements",
+      { proof: ["0x1", "0x2", "0x3", "0x4", "0x5", "0x6"] },
+    ],
+    ["a proof that is one string", { proof: "0xproof" }],
+    [
+      "a proof element that is not a string",
+      { proof: ["0x1", "0x2", "0x3", "0x4", 5] },
+    ],
+    ["no identifier", { identifier: undefined }],
+    ["no issuer_schema_id", { issuer_schema_id: undefined }],
+    ["a fractional issuer_schema_id", { issuer_schema_id: 1.5 }],
+    ["no expires_at_min", { expires_at_min: undefined }],
+    ["an expires_at_min that is a string", { expires_at_min: "1791194400" }],
+    ["a signal_hash that is not a string", { signal_hash: 0 }],
+  ])(
+    "refuses a 4.0 item with %s without calling World",
+    async (_label, overrides) => {
+      const fetchMock = worldAccepting();
+
+      const result = await verifierWith(
+        fetchMock as unknown as typeof fetch,
+      ).verify({
+        action: ACTION,
+        idkitResponse: idkitResponse({ responses: [responseItem(overrides)] }),
+      });
+
+      expect(result).toEqual({ ok: false, code: "INVALID_PROOF_PAYLOAD" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("forwards the optional and unknown fields of a 4.0 payload unchanged", async () => {
+    const payload = idkitResponse({
+      user_presence_completed: true,
+      responses: [responseItem({ signal_hash: "0x0", sybil_score: 3 })],
+    });
+    const fetchMock = worldAccepting();
+
+    const result = await verifierWith(
+      fetchMock as unknown as typeof fetch,
+    ).verify({ action: ACTION, idkitResponse: payload });
+
+    expect(result).toEqual({ ok: true, nullifier: NULLIFIER_DEC });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(JSON.parse(init.body as string)).toEqual(payload);
+  });
+
   it.each([
     ["not an object", "proof"],
-    ["missing responses", { protocol_version: "3.0", action: ACTION }],
+    ["missing responses", { protocol_version: "4.0", action: ACTION }],
     [
       "session proof without action",
       { protocol_version: "4.0", responses: [] },
