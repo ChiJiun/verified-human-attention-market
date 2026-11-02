@@ -3,8 +3,9 @@
   "compilerOptions": {
     "noEmit": false,
     "outDir": "dist",
+    "rootDir": "src",
     "sourceMap": true,
     "declaration": true
   },
-  "exclude": ["test/**/*.ts"]
+  "exclude": ["test/**/*.ts", "e2e/**/*.ts"]
 }

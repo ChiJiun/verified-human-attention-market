@@ -1,7 +1,10 @@
 import { expect, it } from "vitest";
 
 import { reconcileCampaignEvents } from "../../src/chain/campaign-state.js";
-import type { ChainEventRepository } from "../../src/chain/events-repository.js";
+import {
+  IndexCursorMovedError,
+  type ChainEventRepository,
+} from "../../src/chain/events-repository.js";
 import {
   InconsistentChainReadError,
   indexOnce,
@@ -223,20 +226,109 @@ export function defineIndexerContract(harness: IndexerHarness) {
       recoveryAppliedAt: applied,
     });
 
-    // A new deep reorg during recovery starts over.
+    // A new deep reorg during recovery starts over: the rebuild that the
+    // earlier application allowed can no longer clear it (#77).
     await repository.haltForReorg(scope, 13n, applied);
     expect((await repository.getHalt(scope))?.recoveryAppliedAt).toBeNull();
+    const reapplied = new Date("2026-10-15T00:10:00.000Z");
+    expect(await repository.markRecoveryApplied(scope, reapplied)).toBe(true);
 
-    // Rebuild from the deploy block, then clear.
+    // Not before the rebuilt index reaches the verified block.
+    const verified = { recoveryAppliedAt: reapplied, indexedThrough: 17n };
+    expect(await repository.clearHalt(scope, verified)).toBe(false);
+
+    // Rebuild from the deploy block, then clear the current application.
     await indexOnce(chain, repository, config);
+    expect((await repository.getCursor(scope))?.latestConfirmedBlock).toBe(17n);
     expect(
       (await repository.listCampaignEvents(scope, "1")).map(
         (stored) => stored.event.name,
       ),
     ).toEqual(["CampaignCreated", "CampaignFunded"]);
-    await repository.clearHalt(scope);
+    expect(
+      await repository.clearHalt(scope, { ...verified, indexedThrough: 18n }),
+    ).toBe(false);
+    expect(
+      await repository.clearHalt(scope, {
+        ...verified,
+        recoveryAppliedAt: applied,
+      }),
+    ).toBe(false);
+    expect(await repository.getHalt(scope)).not.toBeNull();
+    expect(await repository.clearHalt(scope, verified)).toBe(true);
     expect(await repository.getHalt(scope)).toBeNull();
     expect(await repository.markRecoveryApplied(scope, applied)).toBe(false);
+  });
+
+  it("never lets a batch read before an index reset land after it (#77)", async () => {
+    const { chain, config, repository, scope } = setup(harness);
+    chain.mine(1, [logs.created(1, ADVERTISER), logs.funded(1, 10n * USDC)]);
+    chain.mine(4);
+    await indexOnce(chain, repository, config);
+    chain.mine(1, [logs.claimed(1, CLAIMANT, USDC, 1)]);
+    chain.mine(10);
+
+    // `reorg:recover --apply` resets the index between two batches of a pass.
+    const readLogs = chain.getLogs.bind(chain);
+    let calls = 0;
+    chain.getLogs = async (query) => {
+      const result = await readLogs(query);
+      calls += 1;
+      if (calls === 2) await repository.resetIndex(scope);
+      return result;
+    };
+
+    await expect(indexOnce(chain, repository, config)).rejects.toBeInstanceOf(
+      IndexCursorMovedError,
+    );
+    // The batch did not land: no cursor past a gap, no stray events.
+    expect(await repository.getCursor(scope)).toBeNull();
+    expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
+
+    // A writer that read the old cursor cannot write the tail either.
+    await expect(
+      repository.replaceObservedTail(
+        scope,
+        { from: chain.head, to: chain.head, expectedCursor: 11n },
+        [],
+      ),
+    ).rejects.toBeInstanceOf(IndexCursorMovedError);
+
+    // The next pass rebuilds from the deploy block.
+    chain.getLogs = readLogs;
+    await indexOnce(chain, repository, config);
+    expect(
+      (await repository.listCampaignEvents(scope, "1")).map(
+        (stored) => stored.event.name,
+      ),
+    ).toEqual(["CampaignCreated", "CampaignFunded", "RewardClaimed"]);
+  });
+
+  it("lets one process at a time hold a deployment (#77)", async () => {
+    const { repository, scope } = setup(harness);
+    const other = { ...scope, contractAddress: OTHER_CONTRACT };
+    expect(await repository.isDeploymentLocked(scope)).toBe(false);
+
+    const worker = await repository.lockDeployment(scope);
+    expect(worker).not.toBeNull();
+    expect(await worker!.isHeld()).toBe(true);
+    expect(await repository.isDeploymentLocked(scope)).toBe(true);
+    expect(await repository.lockDeployment(scope)).toBeNull();
+    // Looking does not take it.
+    expect(await worker!.isHeld()).toBe(true);
+
+    expect(await repository.isDeploymentLocked(other)).toBe(false);
+    const elsewhere = await repository.lockDeployment(other);
+    expect(elsewhere).not.toBeNull();
+    await elsewhere!.release();
+
+    await worker!.release();
+    await worker!.release();
+    expect(await worker!.isHeld()).toBe(false);
+    expect(await repository.isDeploymentLocked(scope)).toBe(false);
+    const recovery = await repository.lockDeployment(scope);
+    expect(recovery).not.toBeNull();
+    await recovery!.release();
   });
 
   it("never commits logs read across a reorg (ADR-0011)", async () => {

@@ -11,6 +11,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:start": "node dist/db/migrate.js",
     "indexer": "tsx src/indexer-worker.ts",
     "indexer:start": "node dist/indexer-worker.js",
     "retention": "tsx src/retention-job.ts",
@@ -18,7 +19,8 @@
     "reconcile": "tsx src/reconcile-job.ts",
     "reconcile:start": "node dist/reconcile-job.js",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "reorg:recover": "tsx src/reorg-recover.ts"
+    "reorg:recover": "tsx src/reorg-recover.ts",
+    "reorg:recover:start": "node dist/reorg-recover.js"
   },
   "dependencies": {
     "@vham/shared": "workspace:*",

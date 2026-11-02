@@ -518,12 +518,20 @@ never URLs, hosts or error messages:
 {
   "status": "ok",
   "checks": { "process": "ok", "database": "ok", "chain": "ok" },
-  "indexerLagBlocks": "2"
+  "indexerLagBlocks": "2",
+  "chainHalted": false
 }
 ```
 
 `indexerLagBlocks` is `null` before the indexer's first pass and absent without
 a chain. Lag does not fail readiness (the API still serves); it is alerted on.
+
+`chainHalted` is `true` while a deep-reorg halt is recorded (ADR-0011) and
+absent without a chain or when the halt cannot be read (then `database` is
+`error`). A halt does not fail readiness either: the participation endpoints
+answer `503 CHAIN_HALTED` themselves, and every other route keeps working, so
+a load balancer keeps routing to the instance. It is alerted on through the
+`vham_chain_halted` gauge (RUNBOOK: VhamChainHalted).
 
 # Observability (#21)
 
