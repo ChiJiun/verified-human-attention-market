@@ -14,6 +14,7 @@ import {
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
+  sleepUntilAborted,
 } from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
@@ -36,12 +37,17 @@ if (!databaseUrl || !chainConfig) {
   );
 }
 
+// SIGTERM also cuts every backoff sleep short, so the worker stops within
+// an orchestrator's grace period (e.g. 30 s) after the current pass.
 let stopping = false;
+const stopped = new AbortController();
 const stop = () => {
   stopping = true;
+  stopped.abort();
 };
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
+const sleep = sleepUntilAborted(stopped.signal);
 
 const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
   console.log(
@@ -68,6 +74,7 @@ const verified = await retryWithBackoff(
   {
     retryable: (error) => error instanceof RpcUnavailableError,
     stopping: () => stopping,
+    sleep,
     onFailure: (attempt, error, retryInMs) =>
       log("warn", "startup chain check failed; retrying", {
         attempt,
@@ -212,7 +219,8 @@ if (existingHalt?.recoveryAppliedAt) {
 }
 
 // One worker per deployment, never next to `reorg:recover --apply` (#77).
-// Held until this process ends; a second worker waits for it.
+// Held until this process ends; a second worker waits for it. Needs a direct
+// or session-mode database connection (RUNBOOK: Running the built API).
 const lock = await retryWithBackoff(
   async () => {
     const held = await repository.lockDeployment(scope);
@@ -226,6 +234,7 @@ const lock = await retryWithBackoff(
   {
     retryable: () => true,
     stopping: () => stopping,
+    sleep,
     onFailure: (attempt, error, retryInMs) =>
       log("warn", "waiting for the deployment lock", {
         attempt,
@@ -238,6 +247,29 @@ const lock = await retryWithBackoff(
 let backoffMs = pollMs;
 
 while (!stopping) {
+  // The lock lives only as long as its database session. If that session
+  // ended (restart, failover, network, idle_session_timeout), the server
+  // released it and `--apply` could run beside this worker: stop, so the
+  // supervisor starts a worker that takes it again. The fencing keeps a
+  // pass that was already running correct. A check that fails (database
+  // unreachable) counts as lost.
+  const lockCheck = lock
+    ? await lock.isHeld().then(
+        (held) => (held ? null : "not held"),
+        (error: unknown) => errorMessage(error),
+      )
+    : null;
+  if (lockCheck !== null) {
+    passes.inc({ result: "lock_lost" });
+    log("error", "deployment lock lost; stopping", {
+      reason: lockCheck,
+      action:
+        "Restart the worker. If this repeats, check that DATABASE_URL is a direct or session-mode connection and idle_session_timeout.",
+    });
+    process.exitCode = 1;
+    break;
+  }
+
   try {
     const pass = await runWorkerPass({
       rpc,
@@ -362,8 +394,10 @@ while (!stopping) {
     });
 
     if (error instanceof ChainHaltedError) {
-      // A halt without recovery was recorded while this worker ran (possible
-      // only if its deployment lock was lost): the pass wrote nothing.
+      // A halt without recovery appeared after this worker started: a
+      // `--apply` stopped after recording the halt again but before marking
+      // it applied (while this worker waited for the lock), or the lock was
+      // lost. The pass wrote nothing.
       log("error", "indexer halted by a reorg beyond the confirmation depth", {
         block: error.halt.block.toString(),
         since: error.halt.at.toISOString(),
@@ -381,6 +415,7 @@ while (!stopping) {
       await recordHaltWithRetry(repository, scope, error.blockNumber, {
         now: () => new Date(),
         stopping: () => stopping,
+        sleep,
         onFailure: (attempt, haltError) =>
           log(
             "error",
@@ -410,7 +445,7 @@ while (!stopping) {
     backoffMs = Math.min(backoffMs * 2, 60_000);
   }
 
-  await new Promise((resolve) => setTimeout(resolve, backoffMs));
+  await sleep(backoffMs);
 }
 
 await lock?.release();

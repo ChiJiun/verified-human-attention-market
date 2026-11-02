@@ -111,6 +111,24 @@ export async function runWorkerPass(dependencies: WorkerPassDependencies) {
 }
 
 /**
+ * A sleep that ends early once `signal` aborts, so SIGTERM stops the worker
+ * within the orchestrator's grace period instead of after a 60 s backoff.
+ */
+export function sleepUntilAborted(signal: AbortSignal) {
+  return (ms: number) =>
+    new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve();
+      const timer = setTimeout(done, ms);
+      function done() {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve();
+      }
+      signal.addEventListener("abort", done, { once: true });
+    });
+}
+
+/**
  * Runs `attempt` until it succeeds, waiting `delayMs(attempt)` between
  * tries (capped exponential by default) while `retryable(error)` holds;
  * any other error is thrown at once. Returns null if the worker is

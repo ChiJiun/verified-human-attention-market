@@ -283,29 +283,38 @@ export async function runReorgRecovery(
   dependencies: ReorgRecoveryDependencies & { now: () => Date },
   options: { apply: boolean },
 ): Promise<ReorgRecoveryRun> {
-  const lock = await dependencies.events.lockDeployment(dependencies.chain);
-
   if (!options.apply) {
-    await lock?.release();
+    // Only looks: taking the lock, even briefly, could make a starting
+    // worker or an `--apply` think it is held.
     return {
       mode: "dry-run",
       halted: await dependencies.events.getHalt(dependencies.chain),
       plan: await planReorgRecovery(dependencies),
-      deploymentLocked: lock === null,
+      deploymentLocked: await dependencies.events.isDeploymentLocked(
+        dependencies.chain,
+      ),
     };
   }
 
+  const refused = {
+    mode: "refused" as const,
+    reason:
+      "An indexer worker (or another `reorg:recover --apply`) holds this deployment. Stop the worker, and anything that restarts it, then run --apply again.",
+  };
+  const lock = await dependencies.events.lockDeployment(dependencies.chain);
+
   if (!lock) {
-    return {
-      mode: "refused",
-      reason:
-        "An indexer worker (or another `reorg:recover --apply`) holds this deployment. Stop the worker, and anything that restarts it, then run --apply again.",
-    };
+    return refused;
   }
 
   try {
     const halted = await dependencies.events.getHalt(dependencies.chain);
     const plan = await planReorgRecovery(dependencies);
+    // Planning reads the chain for a while; a session lost meanwhile has
+    // released the lock, and a worker may have taken it.
+    if (!(await lock.isHeld())) {
+      return refused;
+    }
     const { released } = await applyReorgRecovery(dependencies, plan);
     return { mode: "apply", halted, plan, released };
   } finally {

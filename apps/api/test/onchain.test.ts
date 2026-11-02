@@ -12,6 +12,7 @@ import { ChainConfigError, RpcUnavailableError } from "../src/chain/config.js";
 import {
   IndexCursorMovedError,
   InMemoryChainEventRepository,
+  type DeploymentLock,
 } from "../src/chain/events-repository.js";
 import {
   indexOnce,
@@ -27,6 +28,7 @@ import {
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
+  sleepUntilAborted,
 } from "../src/chain/worker-pass.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
@@ -830,6 +832,8 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       halted: null,
       deploymentLocked: true,
     });
+    // The dry run only looked; the worker still holds the deployment.
+    expect(await worker!.isHeld()).toBe(true);
     expect(await runReorgRecovery(command, { apply: true })).toMatchObject({
       mode: "refused",
     });
@@ -852,6 +856,45 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const restarted = await events.lockDeployment(scope);
     expect(restarted).not.toBeNull();
     await restarted!.release();
+  });
+
+  it("refuses --apply when its lock was lost while it planned (#77)", async () => {
+    const { fixture, draftA } = await activeCampaign();
+    const { campaigns, chain, events, scope } = fixture;
+    const cursor = await events.getCursor(scope);
+
+    // The session drops while the plan reads the chain; a worker starts.
+    let worker = null as DeploymentLock | null;
+    const head = chain.blockNumber.bind(chain);
+    chain.blockNumber = async () => {
+      if (!worker) {
+        events.dropDeploymentLocks();
+        worker = await events.lockDeployment(scope);
+      }
+      return head();
+    };
+
+    expect(
+      await runReorgRecovery(
+        { ...recovery(fixture), now: () => new Date() },
+        { apply: true },
+      ),
+    ).toMatchObject({ mode: "refused" });
+    expect(await worker!.isHeld()).toBe(true);
+    expect(await events.getHalt(scope)).toBeNull();
+    expect(await events.getCursor(scope)).toEqual(cursor);
+    expect((await campaigns.getById(draftA))?.onchainCampaignId).toBe("1");
+  });
+
+  it("cuts a backoff sleep short when the worker stops", async () => {
+    const stopped = new AbortController();
+    const sleep = sleepUntilAborted(stopped.signal);
+    const started = Date.now();
+    const sleeping = sleep(60_000);
+    stopped.abort();
+    await sleeping;
+    await sleep(60_000);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it.each([

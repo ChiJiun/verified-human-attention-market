@@ -11,6 +11,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:start": "node dist/db/migrate.js",
     "indexer": "tsx src/indexer-worker.ts",
     "indexer:start": "node dist/indexer-worker.js",
     "retention": "tsx src/retention-job.ts",

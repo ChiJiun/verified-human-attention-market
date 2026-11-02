@@ -38,7 +38,7 @@ API (`/metrics`):
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
 | `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
-| `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded (read on scrape, RPC up or not). |
+| `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on scrape, RPC up or not). |
 
 Worker (`INDEXER_METRICS_PORT`):
 
@@ -46,7 +46,7 @@ Worker (`INDEXER_METRICS_PORT`):
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
-| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`, `halted`. |
+| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -139,7 +139,12 @@ chain id, missing code or a pre-ADR-0011 contract stops it at once. No pass
 metrics exist until that check passes, so a worker stuck there shows up as
 VhamRpcDown on the API or as a missing worker scrape target, not as a stall.
 A worker that logs `waiting for the deployment lock` is waiting for another
-worker or a `reorg:recover --apply` on the same deployment to finish.
+worker or a `reorg:recover --apply` on the same deployment to finish. A
+worker that logs `deployment lock lost; stopping` exits with code 1 so its
+supervisor restarts it: its database session ended (restart, failover,
+network, `idle_session_timeout`) and the server released the lock with it.
+If it repeats, check that `DATABASE_URL` is a direct or session-mode
+connection ([Running the built API](#running-the-built-api)).
 
 ### VhamChainHalted
 
@@ -155,6 +160,15 @@ instance can still serve sign-in, drafts, analytics and a retryable
 `CHAIN_HALTED` to participants, and a 503 would make the load balancer drop
 every API instance at once. Alert on the gauge, not on readiness.
 
+The gauge fails closed: it is also 1 while the API cannot read the halt
+(database unreachable), including on an instance that started during a
+database outage, so a failed read never leaves a stale 0 or no series. That
+page is right, not noise: every participation route reads the halt first, so
+participation fails then too. Readiness tells the two apart: a database
+outage answers 503 with `"database": "error"` and no `chainHalted` field; a
+real halt answers 200 with `"chainHalted": true`. An `absent()` rule was not
+used: it cannot see one stale instance among several that still report.
+
 ### VhamReorgBeyondConfirmations
 
 The worker stopped on purpose: a reorg deeper than `INDEXER_CONFIRMATIONS` would
@@ -163,13 +177,12 @@ refuses new World ID requests, eligibility, completions and claim
 authorizations for this deployment with `503 CHAIN_HALTED` (ADR-0011). The
 worker also refuses to start while the halt is recorded. Do not just restart.
 
-The steps below use the built API (`pnpm --filter @vham/api build`, then the
-`:start` scripts, which run `node dist/...`), as a production image has no
-`tsx`. From a source checkout, `reorg:recover` (without `:start`) runs the same
-code with `tsx`. Both need `DATABASE_URL`, the chain variables
-(`EVM_CHAIN_ID`, `EVM_RPC_URL`, `USDC_ADDRESS`, `CAMPAIGN_MANAGER_ADDRESS`,
-`CAMPAIGN_MANAGER_DEPLOY_BLOCK`) and the same `INDEXER_CONFIRMATIONS` as the
-API and the worker.
+The steps below use the built API ([Running the built API](#running-the-built-api)).
+From a source checkout, `reorg:recover` (without `:start`) runs the same code
+with `tsx`. Both need `DATABASE_URL` (a direct or session-mode connection),
+the chain variables (`EVM_CHAIN_ID`, `EVM_RPC_URL`, `USDC_ADDRESS`,
+`CAMPAIGN_MANAGER_ADDRESS`, `CAMPAIGN_MANAGER_DEPLOY_BLOCK`) and the same
+`INDEXER_CONFIRMATIONS` as the API and the worker.
 
 1. Inspect the reported block on a block explorer.
 2. Make sure no indexer worker runs for this deployment: after a detected
@@ -181,16 +194,18 @@ API and the worker.
    (`creation_missing`, `id_changed`: the id now belongs to another draft, or
    `parameters_changed`: same id, different reward, cap or window). A
    `warning` field means a worker (or another `--apply`) still holds the
-   deployment.
+   deployment. The dry run only looks at `pg_locks`; it never takes the lock.
 4. Review the plan, then
    `pnpm --filter @vham/api reorg:recover:start -- --apply`. It first records
    the halt again (or records one, if you start recovery without a detected
    reorg), so the API refuses participation before anything changes; then
    released campaigns return to `draft`, the index is dropped and the halt is
    marked *recovery applied*. **The halt stays**; the API keeps refusing.
-   `--apply` takes the deployment lock (a PostgreSQL advisory lock that every
-   running worker holds) and refuses with `mode: "refused"` and exit code 1
-   while a worker holds it: go back to step 2.
+   `--apply` takes the deployment lock (a PostgreSQL session advisory lock
+   that every running worker holds, and checks before each pass) and refuses
+   with `mode: "refused"` and exit code 1 while a worker holds it: go back to
+   step 2. A worker whose session dropped notices before its next pass and
+   exits; whatever it was writing meanwhile is refused by the cursor check.
 5. Start the worker (`pnpm --filter @vham/api indexer:start`). It rebuilds the
    index from the deploy block, links canonical creations and re-syncs
    statuses. It clears the halt itself
@@ -225,6 +240,40 @@ eligibility is recorded on failure.
 
 Group `vham_http_requests_total{status=~"5.."}` by route, then search logs for
 `"level":50` with that route's `requestId`s.
+
+## Running the built API
+
+A production image has no `tsx` (a dev dependency): build once with
+`pnpm --filter @vham/api build` and run the `:start` scripts, which run
+`node dist/...`. The image needs `apps/api/dist`, `apps/api/drizzle` (the
+migrations) and the production dependencies.
+
+| Script                | Runs                                                       |
+| --------------------- | ---------------------------------------------------------- |
+| `db:migrate:start`    | Drizzle migrations from `apps/api/drizzle`; run before `start`. |
+| `start`               | The API.                                                   |
+| `indexer:start`       | The chain indexer worker (one per deployment).             |
+| `reconcile:start`     | One-shot settlement reconciliation; exit 1 on findings.    |
+| `retention:start`     | One-shot retention, if the worker's is disabled.           |
+| `reorg:recover:start` | Reorg recovery: dry run, `-- --apply` to apply.            |
+
+Example: `pnpm --filter @vham/api db:migrate:start`, or
+`node apps/api/dist/db/migrate.js` without pnpm.
+
+**Database connection.** The worker and `reorg:recover` hold a PostgreSQL
+session advisory lock on a reserved connection for the deployment, so their
+`DATABASE_URL` must be a direct connection or a session-mode pooler. A
+transaction-mode pooler (PgBouncer `pool_mode=transaction`) hands the session
+to other clients between transactions; the lock would not mean "this worker"
+and the worker would stop with `deployment lock lost`. (`prepare: false` in
+`db/client.ts` does not make the worker safe behind such a pooler.) The lock's
+connection is idle between lock checks (one per pass), so leave
+`idle_session_timeout` unset or well above the longest pass plus the 60 s
+maximum backoff.
+
+**Stopping.** On SIGTERM or SIGINT the worker finishes the current pass,
+cuts any backoff sleep short, releases its lock and exits, well within a 30 s
+grace period unless a single pass takes longer.
 
 ## Client addresses behind the web app (#75)
 

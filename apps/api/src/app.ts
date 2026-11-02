@@ -229,16 +229,23 @@ export function buildApp(dependencies: AppDependencies = {}) {
   /**
    * Whether a deep-reorg halt is recorded (ADR-0011). A gauge, so the alert
    * holds for as long as the halt does, whichever scrape sees it (#77).
+   * Fails closed: when the halt cannot be read the gauge is 1, never a stale
+   * 0 or a missing series (RUNBOOK: VhamChainHalted).
    */
   async function haltStatus() {
     if (!chain) return null;
 
-    const halt = await chain.events.getHalt({
-      chainId: chain.chain.chainId,
-      contractAddress: chain.chain.contractAddress,
-    });
-    haltedGauge.set(halt ? 1 : 0);
-    return halt !== null;
+    try {
+      const halt = await chain.events.getHalt({
+        chainId: chain.chain.chainId,
+        contractAddress: chain.chain.contractAddress,
+      });
+      haltedGauge.set(halt ? 1 : 0);
+      return halt !== null;
+    } catch (error) {
+      haltedGauge.set(1);
+      throw error;
+    }
   }
 
   registerErrorHandlers(app);

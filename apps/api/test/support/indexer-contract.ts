@@ -306,19 +306,26 @@ export function defineIndexerContract(harness: IndexerHarness) {
 
   it("lets one process at a time hold a deployment (#77)", async () => {
     const { repository, scope } = setup(harness);
+    const other = { ...scope, contractAddress: OTHER_CONTRACT };
+    expect(await repository.isDeploymentLocked(scope)).toBe(false);
+
     const worker = await repository.lockDeployment(scope);
     expect(worker).not.toBeNull();
+    expect(await worker!.isHeld()).toBe(true);
+    expect(await repository.isDeploymentLocked(scope)).toBe(true);
     expect(await repository.lockDeployment(scope)).toBeNull();
+    // Looking does not take it.
+    expect(await worker!.isHeld()).toBe(true);
 
-    const elsewhere = await repository.lockDeployment({
-      ...scope,
-      contractAddress: OTHER_CONTRACT,
-    });
+    expect(await repository.isDeploymentLocked(other)).toBe(false);
+    const elsewhere = await repository.lockDeployment(other);
     expect(elsewhere).not.toBeNull();
     await elsewhere!.release();
 
     await worker!.release();
     await worker!.release();
+    expect(await worker!.isHeld()).toBe(false);
+    expect(await repository.isDeploymentLocked(scope)).toBe(false);
     const recovery = await repository.lockDeployment(scope);
     expect(recovery).not.toBeNull();
     await recovery!.release();

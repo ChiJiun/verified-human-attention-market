@@ -73,12 +73,13 @@ groups:
 
       # From the API's halt state, so it fires on every scrape for as long as
       # the deployment is halted, even after the worker has exited (#77).
+      # Fails closed: 1 also while the API cannot read the halt.
       - alert: VhamChainHalted
         expr: max(vham_chain_halted) > 0
         labels:
           severity: page
         annotations:
-          summary: Deployment halted by a deep reorg; participants get 503 CHAIN_HALTED
+          summary: Deployment halted by a deep reorg (or its halt state is unreadable); participation refused
           runbook: docs/operations/RUNBOOK.md#vhamchainhalted
 
       # Early signal from the worker; it exits right after, so a missed scrape

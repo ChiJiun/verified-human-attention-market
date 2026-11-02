@@ -22,6 +22,12 @@ import {
   type StoredEvent,
 } from "./events-repository.js";
 
+/** First key of the deployment lock: "vham" as a 32-bit integer. */
+const DEPLOYMENT_LOCK_SPACE = 0x7668616d;
+
+const deploymentLockKey = (scope: ChainScope) =>
+  `vham:deployment:${scope.chainId}:${scope.contractAddress}`;
+
 export class PostgresChainEventRepository implements ChainEventRepository {
   constructor(
     private readonly db: Database,
@@ -143,36 +149,89 @@ export class PostgresChainEventRepository implements ChainEventRepository {
   /**
    * A session-level advisory lock on a reserved connection: it lives exactly
    * as long as the holder's session, so a crashed worker never leaves it
-   * behind. It is an operational guard; index writes are fenced by the
-   * cursor and the halt is cleared conditionally, so a lost lock is safe.
+   * behind. It needs a direct or session-mode connection; a transaction-mode
+   * pooler would share the session with other clients. It is an operational
+   * guard; index writes are fenced by the cursor and the halt is cleared
+   * conditionally, so a lost lock is safe. Two-key form (namespace, hash),
+   * so it never shares a lock tag with the one-key index lock below.
+   *
+   * After acquiring it, the reserved connection is used only to unlock:
+   * postgres.js cannot run a query on a reserved connection whose socket
+   * closed (it throws asynchronously), so whether the lock is still held is
+   * asked through the pool, by the holder's (pid, backend_start).
    */
   async lockDeployment(scope: ChainScope): Promise<DeploymentLock | null> {
-    const key = `vham:deployment:${scope.chainId}:${scope.contractAddress}`;
+    const key = deploymentLockKey(scope);
     const connection = await this.db.$client.reserve();
+    let holder: { pid: number; started: string };
     try {
-      const [row] = await connection<{ locked: boolean }[]>`
-        SELECT pg_try_advisory_lock(hashtext(${key}::text)) AS locked`;
+      const [row] = await connection<
+        { locked: boolean; pid: number; started: string }[]
+      >`
+        SELECT pg_try_advisory_lock(${DEPLOYMENT_LOCK_SPACE}::int4, hashtext(${key}::text)) AS locked,
+               pg_backend_pid() AS pid,
+               (SELECT backend_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS started`;
       if (!row?.locked) {
         connection.release();
         return null;
       }
+      holder = { pid: row.pid, started: row.started };
     } catch (error) {
       connection.release();
       throw error;
     }
 
-    let held = true;
+    let released = false;
     return {
+      isHeld: async () =>
+        !released && (await this.deploymentLockHeld(key, holder)),
       release: async () => {
-        if (!held) return;
-        held = false;
+        if (released) return;
+        released = true;
+        let alive: boolean | null;
         try {
-          await connection`SELECT pg_advisory_unlock(hashtext(${key}::text))`;
+          alive = await this.deploymentLockHeld(key, holder);
+        } catch {
+          alive = null;
+        }
+        // A dead session released the lock with it; its connection object
+        // went back to the pool's closed set and must not be touched.
+        if (alive === false) return;
+        try {
+          if (alive) {
+            await connection`SELECT pg_advisory_unlock(${DEPLOYMENT_LOCK_SPACE}::int4, hashtext(${key}::text))`;
+          }
         } finally {
+          // Unknown (database unreachable): hand it back without unlocking;
+          // closing the client ends the session and the lock with it.
           connection.release();
         }
       },
     };
+  }
+
+  async isDeploymentLocked(scope: ChainScope): Promise<boolean> {
+    return this.deploymentLockHeld(deploymentLockKey(scope), null);
+  }
+
+  /** Whether the deployment lock is granted, to `holder` if given. */
+  private async deploymentLockHeld(
+    key: string,
+    holder: { pid: number; started: string } | null,
+  ): Promise<boolean> {
+    const [row] = await this.db.$client<{ held: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+          AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND l.classid::bigint = ${DEPLOYMENT_LOCK_SPACE}::int8
+          AND l.objid::bigint = (hashtext(${key}::text)::bigint & 4294967295)
+          AND (${holder?.pid ?? null}::int IS NULL OR (
+            l.pid = ${holder?.pid ?? null}::int
+            AND a.backend_start = ${holder?.started ?? null}::timestamptz
+          ))
+      ) AS held`;
+    return row?.held === true;
   }
 
   /**

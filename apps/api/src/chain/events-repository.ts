@@ -46,6 +46,14 @@ export class IndexCursorMovedError extends Error {
 
 /** Held by one indexer worker, or by `reorg:recover --apply`. */
 export interface DeploymentLock {
+  /**
+   * Whether this holder still has it. False once its database session
+   * ended (restart, failover, network, idle_session_timeout): the server
+   * released the lock with it, so another process may now hold it. Throws
+   * when the database cannot be asked.
+   */
+  isHeld(): Promise<boolean>;
+  /** Never throws: a lock whose session is gone is released already. */
   release(): Promise<void>;
 }
 
@@ -124,6 +132,8 @@ export interface ChainEventRepository {
    * or when the holder's process (database session) ends.
    */
   lockDeployment(scope: ChainScope): Promise<DeploymentLock | null>;
+  /** Whether any process holds the deployment, without taking it. */
+  isDeploymentLocked(scope: ChainScope): Promise<boolean>;
 }
 
 export interface ChainHalt {
@@ -153,7 +163,8 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
   private readonly events = new Map<string, StoredEvent & ChainScope>();
   private readonly cursors = new Map<string, IndexerCursor>();
   private readonly halts = new Map<string, ChainHalt>();
-  private readonly locks = new Set<string>();
+  /** Deployment key → the holder's token. */
+  private readonly locks = new Map<string, symbol>();
 
   async haltForReorg(scope: ChainScope, block: bigint, at: Date) {
     this.halts.set(this.key(scope), { block, at, recoveryAppliedAt: null });
@@ -191,14 +202,23 @@ export class InMemoryChainEventRepository implements ChainEventRepository {
   async lockDeployment(scope: ChainScope): Promise<DeploymentLock | null> {
     const key = this.key(scope);
     if (this.locks.has(key)) return null;
-    this.locks.add(key);
-    let held = true;
+    const token = Symbol(key);
+    this.locks.set(key, token);
     return {
+      isHeld: async () => this.locks.get(key) === token,
       release: async () => {
-        if (held) this.locks.delete(key);
-        held = false;
+        if (this.locks.get(key) === token) this.locks.delete(key);
       },
     };
+  }
+
+  async isDeploymentLocked(scope: ChainScope): Promise<boolean> {
+    return this.locks.has(this.key(scope));
+  }
+
+  /** Test helper: every holder's database session ended. */
+  dropDeploymentLocks() {
+    this.locks.clear();
   }
 
   /** Same check as the PostgreSQL repository's, inside its transaction. */

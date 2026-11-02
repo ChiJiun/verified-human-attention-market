@@ -2,7 +2,10 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import {
+  InMemoryChainEventRepository,
+  type ChainScope,
+} from "../src/chain/events-repository.js";
 import type { ChainRpc } from "../src/chain/rpc.js";
 import {
   generateRequestId,
@@ -285,6 +288,39 @@ describe("readiness with a chain", () => {
       chainHalted: true,
     });
     expect(metrics.value("vham_chain_halted")).toBe(1);
+  });
+
+  it("fails closed when the halt cannot be read, from the first scrape on (#77)", async () => {
+    class UnreadableHalts extends InMemoryChainEventRepository {
+      unreadable = true;
+      override async getHalt(scope: ChainScope) {
+        if (this.unreadable) throw new Error("database unavailable");
+        return super.getHalt(scope);
+      }
+    }
+    const events = new UnreadableHalts();
+    const metrics = new MetricsRegistry();
+    const app = buildApp({
+      metrics,
+      chain: chainDeps({ blockNumber: async () => 120n }, events),
+    });
+    closers.push(app);
+
+    // An instance started during a database outage: 1, not a missing series.
+    const scrape = await app.inject({ method: "GET", url: "/metrics" });
+    expect(scrape.body).toContain("\nvham_chain_halted 1\n");
+
+    const ready = await app.inject({ method: "GET", url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toEqual({
+      status: "error",
+      checks: { process: "ok", database: "error", chain: "ok" },
+      indexerLagBlocks: null,
+    });
+
+    events.unreadable = false;
+    await app.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.value("vham_chain_halted")).toBe(0);
   });
 
   it("exports vham_chain_halted on every scrape while halted, RPC down or not (#77)", async () => {
