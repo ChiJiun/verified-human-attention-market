@@ -97,7 +97,6 @@ const maxBlockRange = BigInt(process.env.INDEXER_MAX_BLOCK_RANGE ?? 2_000);
 
 const database = createDatabase(databaseUrl);
 const repository = new PostgresChainEventRepository(database.db);
-const rpc = new JsonRpcClient(chainConfig.rpcUrl);
 const campaigns = new PostgresCampaignRepository(database.db);
 const scope = {
   chainId: chainConfig.chainId,
@@ -143,6 +142,16 @@ const gauges = {
 const passes = metrics.counter(
   "vham_indexer_passes_total",
   "Indexer passes by result",
+);
+// Every RPC request of the worker by method, failed passes included: what
+// a pass costs, e.g. one eth_getBlockReceipts per block whose logsBloom may
+// hold an event (#102).
+const rpcRequests = metrics.counter(
+  "vham_indexer_rpc_requests_total",
+  "RPC requests made by the indexer worker, by method",
+);
+const rpc = new JsonRpcClient(chainConfig.rpcUrl, fetch, undefined, (method) =>
+  rpcRequests.inc({ method }),
 );
 const metricsPort = process.env.INDEXER_METRICS_PORT
   ? Number(process.env.INDEXER_METRICS_PORT)
@@ -300,6 +309,7 @@ while (!stopping) {
       confirmedEvents: result.confirmedEvents,
       observedEvents: result.observedEvents,
       skippedLogs: result.skippedLogs,
+      receiptQueries: result.receiptQueries,
     });
 
     if (autoLinked.linked.length > 0 || statuses.updated.length > 0) {
@@ -450,9 +460,10 @@ while (!stopping) {
       break;
     }
 
-    // The RPC answered one range from different forks or nodes (or the chain
-    // moved while reading it). Nothing was written; transient unless it
-    // keeps happening, which VhamIndexerInconsistentReads reports.
+    // The RPC answered one range from different forks or nodes, left events
+    // out (#102), or the chain moved while reading it. Nothing was written;
+    // transient unless it keeps happening, which VhamIndexerInconsistentReads
+    // reports.
     if (error instanceof InconsistentChainReadError) {
       inconsistentStreak += 1;
       gauges.inconsistentStreak.set(inconsistentStreak);
@@ -465,6 +476,7 @@ while (!stopping) {
       retryInMs: backoffMs,
       ...(error instanceof InconsistentChainReadError && {
         block: error.blockNumber.toString(),
+        ...(error.reason && { reason: error.reason }),
         inconsistentStreak,
       }),
     });

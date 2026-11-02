@@ -1,9 +1,11 @@
 import { toFunctionSelector } from "viem";
 
 import { EVENT_TOPICS, FUNCTION_SELECTORS } from "../../src/chain/abi.js";
+import { logsBloom } from "../../src/chain/bloom.js";
 import {
   RpcError,
   type BlockHeader,
+  type BlockReceipt,
   type BlockRef,
   type ChainRpc,
   type RawLog,
@@ -21,7 +23,8 @@ const CLAIMED_WALLET_SELECTOR = toFunctionSelector(
   "claimedWallet(uint256,address)",
 );
 
-type LogSpec = { topics: string[]; data: string };
+/** `address` puts the log on another contract than the block's default. */
+type LogSpec = { topics: string[]; data: string; address?: string };
 
 export const logs = {
   /** `draftRef` defaults to a non-zero placeholder (ADR-0011). */
@@ -84,11 +87,13 @@ interface FakeBlock {
   number: bigint;
   hash: string;
   logs: (LogSpec & { address: string; txHash: string })[];
+  /** The bloom of `logs`, as a real node computes it. */
+  logsBloom: string;
 }
 
 /**
- * In-memory chain with deterministic block hashes, log batching and
- * controllable failures / reorgs for indexer tests.
+ * In-memory chain with deterministic block hashes, real logs blooms, log
+ * batching and controllable failures / reorgs for indexer tests.
  */
 export class FakeChain implements ChainRpc {
   private blocks: FakeBlock[] = [];
@@ -96,6 +101,8 @@ export class FakeChain implements ChainRpc {
   private txCounter = 0;
   failGetLogsAfter: number | null = null;
   getLogsCalls = 0;
+  /** eth_getBlockReceipts requests. */
+  receiptsCalls = 0;
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
   readonly revertedTxs = new Set<string>();
@@ -149,6 +156,7 @@ export class FakeChain implements ChainRpc {
     // CampaignManager would (not fork-aware: tests reset it explicitly).
     if (address === this.contract) {
       for (const spec of specs) {
+        if ((spec.address ?? address) !== this.contract) continue;
         const struct = spec.topics[1]
           ? this.campaignStructs.get(BigInt(spec.topics[1]).toString())
           : undefined;
@@ -164,17 +172,19 @@ export class FakeChain implements ChainRpc {
 
     for (let index = 0; index < count; index += 1) {
       const number = this.blocks.length;
+      const blockLogs =
+        index === 0
+          ? specs.map((spec) => ({
+              ...spec,
+              address: spec.address ?? address,
+              txHash: this.txHash(++this.txCounter),
+            }))
+          : [];
       this.blocks.push({
         number: BigInt(number),
         hash: this.hashFor(number),
-        logs:
-          index === 0
-            ? specs.map((spec) => ({
-                ...spec,
-                address,
-                txHash: this.txHash(++this.txCounter),
-              }))
-            : [],
+        logs: blockLogs,
+        logsBloom: logsBloom(blockLogs),
       });
     }
 
@@ -194,8 +204,26 @@ export class FakeChain implements ChainRpc {
         number: BigInt(number),
         hash: this.hashFor(number),
         logs: [],
+        logsBloom: logsBloom([]),
       });
     }
+  }
+
+  /**
+   * A node that stops following the chain here: the same blocks so far,
+   * and it mines the same blocks again only when told to.
+   */
+  copy(): FakeChain {
+    const node = new FakeChain(this.contract, 0);
+    node.blocks = this.blocks.map((block) => ({ ...block }));
+    node.fork = this.fork;
+    node.txCounter = this.txCounter;
+    return node;
+  }
+
+  /** Replaces a block's header bloom with a wrong or invalid one. */
+  setLogsBloom(number: bigint, bloom: string) {
+    this.blocks[Number(number)]!.logsBloom = bloom;
   }
 
   async blockNumber(): Promise<bigint> {
@@ -209,6 +237,9 @@ export class FakeChain implements ChainRpc {
           number: block.number,
           hash: block.hash,
           parentHash: this.blocks[Number(number) - 1]?.hash ?? word(0),
+          logsBloom: block.logsBloom,
+          // One transaction per log.
+          transactionCount: block.logs.length,
         }
       : null;
   }
@@ -247,6 +278,24 @@ export class FakeChain implements ChainRpc {
       )
       .flatMap((block) => this.rawLogs(block))
       .filter((log) => log.address === query.address.toLowerCase());
+  }
+
+  /**
+   * eth_getBlockReceipts by hash: one receipt per transaction (here, one
+   * per log). Like geth, null for a block this node does not have.
+   */
+  async getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null> {
+    this.receiptsCalls += 1;
+    const block = this.blocks.find((candidate) => candidate.hash === blockHash);
+
+    return block
+      ? this.rawLogs(block).map((log, transactionIndex) => ({
+          transactionIndex,
+          blockNumber: block.number,
+          blockHash: block.hash,
+          logs: [log],
+        }))
+      : null;
   }
 
   async getTransactionReceipt(

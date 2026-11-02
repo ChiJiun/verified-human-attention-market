@@ -48,6 +48,7 @@ Worker (`INDEXER_METRICS_PORT`):
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
 | `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
 | `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
+| `vham_indexer_rpc_requests_total{method}`                                            | Every RPC request of the worker by JSON-RPC method, counted when sent, so failed passes and failed requests are included. `eth_getBlockReceipts` is the completeness check (#102). See [request cost](#indexer-request-cost). |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -66,6 +67,50 @@ Claim transaction failures happen in the participant's wallet, not the API;
 they surface as authorizations that expire unredeemed (reissued on retry), i.e.
 `submissions.accepted` in advertiser analytics growing faster than
 `settlement.confirmed.paidCompletions`.
+
+### Indexer request cost
+
+For each confirmed batch of N blocks (`INDEXER_MAX_BLOCK_RANGE` during a
+backfill, a few once caught up) the worker makes:
+
+- one `eth_getLogs` for the range;
+- N + 1 `eth_getBlockByNumber`: every header, to link them by hash, and the
+  range end a second time (issue #76);
+- one `eth_getBlockReceipts` by block hash for each block whose header
+  `logsBloom` may hold a CampaignManager event, i.e. the blocks with events
+  plus bloom false positives, never more than N (issue #102). Its answer is
+  every receipt of the block, since the receipts must rebuild the header's
+  bloom to prove the block complete. The bloom test, and rebuilding the bloom
+  from the receipts, run locally; up to 8 of these requests run at once.
+
+Each pass adds `eth_blockNumber`, the cursor block's header and one
+`eth_getLogs` for the unconfirmed tail. How often a bloom says "may hold"
+depends on how full the chain's blooms are. Measured on 2026-11-02 at 18:14
+UTC over the latest 200 blocks of each chain, through the public RPCs
+(read-only), testing every header's bloom for the 2026-10-14 CampaignManager
+address and the nine indexed event topics, and sizing `eth_getBlockReceipts`
+answers for 5 of those blocks:
+
+| Chain        | Bits set (median, range) | Blocks flagged | Receipts per block |
+| ------------ | ------------------------ | -------------- | ------------------ |
+| Base Sepolia | 1.3 % (0–12.9 %)         | 0 of 200       | 2–79 kB            |
+| Base mainnet | 59 % (42–88 %)           | 21 of 200      | 470 kB–1 MB        |
+
+On Base Sepolia the receipts requests are about one per block with campaign
+events and small. On Base mainnet about one block in ten is flagged by chance,
+so a 2,000-block backfill batch reads roughly 200 blocks' receipts, some
+100–200 MB; a caught-up worker reads one such block about every 20 s. The flag
+rate depends on the address (its bits), so measure again for a new deployment.
+Compare `vham_indexer_rpc_requests_total{method="eth_getBlockReceipts"}` with
+the growth of `vham_indexer_confirmed_block` for the actual rate.
+
+The RPC must serve `eth_getBlockReceipts` with a block hash: the public Base
+Sepolia and Base mainnet RPCs did in that measurement (an unknown hash
+answers `null`), and the anvil e2e in CI uses it. If it does not, the
+first block that may hold an event fails every pass with `inconsistent_read`
+and a `reason` naming `eth_getBlockReceipts`: the worker stalls there
+(VhamIndexerInconsistentReads, then VhamIndexerStalled) until it points at an
+RPC that does.
 
 ## Alerts and responses
 
@@ -129,7 +174,8 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 ### VhamIndexerLag / VhamIndexerStalled
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
-RPC health. Raise `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
+RPC health ([request cost](#indexer-request-cost)). Raise
+`INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
 sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
 claim issuance still reads the contract directly. Linking a new campaign
 (`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
@@ -159,15 +205,26 @@ connection ([Running the built API](#running-the-built-api)).
 
 Five or more passes in a row ended in `inconsistent_read`: the worker reads a
 range, the range's block headers (linked by hash), the logs and the range end
-again, and refuses to commit when they disagree (issue #76). Usually the RPC
-is load-balanced over nodes on different forks or heights, or a node lags.
+again, and refuses to commit when they disagree (issue #76). It also reads
+the receipts of every block whose `logsBloom` may hold an event and refuses a
+range whose `eth_getLogs` answer left an event out, holds one the receipts do
+not, or holds one twice, and a block whose receipts are missing, incomplete
+or do not rebuild its bloom (issue #102). Usually the RPC is load-balanced
+over nodes on different forks or heights, a node lags (or is still syncing
+receipts), or the provider's log index lags behind its blocks.
 Nothing past the failing range is committed and no halt is recorded, so the
 index, status sync and linking stay behind while participation continues
 (the API's live contract checks still apply). The log line
-`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`.
+`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`,
+and a `reason` for the completeness check, e.g. `eth_getLogs for blocks A-B
+omitted 1 event(s) of this block that its receipts hold`.
 
 1. Check the RPC provider: pin the worker (and the API) to one endpoint or a
-   provider with sticky sessions, or remove the lagging node.
+   provider with sticky sessions, or remove the lagging node. A `reason` that
+   names omitted events points at a lagging node or log index; one about the
+   receipts at a node without them, or (`eth_getBlockReceipts by block hash
+   failed`) at an RPC that does not serve them
+   ([request cost](#indexer-request-cost)).
 2. If the same block keeps failing on a single consistent endpoint, compare
    that block's hash and its logs across two providers; a provider serving
    another fork means a deep reorg may be under way (see

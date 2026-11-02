@@ -18,10 +18,22 @@ export interface BlockHeader {
   number: bigint;
   hash: string;
   parentHash: string;
+  /** 256-byte bloom of the block's log addresses and topics, 0x hex. */
+  logsBloom: string;
+  /** Transactions in the block; null if the node did not list them. */
+  transactionCount: number | null;
 }
 
 export interface TransactionReceipt {
   status: "success" | "reverted";
+  blockNumber: bigint;
+  blockHash: string;
+  logs: RawLog[];
+}
+
+/** One receipt of eth_getBlockReceipts: what it says about its block. */
+export interface BlockReceipt {
+  transactionIndex: number;
   blockNumber: bigint;
   blockHash: string;
   logs: RawLog[];
@@ -43,6 +55,14 @@ export interface ChainRpc {
     fromBlock: bigint;
     toBlock: bigint;
   }): Promise<RawLog[]>;
+  /**
+   * eth_getBlockReceipts of exactly one block, by its hash: every receipt,
+   * so every log, of that block whichever node answers (the hash fixes
+   * them). Null when the node does not have the block. A node that has the
+   * header but not (all) the receipts may answer fewer; the caller checks
+   * them against the header.
+   */
+  getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null>;
   getTransactionReceipt(hash: string): Promise<TransactionReceipt | null>;
   /** eth_call at `block` (default: latest). */
   call(to: string, data: string, block?: BlockRef): Promise<string>;
@@ -78,10 +98,13 @@ export class JsonRpcClient implements ChainRpc {
     private readonly url: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly timeoutMs = 15_000,
+    /** Called before every request, e.g. to count requests by method. */
+    private readonly onRequest?: (method: string) => void,
   ) {}
 
   private async request(method: string, params: unknown[]): Promise<unknown> {
     let response: Response;
+    this.onRequest?.(method);
 
     try {
       response = await this.fetchImpl(this.url, {
@@ -135,6 +158,12 @@ export class JsonRpcClient implements ChainRpc {
       number: BigInt(String(block.number)),
       hash: String(block.hash).toLowerCase(),
       parentHash: String(block.parentHash).toLowerCase(),
+      // Both validated where they are used: the indexer refuses a flagged
+      // block without a valid bloom or a transaction list.
+      logsBloom: String(block.logsBloom ?? "").toLowerCase(),
+      transactionCount: Array.isArray(block.transactions)
+        ? block.transactions.length
+        : null,
     };
   }
 
@@ -143,15 +172,39 @@ export class JsonRpcClient implements ChainRpc {
     fromBlock: bigint;
     toBlock: bigint;
   }): Promise<RawLog[]> {
-    const logs = (await this.request("eth_getLogs", [
+    const logs = await this.request("eth_getLogs", [
       {
         address: query.address,
         fromBlock: toHex(query.fromBlock),
         toBlock: toHex(query.toBlock),
       },
-    ])) as Record<string, unknown>[];
+    ]);
 
-    return logs.map(parseLog);
+    // `null` is not "no logs".
+    if (!Array.isArray(logs)) {
+      throw new RpcError("eth_getLogs returned no log list");
+    }
+
+    return (logs as Record<string, unknown>[]).map(parseLog);
+  }
+
+  async getBlockReceipts(blockHash: string): Promise<BlockReceipt[] | null> {
+    const receipts = await this.request("eth_getBlockReceipts", [blockHash]);
+
+    if (receipts === null) {
+      return null;
+    }
+
+    if (!Array.isArray(receipts)) {
+      throw new RpcError("eth_getBlockReceipts returned no receipt list");
+    }
+
+    return (receipts as Record<string, unknown>[]).map((receipt) => ({
+      transactionIndex: Number(BigInt(String(receipt.transactionIndex))),
+      blockNumber: BigInt(String(receipt.blockNumber)),
+      blockHash: String(receipt.blockHash).toLowerCase(),
+      logs: (receipt.logs as Record<string, unknown>[]).map(parseLog),
+    }));
   }
 
   async getTransactionReceipt(

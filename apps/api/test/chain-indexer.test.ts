@@ -9,7 +9,7 @@ import {
 } from "../src/chain/abi.js";
 import { deriveCampaignState } from "../src/chain/campaign-state.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
-import { JsonRpcClient } from "../src/chain/rpc.js";
+import { JsonRpcClient, RpcError } from "../src/chain/rpc.js";
 import { addressWord, logs, word } from "./support/fake-chain.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 
@@ -182,6 +182,103 @@ describe("JsonRpcClient", () => {
       "latest",
       "0x10",
       { blockHash: hash, requireCanonical: true },
+    ]);
+  });
+
+  it("reads a header's bloom and transactions, and one block's receipts by hash (#102)", async () => {
+    const requests: { method: string; params: unknown[] }[] = [];
+    const counted: string[] = [];
+    const results: unknown[] = [];
+    const client = new JsonRpcClient(
+      "http://rpc.test",
+      (async (_url: unknown, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", result: results.shift() }),
+        );
+      }) as typeof fetch,
+      undefined,
+      (method) => counted.push(method),
+    );
+    const contract = "0x" + "c0".repeat(20);
+    const hash = word(0xb10c);
+    const bloom = `0x${"0F".repeat(256)}`;
+
+    results.push({
+      number: "0x10",
+      hash,
+      parentHash: word(0xb10b),
+      logsBloom: bloom,
+      transactions: [word(0x7), word(0x8)],
+    });
+    expect(await client.getBlock(16n)).toMatchObject({
+      logsBloom: bloom.toLowerCase(),
+      transactionCount: 2,
+    });
+
+    // A node that leaves out the transaction list proves no count.
+    results.push({ number: "0x10", hash, parentHash: word(0xb10b) });
+    expect((await client.getBlock(16n))?.transactionCount).toBeNull();
+
+    results.push([
+      {
+        transactionIndex: "0x0",
+        blockNumber: "0x10",
+        blockHash: hash,
+        logs: [
+          {
+            address: contract,
+            topics: [EVENT_TOPICS.CampaignClosed, word(1)],
+            data: "0x",
+            blockNumber: "0x10",
+            blockHash: hash,
+            transactionHash: word(0x7),
+            logIndex: "0x0",
+          },
+        ],
+      },
+      {
+        transactionIndex: "0x1",
+        blockNumber: "0x10",
+        blockHash: hash,
+        logs: [],
+      },
+    ]);
+    expect(await client.getBlockReceipts(hash)).toMatchObject([
+      {
+        transactionIndex: 0,
+        blockNumber: 16n,
+        blockHash: hash,
+        logs: [{ blockNumber: 16n, logIndex: 0, removed: false }],
+      },
+      { transactionIndex: 1, logs: [] },
+    ]);
+    expect(requests[2]).toMatchObject({
+      method: "eth_getBlockReceipts",
+      params: [hash],
+    });
+
+    // Null is a node without the block; anything else but a list is an error.
+    results.push(null);
+    expect(await client.getBlockReceipts(hash)).toBeNull();
+    results.push({});
+    await expect(client.getBlockReceipts(hash)).rejects.toBeInstanceOf(
+      RpcError,
+    );
+    // ...and so is a null log list.
+    results.push(null);
+    await expect(
+      client.getLogs({ address: contract, fromBlock: 1n, toBlock: 2n }),
+    ).rejects.toBeInstanceOf(RpcError);
+
+    // Every request is reported, the failed ones too (the worker's metric).
+    expect(counted).toEqual([
+      "eth_getBlockByNumber",
+      "eth_getBlockByNumber",
+      "eth_getBlockReceipts",
+      "eth_getBlockReceipts",
+      "eth_getBlockReceipts",
+      "eth_getLogs",
     ]);
   });
 });

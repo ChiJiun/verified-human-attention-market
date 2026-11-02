@@ -41,7 +41,7 @@ flowchart TB
   API --> DB
   U -- claim(authorization, signature) --> CM
   CM <--> USDC
-  IDX -- eth_getLogs / eth_call --> CM
+  IDX -- eth_getLogs / eth_getBlockReceipts / eth_call --> CM
   IDX --> DB
   API -- eth_call (live state) --> CM
 ```
