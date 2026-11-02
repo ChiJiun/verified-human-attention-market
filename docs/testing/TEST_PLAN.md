@@ -60,13 +60,14 @@ At minimum:
 - engagement rejection [`verifier.test.ts`, `submissions.test.ts`];
 - signer failure and signer mismatch [`claims.test.ts`, `remote-signer.test.ts`; acceptance rolled back when signing fails: `submissions.test.ts`, `postgres.integration.test.ts`];
 - claim issuance cap, reissue, deep-reorg relink [`claims.test.ts`, `postgres.integration.test.ts`];
+- a paid wallet (live `claimedWallet` or a confirmed payout of the stored nonce) gets no authorization, before and after the stored one expires (#82): `409 ALREADY_CLAIMED` from the authorization route and `claim` `{ "status": "claimed", "code": "ALREADY_CLAIMED" }` on a submissions replay [`claims.test.ts`, `submissions.test.ts`, `test/support/claim-contract.ts` run against both claim repositories, `e2e/poc.e2e.ts` after the real claim];
 - on-chain linking, live campaign checks, status sync, auto-link, recovery [`onchain.test.ts`];
 - indexer (batches, provider failure, shallow/deep reorg, halt) [`chain-indexer.test.ts` + `support/indexer-contract.ts`, run against both repositories];
 - analytics reconciliation [`reconciliation.test.ts`, `onchain.test.ts`];
 - authentication, API keys, rate limits, moderation, observability, retention [`auth.test.ts`, `api-clients.test.ts`, `moderation.test.ts`, `observability.test.ts`, `postgres.integration.test.ts`]; browser sessions: cookie credential, CSRF rule, header-only routes, logout and sign-in revocation [`auth.test.ts`];
-- web app: campaign link and submission id parsing, typed API paths, sign-in that confirms the cookie, session store ordering, CSP builder and proxy matcher [`apps/web/test/*.test.ts`; the path types in `apps/web/test/api-path.typecheck.ts` run with `pnpm typecheck`]; the CSP nonce on every script of the production build [`apps/web/scripts/csp-smoke.mjs`, CI step "CSP smoke"];
+- web app: campaign link and submission id parsing, typed API paths, sign-in that confirms the cookie, session store ordering, CSP builder and proxy matcher, the claim simulation before the wallet is asked (`ALREADY_CLAIMED`, `NonceAlreadyUsed` and `WalletAlreadyClaimed` mean already paid, other reverts are named, #82) [`apps/web/test/*.test.ts`; the path types in `apps/web/test/api-path.typecheck.ts` run with `pnpm typecheck`]; the CSP nonce on every script of the production build [`apps/web/scripts/csp-smoke.mjs`, CI step "CSP smoke"];
 - chain configuration fail-fast [`chain-config.test.ts`, `canonical-abi.test.ts`];
-- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment,world-id}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`;
+- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment,world-id}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`, the claim issuance rules through `test/support/claim-contract.ts`;
 - database retry behavior [not planned: the API uses idempotent requests and the `retryable` error flag instead of a server-side retry layer (API_CONTRACT.md)].
 
 # Integration Tests
@@ -85,7 +86,7 @@ Second completion for same campaign/person policy is rejected before a second au
 
 ## E2E-003 Duplicate Claim
 
-Same authorization submitted twice; second transaction fails.
+Same authorization submitted twice; second transaction fails. The API then answers `409 ALREADY_CLAIMED` instead of returning the redeemed, still unexpired authorization (#82).
 
 ## E2E-004 Closed / Expired Campaign
 

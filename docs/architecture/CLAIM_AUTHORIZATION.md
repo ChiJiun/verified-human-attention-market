@@ -98,11 +98,14 @@ no authorization can be issued there, nothing is recorded and the request
 fails with the reason (`409` or `503`), so the same request can be sent again.
 The response says `pending_authorization` only without a configured signer
 (code `null`) and on a replay whose authorization cannot be reissued (with the
-reason code). `POST .../authorization` can then be called again.
+reason code). `POST .../authorization` can then be called again. A replay for
+a wallet that was already paid says `claimed` with code `ALREADY_CLAIMED`,
+the code `POST .../authorization` answers with `409` (see **Paid** below).
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
-authorization request returns the same active signature.
+authorization request returns the same active signature until the wallet is
+paid.
 
 Before signing, the service reads **live** contract state via `eth_call`: the
 current `authorizedSigner`, `campaignIdByDraft(advertiser, draftRef)` (must still
@@ -135,8 +138,17 @@ holds `KEY SHARE` on the campaign row through its submission's foreign key and
 - **Expiry:** an authorization that expired unredeemed is **reissued** with a
   new nonce and `issuedAt` (still subject to the cap and an active, open
   campaign). The contract pays each wallet once per campaign
-  (`claimedWallet`), so reissuing cannot cause a second payout. If the wallet
-  was already paid, the request returns `409 ALREADY_CLAIMED`.
+  (`claimedWallet`), so reissuing cannot cause a second payout.
+- **Paid:** once the wallet was paid (the live `claimedWallet` read, or the
+  stored nonce is a **confirmed** `RewardClaimed` nonce), no authorization is
+  returned at all: the request answers `409 ALREADY_CLAIMED` before and after
+  the stored authorization expires (#82). This check runs before the replay,
+  because the contract would revert the stored, still unexpired authorization
+  with `NonceAlreadyUsed` and the participant would see a raw wallet error. A
+  claim mined after the live read (from another tab, say) can still reach the
+  web app with an authorization; the mission page therefore simulates `claim`
+  before the wallet sends it and shows "already paid" for `NonceAlreadyUsed`
+  and `WalletAlreadyClaimed` without opening a wallet transaction.
 - **Close:** issuance stops as soon as `closedAt != 0` on-chain, so no
   authorization is issued after the issuance deadline that the refund grace
   period relies on.
