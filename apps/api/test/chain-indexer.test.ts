@@ -178,6 +178,10 @@ describe("JsonRpcClient", () => {
     await client.call(contract, "0x", 16n);
     await client.call(contract, "0x", { blockHash: hash });
 
-    expect(blocks).toEqual(["latest", "0x10", { blockHash: hash }]);
+    expect(blocks).toEqual([
+      "latest",
+      "0x10",
+      { blockHash: hash, requireCanonical: true },
+    ]);
   });
 });

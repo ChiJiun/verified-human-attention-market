@@ -216,8 +216,11 @@ export interface OnchainDependencies {
   campaigns: CampaignRepository;
   rpc: ChainRpc;
   chain: ChainScope & { usdcAddress: string };
-  /** The indexer's cursor: links are read at its confirmed block. */
-  events: Pick<ChainEventRepository, "getCursor">;
+  /**
+   * The indexer's cursor (links are read at its confirmed block) and halt
+   * (a stale-looking link may still be relinked by recovery).
+   */
+  events: Pick<ChainEventRepository, "getCursor" | "getHalt">;
   now: () => Date;
   /**
    * Blocks a creation must be buried under before it is linked, so a
@@ -334,15 +337,19 @@ export type LinkOutcome =
  * the indexed block the contract must still map the draft to the linked id
  * with the draft's parameters. A stale link (issue #76) is answered with
  * 409 LINK_NOT_CANONICAL until the worker relinks the draft or halts.
+ * `pending` (202) is the answer while that cannot be decided: no indexed
+ * block, a mapping still empty at it (an index rebuilt after
+ * `reorg:recover` has not reached the creation yet), or a recorded halt.
  */
 async function confirmExistingLink(
   dependencies: OnchainDependencies,
   campaign: CampaignRecord,
+  pending: "TX_UNCONFIRMED" | "NOT_CREATED_YET",
 ): Promise<LinkOutcome> {
   const indexed = await indexedBlock(dependencies);
 
   if (!indexed) {
-    return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
+    return { ok: false, status: 202, code: pending };
   }
 
   const block = { blockHash: indexed.hash };
@@ -363,8 +370,13 @@ async function confirmExistingLink(
         )
       : null;
 
-  return onchain && matchesDraft(campaign, onchain)
-    ? { ok: true, campaign }
+  if (onchain && matchesDraft(campaign, onchain)) {
+    return { ok: true, campaign };
+  }
+
+  return mapped === null ||
+    (await dependencies.events.getHalt(dependencies.chain)) !== null
+    ? { ok: false, status: 202, code: pending }
     : { ok: false, status: 409, code: "LINK_NOT_CANONICAL" };
 }
 
@@ -402,7 +414,7 @@ export async function linkCampaignByTransaction(
       // creation.
       return campaign.onchainContractAddress ===
         dependencies.chain.contractAddress
-        ? await confirmExistingLink(dependencies, campaign)
+        ? await confirmExistingLink(dependencies, campaign, "TX_UNCONFIRMED")
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
 
@@ -439,7 +451,7 @@ export async function linkCampaignByTransaction(
     if (campaign.onchainCampaignId !== null) {
       return campaign.onchainCampaignId === created.campaignId &&
         campaign.onchainContractAddress === dependencies.chain.contractAddress
-        ? await confirmExistingLink(dependencies, campaign)
+        ? await confirmExistingLink(dependencies, campaign, "TX_UNCONFIRMED")
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
 
@@ -540,7 +552,7 @@ export async function linkCampaignByDraft(
       // Linked on another deployment (before a redeploy): never reuse it.
       return campaign.onchainContractAddress ===
         dependencies.chain.contractAddress
-        ? await confirmExistingLink(dependencies, campaign)
+        ? await confirmExistingLink(dependencies, campaign, "NOT_CREATED_YET")
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
 
@@ -696,9 +708,10 @@ export async function syncCampaignStatuses(dependencies: {
  * A confirmed creation is canonical. If its id is linked to a different
  * draft (a link to a creation that a reorg removed), that link is released
  * (`relinked`) so the draft the event names can be linked instead. So is a
- * link of the draft the event names to any other id: the contract makes one
- * creation per advertiser and draft on a fork, so that id is not this
- * draft's (issue #76).
+ * link of the draft the event names to any other id, once the contract's
+ * mapping at the indexed block names the event's id: one creation per
+ * advertiser and draft on a fork, so the other id is not this draft's
+ * (issue #76).
  */
 export async function autoLinkCreatedCampaigns(
   dependencies: OnchainDependencies & { events: ChainEventRepository },
@@ -754,24 +767,38 @@ export async function autoLinkCreatedCampaigns(
       }
     }
 
-    // Stale: the draft the event names is linked to another id.
+    // Stale: the draft the event names is linked to another id. Index rows
+    // alone are not proof (they could hold creations of one draft from two
+    // forks), so the contract at the indexed block must name this id too.
     const named = linkedByDraft.get(
       draftKey(created.advertiser, created.draftRef),
     );
 
-    if (
-      named &&
-      named.onchainCampaignId !== created.onchainCampaignId &&
-      (await dependencies.campaigns.unlinkOnchain(
-        named.id,
-        {
-          onchainCampaignId: named.onchainCampaignId!,
-          contractAddress: dependencies.chain.contractAddress,
-        },
-        dependencies.now(),
-      ))
-    ) {
-      relinked.push(named.id);
+    if (named && named.onchainCampaignId !== created.onchainCampaignId) {
+      const indexed = await indexedBlock(dependencies);
+      const canonical =
+        indexed &&
+        (await readCampaignIdByDraft(
+          dependencies.rpc,
+          dependencies.chain.contractAddress,
+          named.advertiserAddress,
+          created.draftRef,
+          { blockHash: indexed.hash },
+        ));
+
+      if (
+        canonical === created.onchainCampaignId &&
+        (await dependencies.campaigns.unlinkOnchain(
+          named.id,
+          {
+            onchainCampaignId: named.onchainCampaignId!,
+            contractAddress: dependencies.chain.contractAddress,
+          },
+          dependencies.now(),
+        ))
+      ) {
+        relinked.push(named.id);
+      }
     }
 
     const drafts = await dependencies.campaigns.listUnlinkedDrafts(

@@ -106,8 +106,8 @@ export async function registerOnchainRoutes(
         });
       }
 
-      // Linking reads the confirmed block, so a creation that is mined but
-      // not final yet is invisible to it. The latest block already shows it:
+      // Linking reads the indexed confirmed block, so a creation that is
+      // mined but not final yet is invisible to it. The latest block already shows it:
       // a second tab or browser gets no intent for a send that could only
       // revert (DraftAlreadyCreated) and cost gas (#78).
       let created: string | null;

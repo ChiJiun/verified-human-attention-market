@@ -30,7 +30,8 @@ export interface TransactionReceipt {
 /**
  * A block number, or a block hash (EIP-1898): a read by hash is the state of
  * exactly that block whichever node answers, and fails on a node that does
- * not have it.
+ * not have it on its canonical chain (`requireCanonical`) or no longer keeps
+ * its state (a full node prunes all but recent blocks).
  */
 export type BlockRef = bigint | { blockHash: string };
 
@@ -180,7 +181,9 @@ export class JsonRpcClient implements ChainRpc {
           ? "latest"
           : typeof block === "bigint"
             ? toHex(block)
-            : { blockHash: block.blockHash },
+            : // The answering node itself must hold the block as canonical,
+              // not only know it from a side fork (EIP-1898).
+              { blockHash: block.blockHash, requireCanonical: true },
       ]),
     ).toLowerCase();
   }

@@ -65,6 +65,21 @@ export const logs = {
   }),
 };
 
+interface CampaignStruct {
+  advertiser: string;
+  fundedBudget?: bigint;
+  /** Unix seconds; non-zero once closed. */
+  closedAt?: number;
+  rewardPerCompletion: bigint;
+  maxCompletions: number;
+  startTime: number;
+  endTime: number;
+  /** Block that wrote this version (default: always there). */
+  since?: bigint;
+  /** The version before `since`. */
+  previous?: CampaignStruct;
+}
+
 interface FakeBlock {
   number: bigint;
   hash: string;
@@ -93,20 +108,11 @@ export class FakeChain implements ChainRpc {
   signer: string | null = null;
   /** On-chain `claimedWallet(id, wallet)`, keyed `${id}:${lowercase wallet}`. */
   readonly claimedWallets = new Set<string>();
-  /** On-chain `campaigns(id)` storage returned by eth_call. */
-  readonly campaignStructs = new Map<
-    string,
-    {
-      advertiser: string;
-      fundedBudget?: bigint;
-      /** Unix seconds; non-zero once closed. */
-      closedAt?: number;
-      rewardPerCompletion: bigint;
-      maxCompletions: number;
-      startTime: number;
-      endTime: number;
-    }
-  >();
+  /**
+   * On-chain `campaigns(id)` storage returned by eth_call. With `since`, an
+   * eth_call at an earlier block sees `previous` (or no campaign).
+   */
+  readonly campaignStructs = new Map<string, CampaignStruct>();
 
   constructor(
     readonly contract: string,
@@ -327,7 +333,15 @@ export class FakeChain implements ChainRpc {
     }
 
     const id = BigInt(`0x${data.slice(10)}`).toString();
-    const struct = this.campaignStructs.get(id);
+    let struct = this.campaignStructs.get(id);
+
+    while (
+      struct?.since !== undefined &&
+      block !== undefined &&
+      struct.since > block
+    ) {
+      struct = struct.previous;
+    }
 
     if (!struct) {
       return `0x${"0".repeat(640)}`;

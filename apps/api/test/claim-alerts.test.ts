@@ -5,7 +5,7 @@ import { buildApp } from "../src/app.js";
 import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
-import { RpcError } from "../src/chain/rpc.js";
+import { RpcError, type BlockRef } from "../src/chain/rpc.js";
 import {
   createClaimSigner,
   SignerUnavailableError,
@@ -29,7 +29,7 @@ class SignerChain extends FakeChain {
   override async call(
     to: string,
     data: string,
-    block?: bigint,
+    block?: BlockRef,
   ): Promise<string> {
     if (data.startsWith(toFunctionSelector("authorizedSigner()"))) {
       if (this.onchainSigner === null) throw new RpcError("down");
