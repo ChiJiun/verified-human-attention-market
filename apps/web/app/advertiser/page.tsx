@@ -38,8 +38,9 @@ import {
   fundingButton,
   fundingButtonLabel,
   fundingEffectVisible,
-  fundingRefusal,
+  fundingOffered,
   isFundingAction,
+  nextFundingStep,
   readFunding,
   requiredBudget,
   trackedCall,
@@ -48,11 +49,14 @@ import {
   type FundingAction,
   type FundingDeployment,
   type FundingReading,
+  type FundingView,
 } from "../../lib/funding";
 import {
   describeChainError,
   cardFlipsToDone,
   describeSimulationFailure,
+  effectMayFlipCard,
+  endsAwaitingEffect,
   formatRemaining,
   pollSettlementTx,
   readSettlement,
@@ -157,6 +161,22 @@ type UnresolvedTx = {
   | { action: FundingAction; deployment: FundingDeployment }
 );
 
+/** What the page knows about the campaign's funding (lib/funding.ts). */
+function fundingViewOf(
+  analytics: Analytics | null,
+  reading: FundingReading | null,
+  seenFunded: string | null,
+): FundingView | null {
+  return analytics === null
+    ? null
+    : {
+        required: requiredBudget(analytics),
+        reading,
+        indexed: analytics,
+        seenFunded: seenFunded === analytics.campaignId,
+      };
+}
+
 function settlementTarget(analytics: Analytics): SettlementTarget | null {
   return analytics.onchainCampaignId === null
     ? null
@@ -259,6 +279,8 @@ export default function AdvertiserPage() {
   const [fundingReading, setFundingReading] = useState<FundingReading | null>(
     null,
   );
+  /** The campaign this page has seen funded; it stays funded (FundingView). */
+  const [seenFunded, setSeenFunded] = useState<string | null>(null);
   const [awaitingEffect, setAwaitingEffect] = useState<TrackedAction | null>(
     null,
   );
@@ -415,9 +437,9 @@ export default function AdvertiserPage() {
 
   /**
    * Ends the wait for an unknown outcome. Only the card that still shows
-   * this transaction changes. A failed one offers the action again if the
-   * chain still allows it; a done one keeps it hidden until a read shows
-   * the effect (below).
+   * this transaction changes. A failed one (and a done approval) offers the
+   * action again if the chain still allows it; any other done one keeps it
+   * hidden until a read shows the effect (below, endsAwaitingEffect).
    */
   const settleUnresolved = useCallback(
     (pending: SentTx, outcome: FinalSettlementTxOutcome) => {
@@ -438,14 +460,29 @@ export default function AdvertiserPage() {
                 hash: pending.hash,
               },
       );
-      if (outcome !== "done") {
+      if (endsAwaitingEffect(pending.action, outcome)) {
         setAwaitingEffect((current) =>
           current === pending.action ? null : current,
+        );
+      }
+      if (!effectMayFlipCard(pending.action, outcome)) {
+        setLastSent((current) =>
+          current?.hash === pending.hash ? null : current,
         );
       }
     },
     [],
   );
+
+  // Once the campaign shows funded, on-chain or in the API's index, it stays
+  // funded on this page: a lagging read cannot offer Approve & fund again.
+  const fundingNow = fundingViewOf(analytics, fundingReading, null);
+  const fundedNow =
+    fundingNow !== null && fundingEffectVisible("fund", fundingNow);
+  const fundedCampaign = analytics?.campaignId ?? null;
+  useEffect(() => {
+    if (fundedNow && fundedCampaign) setSeenFunded(fundedCampaign);
+  }, [fundedNow, fundedCampaign]);
 
   // Once the chain (or the API's index of it) shows what an action
   // produces, the wait for it is over, whichever transaction caused it, and
@@ -454,15 +491,10 @@ export default function AdvertiserPage() {
   const onchainStatus =
     chainView.state === "read" ? chainView.onchain.reading.storedStatus : null;
   useEffect(() => {
+    const funding = fundingViewOf(analytics, fundingReading, seenFunded);
     const visible = (action: TrackedAction) =>
       isFundingAction(action)
-        ? analytics !== null &&
-          fundingEffectVisible(
-            action,
-            requiredBudget(analytics),
-            fundingReading,
-            analytics,
-          )
+        ? funding !== null && fundingEffectVisible(action, funding)
         : [
             onchainStatus,
             analytics?.settlement?.pending.status,
@@ -479,7 +511,15 @@ export default function AdvertiserPage() {
         ? { state: "done", label: trackedCall(action).done, hash }
         : current,
     );
-  }, [awaitingEffect, onchainStatus, fundingReading, analytics, lastSent, tx]);
+  }, [
+    awaitingEffect,
+    onchainStatus,
+    fundingReading,
+    seenFunded,
+    analytics,
+    lastSent,
+    tx,
+  ]);
 
   // While the card says "reconciling", check the transaction, the sender's
   // nonce, the receipt and the effect (the campaign, or for an approval the
@@ -499,11 +539,10 @@ export default function AdvertiserPage() {
           pending.target,
         );
         if (read === fundingReads.current) setFundingReading(reading);
-        return fundingEffectVisible(
-          pending.action,
-          requiredBudget(pending.target),
+        return fundingEffectVisible(pending.action, {
+          required: requiredBudget(pending.target),
           reading,
-        );
+        });
       }
       const read = ++chainReads.current;
       const settlement = await readSettlement(
@@ -818,20 +857,26 @@ export default function AdvertiserPage() {
     if (mined.kind === "pending") {
       setTx({ state: "reconciling", label, hash });
       setUnresolved({ action, hash, sentAtMs, deployment, target });
-    } else if (mined.kind === "reverted") {
-      setAwaitingEffect(null);
-      setTx({
-        state: "failed",
-        label,
-        message: trackedFailure(action, "reverted"),
-        hash,
-      });
-    } else {
-      // An approval's receipt is its effect, and Fund follows. Fund stays
-      // hidden until the funding shows on-chain or in the API's index.
-      if (action === "approve") setAwaitingEffect(null);
-      setTx({ state: "done", label: done, hash });
+      return mined.kind;
     }
+
+    const outcome = mined.kind === "reverted" ? "reverted" : "done";
+    // An approval's receipt is its effect, and Fund follows. Fund stays
+    // hidden until the funding shows on-chain or in the API's index.
+    if (endsAwaitingEffect(action, outcome)) setAwaitingEffect(null);
+    if (!effectMayFlipCard(action, outcome)) {
+      setLastSent((current) => (current?.hash === hash ? null : current));
+    }
+    setTx(
+      outcome === "done"
+        ? { state: "done", label: done, hash }
+        : {
+            state: "failed",
+            label,
+            message: trackedFailure(action, outcome),
+            hash,
+          },
+    );
     return mined.kind;
   }
 
@@ -869,15 +914,18 @@ export default function AdvertiserPage() {
       // moves: the id must still be this draft's, with its parameters. After
       // a deep reorg another draft can hold the same id and budget. An
       // earlier fund that landed after all stops here: nothing is sent.
-      const read = ++fundingReads.current;
-      const reading = await readFunding(wallet, configured, target);
-      if (read === fundingReads.current) setFundingReading(reading);
       const amount = requiredBudget(target);
-      const refusal = fundingRefusal(reading, amount);
-      if (refusal) throw new Error(refusal);
+      const readStep = async (approved: boolean) => {
+        const read = ++fundingReads.current;
+        const reading = await readFunding(wallet, configured, target);
+        if (read === fundingReads.current) setFundingReading(reading);
+        const step = nextFundingStep(reading, amount, { approved });
+        if (step.kind === "refuse") throw new Error(step.message);
+        return step.kind;
+      };
 
       try {
-        if (reading.allowance < amount) {
+        if ((await readStep(false)) === "approve") {
           const approved = await sendFundingTx(
             wallet,
             configured,
@@ -896,6 +944,9 @@ export default function AdvertiserPage() {
           // Unknown: checked until the allowance or the nonce settles it,
           // and "Fund campaign" appears once the allowance shows.
           if (approved !== "confirmed") return;
+          // The approval may have waited two minutes: read again right
+          // before the money moves (funded elsewhere, allowance overwritten).
+          await readStep(true);
         }
 
         await sendFundingTx(wallet, configured, target, "fund", () =>
@@ -1061,13 +1112,10 @@ export default function AdvertiserPage() {
   };
   const closeButton = settlementButton("close", closeVerdict, buttonState);
   const refundButton = settlementButton("refund", refundVerdict, buttonState);
-  const budget = analytics ? requiredBudget(analytics) : null;
+  const funding = fundingViewOf(analytics, fundingReading, seenFunded);
   const fundButton = fundingButton(
-    budget !== null &&
-      analytics?.status === "pending_onchain" &&
-      onCurrentDeployment &&
-      !fundingEffectVisible("fund", budget, fundingReading, analytics),
-    budget !== null && allowanceCovers(fundingReading, budget),
+    fundingOffered(analytics?.status, onCurrentDeployment, funding),
+    funding !== null && allowanceCovers(funding.reading, funding.required),
     buttonState,
   );
   const anywayTitle =

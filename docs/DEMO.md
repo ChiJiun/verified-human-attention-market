@@ -172,8 +172,10 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 核准（Approve USDC）與入金（Fund campaign）的交易沒有收據時，依同樣的規則處理（#103）：卡片顯示「還在確認中」，入金按鈕先隱藏，頁面每 10 秒查一次收據、nonce，以及交易要造成的結果，不必重新整理。
 
 - 核准的結果是 allowance（owner 為廣告主、spender 為 CampaignManager）達到預算，也就是 rewardPerCompletion × maxCompletions（atomic units，整數計算）。看到後卡片改成完成，按鈕改為「Fund campaign」，按下後才送入金，頁面不會自動送出。
-- 入金的結果是鏈上的 campaign 變成 `active`、`fundedBudget` 等於預算，或 API 的索引已經看到入金。入金送出後，按鈕在看到這個結果之前都保持隱藏。
-- revert、被取代、兩次檢查一致、失敗卡片之後改成完成，以及從未查到的交易 10 分鐘後改提供「Approve & fund anyway」／「Fund campaign anyway」，都和關閉、退款相同。入金前頁面一律重新讀鏈；原本的入金其實已上鏈時，頁面說明已入金，不會送出。兩筆核准都上鏈只是把額度再設一次並耗 gas；兩筆入金都送出時，第二筆會被合約以 `InvalidCampaignStatus` 拒絕並耗 gas，USDC 不會被扣兩次。
+- 核准的收據一到（即使是之後檢查才查到），按鈕就會回來，不必等 allowance 達到預算。同一個錢包對 CampaignManager 只有一個 allowance，另一個分頁的核准或入金、或在錢包裡調低的額度上限，都可能讓它停在預算以下；這時按鈕顯示「Approve & fund」，按下時重新讀 allowance，仍不足才再核准。
+- 入金的結果是鏈上的 campaign 變成 `active`、`fundedBudget` 等於預算，或 API 的索引已經看到入金。入金送出後，按鈕在看到這個結果之前都保持隱藏。只要看到過一次已入金，這個頁面就不再提供核准或入金，即使之後某次讀取（可能來自落後的 RPC 後端）又顯示尚未入金。
+- revert、被取代、兩次檢查一致、失敗卡片之後改成完成，以及從未查到的交易 10 分鐘後改提供「Approve & fund anyway」／「Fund campaign anyway」，都和關閉、退款相同。例外是 revert 的核准：allowance 也可能來自其他 campaign 的核准，所以這張卡片不會之後改成「USDC approved」。
+- 每次送出前頁面都重新讀鏈，包括核准完成、即將送入金的那一刻（核准可能等了兩分鐘）。原本的入金其實已上鏈，或 allowance 已被改到預算以下時，頁面說明原因，不會送出。兩筆核准都上鏈只是把額度再設一次並耗 gas；兩筆入金都送出時，第二筆會被合約以 `InvalidCampaignStatus` 拒絕並耗 gas，USDC 不會被扣兩次。
 - 等待入金期間，頁面每次重新整理都會讀 allowance 和 campaign，用來決定按鈕顯示「Approve & fund」還是「Fund campaign」。
 
 一個動作進行中時，其他按鈕（包含「Close campaign」與「Refund unused budget」）只會變成停用，不會消失，連點也不會點到滑進同一位置的「Refresh」。

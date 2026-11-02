@@ -8,12 +8,15 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ALLOWANCE_BELOW_BUDGET,
   allowanceCovers,
   fundedIndexed,
   fundingButton,
   fundingButtonLabel,
   fundingEffectVisible,
+  fundingOffered,
   fundingRefusal,
+  nextFundingStep,
   readFunding,
   requiredBudget,
   trackedCall,
@@ -23,10 +26,13 @@ import {
   type FundingButton,
   type FundingDeployment,
   type FundingReading,
+  type FundingView,
   type IndexedFunding,
 } from "../lib/funding";
 import {
   ASSUME_DROPPED_AFTER_MS,
+  effectMayFlipCard,
+  endsAwaitingEffect,
   pollSettlementTx,
   resolveTxOutcome,
   unresolvedTxCheck,
@@ -83,51 +89,58 @@ describe("the funding budget", () => {
   });
 });
 
+/** The API still has the campaign awaiting funding; nothing indexed yet. */
+const AWAITING: IndexedFunding = {
+  status: "pending_onchain",
+  settlement: { pending: { status: "created", funded: "0" } },
+};
+const view = (
+  reading: FundingReading | null,
+  more: Partial<FundingView> = {},
+): FundingView => ({ required: BUDGET, reading, ...more });
+
 describe("approve and fund effects", () => {
   it("approve shows once the allowance covers the budget", () => {
     expect(
-      fundingEffectVisible("approve", BUDGET, {
-        ...unfunded,
-        allowance: BUDGET - 1n,
-      }),
+      fundingEffectVisible(
+        "approve",
+        view({ ...unfunded, allowance: BUDGET - 1n }),
+      ),
     ).toBe(false);
     expect(
-      fundingEffectVisible("approve", BUDGET, {
-        ...unfunded,
-        allowance: BUDGET,
-      }),
+      fundingEffectVisible("approve", view({ ...unfunded, allowance: BUDGET })),
     ).toBe(true);
-    expect(fundingEffectVisible("approve", BUDGET, null)).toBe(false);
+    expect(fundingEffectVisible("approve", view(null))).toBe(false);
     expect(
       allowanceCovers({ ...unfunded, allowance: BUDGET + 1n }, BUDGET),
     ).toBe(true);
   });
 
   it("approve also shows once the campaign is funded (funding spent the allowance)", () => {
-    expect(fundingEffectVisible("approve", BUDGET, funded)).toBe(true);
+    expect(fundingEffectVisible("approve", view(funded))).toBe(true);
   });
 
   it("fund shows only as the campaign funded with its budget", () => {
     // An allowance alone is not a funding.
     expect(
-      fundingEffectVisible("fund", BUDGET, { ...unfunded, allowance: BUDGET }),
+      fundingEffectVisible("fund", view({ ...unfunded, allowance: BUDGET })),
     ).toBe(false);
-    expect(fundingEffectVisible("fund", BUDGET, funded)).toBe(true);
+    expect(fundingEffectVisible("fund", view(funded))).toBe(true);
     // It stays funded through close and refund.
     expect(
-      fundingEffectVisible("fund", BUDGET, {
-        ...funded,
-        storedStatus: "settled",
-      }),
+      fundingEffectVisible(
+        "fund",
+        view({ ...funded, storedStatus: "settled" }),
+      ),
     ).toBe(true);
     expect(
-      fundingEffectVisible("fund", BUDGET, { ...funded, fundedBudget: 1n }),
+      fundingEffectVisible("fund", view({ ...funded, fundedBudget: 1n })),
     ).toBe(false);
     expect(
-      fundingEffectVisible("fund", BUDGET, {
-        ...unfunded,
-        storedStatus: "cancelled",
-      }),
+      fundingEffectVisible(
+        "fund",
+        view({ ...unfunded, storedStatus: "cancelled" }),
+      ),
     ).toBe(false);
   });
 
@@ -142,9 +155,7 @@ describe("approve and fund effects", () => {
 
     expect(fundedIndexed(null)).toBe(false);
     expect(fundedIndexed(indexed("pending_onchain", null))).toBe(false);
-    expect(
-      fundedIndexed(indexed("pending_onchain", pending("created", "0"))),
-    ).toBe(false);
+    expect(fundedIndexed(AWAITING)).toBe(false);
     expect(
       fundedIndexed(indexed("pending_onchain", pending("active", "10000000"))),
     ).toBe(true);
@@ -152,11 +163,33 @@ describe("approve and fund effects", () => {
     expect(
       fundingEffectVisible(
         "fund",
-        BUDGET,
-        unfunded,
-        indexed("pending_onchain", pending("active", "10000000")),
+        view(unfunded, {
+          indexed: indexed("pending_onchain", pending("active", "10000000")),
+        }),
       ),
     ).toBe(true);
+  });
+});
+
+describe("whether the funding button is offered", () => {
+  it("only while the API has the campaign awaiting funding on this deployment", () => {
+    const fresh = view(unfunded, { indexed: AWAITING });
+
+    expect(fundingOffered("pending_onchain", true, fresh)).toBe(true);
+    expect(fundingOffered("pending_onchain", false, fresh)).toBe(false);
+    expect(fundingOffered("draft", true, fresh)).toBe(false);
+    expect(fundingOffered("pending_onchain", true, null)).toBe(false);
+    expect(fundingOffered("pending_onchain", true, view(funded))).toBe(false);
+  });
+
+  it("never again once the campaign was seen funded, whatever a later read says", () => {
+    // One read showed it funded; the next comes from a lagging backend and
+    // the API has not indexed the funding yet.
+    const lagging = view(unfunded, { indexed: AWAITING, seenFunded: true });
+
+    expect(fundingOffered("pending_onchain", true, lagging)).toBe(false);
+    expect(fundingEffectVisible("fund", lagging)).toBe(true);
+    expect(fundingEffectVisible("approve", lagging)).toBe(true);
   });
 });
 
@@ -170,6 +203,43 @@ describe("funding refusal before the wallet is asked", () => {
     expect(
       fundingRefusal({ ...unfunded, storedStatus: "cancelled" }, BUDGET),
     ).toMatch(/cancelled/);
+  });
+});
+
+describe("the next funding step, read right before each send", () => {
+  const covered = { ...unfunded, allowance: BUDGET };
+
+  it("approves first when the allowance is below the budget, else funds", () => {
+    expect(nextFundingStep(unfunded, BUDGET, { approved: false })).toEqual({
+      kind: "approve",
+    });
+    expect(nextFundingStep(covered, BUDGET, { approved: false })).toEqual({
+      kind: "fund",
+    });
+    expect(nextFundingStep(covered, BUDGET, { approved: true })).toEqual({
+      kind: "fund",
+    });
+  });
+
+  it("after an approval, refuses a funding done elsewhere or an overwritten allowance", () => {
+    expect(nextFundingStep(funded, BUDGET, { approved: true })).toEqual({
+      kind: "refuse",
+      message: expect.stringMatching(/already funded/),
+    });
+    // Another tab approved a smaller budget, or the wallet lowered the cap.
+    expect(
+      nextFundingStep({ ...unfunded, allowance: BUDGET - 1n }, BUDGET, {
+        approved: true,
+      }),
+    ).toEqual({ kind: "refuse", message: ALLOWANCE_BELOW_BUDGET });
+  });
+
+  it("refuses before any approval when the campaign is funded already", () => {
+    expect(
+      nextFundingStep({ ...funded, allowance: 0n }, BUDGET, {
+        approved: false,
+      }).kind,
+    ).toBe("refuse");
   });
 });
 
@@ -248,6 +318,46 @@ describe("the funding button", () => {
     expect(
       fundingButton(true, false, { ...idle, awaitingEffect: "close" }),
     ).toEqual({ kind: "send", step: "approve", disabled: false });
+  });
+});
+
+describe("after a tracked transaction settles", () => {
+  const ALL = ["close", "refund", "approve", "fund"] as const;
+
+  it("a mined approval ends the wait, so a shared allowance below the budget never hides the button", () => {
+    expect(endsAwaitingEffect("approve", "done")).toBe(true);
+    // The poll settled the approval as done, then another tab approved a
+    // smaller budget (or the wallet lowered the cap): allowance < budget.
+    const awaitingEffect = endsAwaitingEffect("approve", "done")
+      ? null
+      : "approve";
+    expect(
+      fundingButton(true, false, {
+        awaitingEffect,
+        maybeDropped: null,
+        blocked: false,
+      }),
+    ).toEqual({ kind: "send", step: "approve", disabled: false });
+  });
+
+  it("any other done action stays hidden until its effect shows; a failure ends the wait", () => {
+    for (const action of ["close", "refund", "fund"] as const) {
+      expect(endsAwaitingEffect(action, "done")).toBe(false);
+    }
+    for (const action of ALL) {
+      expect(endsAwaitingEffect(action, "reverted")).toBe(true);
+      expect(endsAwaitingEffect(action, "replaced")).toBe(true);
+    }
+  });
+
+  it("never relabels a reverted approval as approved", () => {
+    // Another campaign's approval can raise the shared allowance.
+    expect(effectMayFlipCard("approve", "reverted")).toBe(false);
+    expect(effectMayFlipCard("approve", "replaced")).toBe(true);
+    expect(effectMayFlipCard("approve", "done")).toBe(true);
+    for (const action of ["close", "refund", "fund"] as const) {
+      expect(effectMayFlipCard(action, "reverted")).toBe(true);
+    }
   });
 });
 
@@ -460,11 +570,10 @@ describe("polling an unknown approve or fund outcome", () => {
         hash: HASH,
         sentAtMs,
         readEffect: async () =>
-          fundingEffectVisible(
-            action,
-            BUDGET,
-            await readFunding(node.wallet, DEPLOYMENT, TARGET),
-          ),
+          fundingEffectVisible(action, {
+            required: BUDGET,
+            reading: await readFunding(node.wallet, DEPLOYMENT, TARGET),
+          }),
       }),
       (outcome) => verdicts.push(outcome),
       1_000,

@@ -192,22 +192,56 @@ export function allowanceCovers(
   return reading !== null && reading.allowance >= required;
 }
 
+/** What the page knows about a campaign's funding. */
+export interface FundingView {
+  /** requiredBudget of the campaign. */
+  required: bigint;
+  /** The wallet's last readFunding; null when unread. */
+  reading: FundingReading | null;
+  indexed?: IndexedFunding | null;
+  /**
+   * The page saw it funded before, on-chain or in the index. It stays
+   * funded: the allowance and the campaign are separate calls that a load
+   * balancer can answer from different backends, and a lagging read must
+   * not bring back Approve & fund, which would send a surplus approval.
+   */
+  seenFunded?: boolean;
+}
+
 /**
  * Whether `action` took effect, whichever transaction caused it (a sped-up
  * replacement, another tab). Fund: the campaign is funded with its budget,
- * on-chain or in the API's index. Approve: the allowance covers the budget,
- * or the campaign is funded already (which spent the allowance).
+ * on-chain or in the API's index (or was seen so). Approve: the allowance
+ * covers the budget, or the campaign is funded already (which spent the
+ * allowance).
  */
 export function fundingEffectVisible(
   action: FundingAction,
-  required: bigint,
-  reading: FundingReading | null,
-  indexed: IndexedFunding | null = null,
+  { required, reading, indexed = null, seenFunded = false }: FundingView,
 ): boolean {
   const funded =
+    seenFunded ||
     fundedIndexed(indexed) ||
     (reading !== null && fundedOnchain(reading, required));
   return funded || (action === "approve" && allowanceCovers(reading, required));
+}
+
+/**
+ * Whether the funding button is offered at all: the campaign is linked on
+ * the current deployment, the API has it awaiting funding, and the page has
+ * never seen it funded.
+ */
+export function fundingOffered(
+  status: string | undefined,
+  currentDeployment: boolean,
+  view: FundingView | null,
+): boolean {
+  return (
+    view !== null &&
+    status === "pending_onchain" &&
+    currentDeployment &&
+    !fundingEffectVisible("fund", view)
+  );
 }
 
 /**
@@ -227,6 +261,32 @@ export function fundingRefusal(
     return `The on-chain campaign is ${reading.storedStatus} and can no longer be funded, so nothing was sent.`;
   }
   return null;
+}
+
+export type FundingStep =
+  { kind: "approve" } | { kind: "fund" } | { kind: "refuse"; message: string };
+
+export const ALLOWANCE_BELOW_BUDGET =
+  "The USDC allowance does not cover the budget now, so nothing was funded. Another tab or a spending cap set in your wallet may have changed it, or your wallet's network does not show the approval yet. Press Approve & fund to read it again; it approves again only if the allowance is still too low.";
+
+/**
+ * What the funding button does next with a fresh reading, made right before
+ * each send: refuse (nothing is sent), approve first, or fund. Once this
+ * press has approved (`approved`), an allowance below the budget is refused
+ * rather than approved again: the approval wait can take minutes, and the
+ * allowance is shared by every approval from this wallet to CampaignManager.
+ */
+export function nextFundingStep(
+  reading: FundingReading,
+  required: bigint,
+  { approved }: { approved: boolean },
+): FundingStep {
+  const refusal = fundingRefusal(reading, required);
+  if (refusal) return { kind: "refuse", message: refusal };
+  if (allowanceCovers(reading, required)) return { kind: "fund" };
+  return approved
+    ? { kind: "refuse", message: ALLOWANCE_BELOW_BUDGET }
+    : { kind: "approve" };
 }
 
 export type FundingButton =

@@ -350,6 +350,37 @@ export function cardFlipsToDone(
   );
 }
 
+/**
+ * Whether a final outcome (a verdict, or the receipt while waiting) ends the
+ * wait for the action's effect, which offers its button again. A failure
+ * does. A done close, refund or fund keeps the button hidden until a read
+ * shows the effect, because a stale read would offer it again. A done
+ * approval ends it: its mined receipt is its effect, and the allowance it
+ * set is shared by every approval from this wallet to CampaignManager
+ * (another tab, a spending cap lowered in the wallet), so it may never
+ * reach this budget. The funding button reads it again before it sends.
+ */
+export function endsAwaitingEffect(
+  action: TrackedAction,
+  outcome: FinalSettlementTxOutcome,
+): boolean {
+  return outcome !== "done" || action === "approve";
+}
+
+/**
+ * Whether the card of a transaction with this outcome may still turn done
+ * once the effect shows (cardFlipsToDone). Not for a reverted approval: the
+ * allowance it would have set can also come from another campaign's
+ * approval, which would label the card "USDC approved" wrongly. A close,
+ * refund or fund effect belongs to this campaign alone.
+ */
+export function effectMayFlipCard(
+  action: TrackedAction,
+  outcome: FinalSettlementTxOutcome,
+): boolean {
+  return !(action === "approve" && outcome === "reverted");
+}
+
 export function formatRemaining(seconds: number): string {
   const hours = Math.floor(seconds / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
