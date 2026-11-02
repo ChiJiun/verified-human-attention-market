@@ -166,12 +166,13 @@ keeps only about 128 recent blocks of state (some 4 minutes on Base), so once
 the worker is further behind, linking answers `503 RPC_UNAVAILABLE` until it
 catches up. Fix the worker first; an archive RPC removes this limit.
 
-At startup the worker checks the chain, the contract code and the contract
-version. An unreachable or failing RPC is retried with backoff up to 60 s
-(`startup chain check failed; retrying`) instead of crash-looping; a wrong
-chain id, missing code or a pre-ADR-0011 contract stops it at once. No pass
-metrics exist until that check passes, so a worker stuck there shows up as
-VhamRpcDown on the API or as a missing worker scrape target, not as a stall.
+At startup the API and the worker check the chain, the contract code and the
+contract version. An unreachable or failing RPC is retried with backoff up to
+60 s (`startup chain check failed; retrying`) instead of crash-looping; a
+wrong chain id, missing code or a pre-ADR-0011 contract stops the process at
+once. No metrics exist until that check passes, so a worker stuck there shows
+up as VhamRpcDown on the API or as a missing worker scrape target, not as a
+stall, and an API stuck there does not listen yet, so its health checks fail.
 A worker that logs `waiting for the deployment lock` is waiting for another
 worker or a `reorg:recover --apply` on the same deployment to finish. A
 worker that logs `deployment lock lost; stopping` exits with code 1 so its
