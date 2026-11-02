@@ -89,6 +89,9 @@ jobs:
       - name: CSP smoke
         run: pnpm --filter @vham/web smoke:csp
 
+      - name: X-Forwarded-For smoke
+        run: pnpm --filter @vham/web smoke:forwarded-for
+
       - name: Format check
         run: |
           pnpm format:check 2>&1 | tee format.log

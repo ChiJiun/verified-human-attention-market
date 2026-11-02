@@ -1,8 +1,4 @@
-import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
-import { createServer } from "node:net";
-import { setTimeout as sleep } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { startNext } from "./next-start.mjs";
 
 const PAGES = [
   ["/", 200],
@@ -11,53 +7,8 @@ const PAGES = [
   ["/smoke-not-found", 404],
   ["/api-keys", 404],
 ];
-const RESERVED_PORTS = new Set([3000, 3001]);
 
-const webDir = fileURLToPath(new URL("..", import.meta.url));
-const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
-}
-
-let port = await freePort();
-while (RESERVED_PORTS.has(port)) port = await freePort();
-const origin = `http://127.0.0.1:${port}`;
-
-const server = spawn(
-  process.execPath,
-  [nextBin, "start", "--port", String(port), "--hostname", "127.0.0.1"],
-  {
-    cwd: webDir,
-    env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  },
-);
-let serverLog = "";
-server.stdout.on("data", (chunk) => (serverLog += chunk));
-server.stderr.on("data", (chunk) => (serverLog += chunk));
-const exited = new Promise((resolve) => server.once("exit", resolve));
-
-async function waitForServer() {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (server.exitCode !== null) break;
-    try {
-      await fetch(origin, { signal: AbortSignal.timeout(2_000) });
-      return;
-    } catch {
-      await sleep(500);
-    }
-  }
-  throw new Error(`next start did not answer on ${origin}\n${serverLog}`);
-}
+const { origin, stop } = await startNext();
 
 async function load(path) {
   const response = await fetch(`${origin}${path}`, {
@@ -76,8 +27,6 @@ async function load(path) {
 const failures = [];
 
 try {
-  await waitForServer();
-
   for (const [path, status] of PAGES) {
     const first = await load(path);
     const second = await load(path);
@@ -104,8 +53,7 @@ try {
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 } finally {
-  server.kill();
-  await exited;
+  await stop();
 }
 
 if (failures.length > 0) {
