@@ -379,7 +379,7 @@ Accepted response:
 }
 ```
 
-The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer **or without a chain configuration** (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed.
+The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer **or without a chain configuration** (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed. Once the wallet was paid, a replay returns `claim` = `{ "status": "claimed", "code": "ALREADY_CLAIMED" }` and no authorization, before and after the stored one expires, matching the `409 ALREADY_CLAIMED` of the authorization endpoint (#82). `claimed` is read from `claimedWallet` at the latest block and is not final: if a shallow reorg undoes the payout, a later replay or authorization request returns the stored authorization again (or a reissued one after expiry).
 
 # Claims
 
@@ -397,9 +397,12 @@ The response contains the exact EIP-712 `ClaimAuthorization` fields
 are decimal strings. A retry before expiry returns the same signed payload;
 concurrent requests cannot issue a second authorization. After expiry, an
 unredeemed authorization is reissued with a new nonce while the campaign is
-still active and under its cap; once the wallet has been paid the endpoint
-returns `409 ALREADY_CLAIMED`. Status `201` for a newly signed authorization,
-`200` for a replay. Other errors: `400 INVALID_ELIGIBILITY_TOKEN`, `403
+still active and under its cap. Once the wallet has been paid (live
+`claimedWallet`, or the stored nonce is a confirmed `RewardClaimed`) the
+endpoint returns `409 ALREADY_CLAIMED` before and after expiry, never the
+redeemed authorization, which the contract would revert (#82). Status `201`
+for a newly signed authorization, `200` for a replay. Other errors:
+`400 INVALID_ELIGIBILITY_TOKEN`, `403
 INVALID_ELIGIBILITY` (token not bound to this campaign and claimant), `404
 SUBMISSION_NOT_FOUND`, `409 SUBMISSION_NOT_ACCEPTED`, `409 CAMPAIGN_CAP_REACHED`
 (paid + outstanding authorizations reached `maxCompletions`), `409
