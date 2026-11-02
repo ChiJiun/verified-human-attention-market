@@ -14,10 +14,9 @@ import {
 } from "./onchain.js";
 import { requireWallet } from "../auth/routes.js";
 import type { Authenticate } from "../auth/siwe.js";
+import { sendError } from "../errors/catalog.js";
+import { UUID } from "../http/validation.js";
 import type { CampaignRepository } from "./repository.js";
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // txHash is optional: without it the draft is linked by its draft reference
 // (ADR-0011), e.g. after a lost RPC response.
@@ -58,9 +57,7 @@ export async function registerOnchainRoutes(
   // Public chain settings for wallets (contract addresses are public data).
   app.get("/v1/chain", async (request, reply) => {
     if (!dependencies.chain) {
-      return reply
-        .status(503)
-        .send({ error: { ...chainMissing, requestId: request.id } });
+      return sendError(request, reply, 503, chainMissing);
     }
 
     return reply.send({
@@ -74,11 +71,9 @@ export async function registerOnchainRoutes(
     "/v1/campaigns/:id/publish",
     async (request, reply) => {
       const error = (status: number, body: { code: string; message: string }) =>
-        reply
-          .status(status)
-          .send({ error: { ...body, requestId: request.id } });
+        sendError(request, reply, status, body);
 
-      const campaign = UUID_PATTERN.test(request.params.id)
+      const campaign = UUID.test(request.params.id)
         ? await dependencies.campaigns.getById(request.params.id)
         : null;
 
@@ -117,11 +112,9 @@ export async function registerOnchainRoutes(
     "/v1/campaigns/:id/onchain",
     async (request, reply) => {
       const error = (status: number, body: { code: string; message: string }) =>
-        reply
-          .status(status)
-          .send({ error: { ...body, requestId: request.id } });
+        sendError(request, reply, status, body);
 
-      const owned = UUID_PATTERN.test(request.params.id)
+      const owned = UUID.test(request.params.id)
         ? await dependencies.campaigns.getById(request.params.id)
         : null;
       if (!owned) return error(404, notFound);
@@ -194,14 +187,12 @@ export async function registerOnchainRoutes(
   app.get<{ Params: { id: string } }>(
     "/v1/campaigns/:id/analytics",
     async (request, reply) => {
-      const campaign = UUID_PATTERN.test(request.params.id)
+      const campaign = UUID.test(request.params.id)
         ? await dependencies.campaigns.getById(request.params.id)
         : null;
 
       if (!campaign) {
-        return reply
-          .status(404)
-          .send({ error: { ...notFound, requestId: request.id } });
+        return sendError(request, reply, 404, notFound);
       }
 
       if (

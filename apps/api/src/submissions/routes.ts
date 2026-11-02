@@ -3,6 +3,8 @@ import { z } from "zod";
 
 import { serializeClaim } from "../claims/routes.js";
 import type { ClaimOutcome } from "../claims/service.js";
+import { sendError } from "../errors/catalog.js";
+import { EVM_ADDRESS, readIdempotencyKey, UUID } from "../http/validation.js";
 import { OPERATOR_OUTCOMES } from "../observability/instrumentation.js";
 
 import {
@@ -10,12 +12,9 @@ import {
   type SubmissionServiceDependencies,
 } from "./service.js";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 const submissionBodySchema = z.object({
-  eligibilityToken: z.string().regex(UUID_PATTERN),
-  claimant: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  eligibilityToken: z.string().regex(UUID),
+  claimant: z.string().regex(EVM_ADDRESS),
   answers: z.unknown(),
 });
 
@@ -41,21 +40,15 @@ export async function registerSubmissionRoutes(
     "/v1/campaigns/:id/submissions",
     async (request, reply) => {
       const fail = (status: number, code: string, message: string) =>
-        reply.status(status).send({
-          error: { code, message, requestId: request.id },
-        });
+        sendError(request, reply, status, { code, message });
 
-      if (!UUID_PATTERN.test(request.params.id)) {
+      if (!UUID.test(request.params.id)) {
         return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
       }
 
-      const idempotencyKey = request.headers["idempotency-key"];
+      const idempotencyKey = readIdempotencyKey(request);
 
-      if (
-        typeof idempotencyKey !== "string" ||
-        idempotencyKey.length === 0 ||
-        idempotencyKey.length > 200
-      ) {
+      if (!idempotencyKey) {
         return fail(
           400,
           "INVALID_IDEMPOTENCY_KEY",

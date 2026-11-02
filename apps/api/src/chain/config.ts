@@ -1,12 +1,11 @@
 import { FUNCTION_SELECTORS } from "./abi.js";
+import { EVM_ADDRESS } from "../http/validation.js";
 
 /**
  * Contract/chain configuration validated at API startup (issue #19).
  * Wrong-chain or missing-address configuration fails fast instead of
  * silently pointing financial flows at the wrong deployment.
  */
-
-const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 
 /** Mirrors packages/shared/src/chains.ts (official sources checked 2026-10-12). */
 const OFFICIAL_USDC: Readonly<Record<number, string>> = {
@@ -107,7 +106,7 @@ export function loadChainConfig(
     ["USDC_ADDRESS", usdcAddress],
     ["CAMPAIGN_MANAGER_ADDRESS", campaignManagerAddress],
   ] as const) {
-    if (value && !ADDRESS_PATTERN.test(value)) {
+    if (value && !EVM_ADDRESS.test(value)) {
       problems.push(`${key} is not an EVM address`);
     }
   }

@@ -176,7 +176,8 @@ const CLIENT_ERRORS: Record<number, { code: string; message: string }> = {
 
 const INVALID_REQUEST = { code: "INVALID_REQUEST", message: "Invalid request" };
 
-function sendError(
+/** Sends the catalog error body: `{ error: { code, message, requestId, retryable } }`. */
+export function sendError(
   request: FastifyRequest,
   reply: FastifyReply,
   statusCode: number,
@@ -190,6 +191,17 @@ function sendError(
       retryable: isRetryable(code, statusCode),
     },
   });
+}
+
+/** `sendError` with the code and message as arguments. */
+export function fail(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  statusCode: number,
+  code: string,
+  message: string,
+) {
+  return sendError(request, reply, statusCode, { code, message });
 }
 
 /**

@@ -6,6 +6,8 @@ import { z } from "zod";
 import type { AuthSession } from "../auth/repository.js";
 import { presentedCredentials } from "../auth/credential.js";
 import type { Authenticate } from "../auth/siwe.js";
+import { fail } from "../errors/catalog.js";
+import { UUID } from "../http/validation.js";
 import type { MetricsRegistry } from "../observability/metrics.js";
 import {
   API_SCOPES,
@@ -43,8 +45,6 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 export const MAX_ACTIVE_CLIENTS_PER_ADVERTISER = 10;
 
 const API_KEY = /^vhamk_(test|live)_[A-Za-z0-9_-]{43}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /** Routes an API key may call, with the scope each needs. */
 const SCOPED_ROUTES: Record<string, ApiScope> = {
   "POST /v1/campaigns": "campaigns:write",
@@ -79,18 +79,6 @@ export function apiClientSession(
     chainId,
     expiresAt: new Date("9999-12-31T23:59:59.000Z"),
   };
-}
-
-function fail(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  status: number,
-  code: string,
-  message: string,
-) {
-  return reply.status(status).send({
-    error: { code, message, requestId: request.id },
-  });
 }
 
 /**

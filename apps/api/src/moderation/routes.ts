@@ -5,6 +5,8 @@ import type { AuthSession } from "../auth/repository.js";
 import type { Authenticate } from "../auth/siwe.js";
 import type { CampaignRepository } from "../campaigns/repository.js";
 import type { CampaignRecord } from "../campaigns/types.js";
+import { fail } from "../errors/catalog.js";
+import { UUID } from "../http/validation.js";
 import {
   ModerationError,
   REPORT_REASONS,
@@ -33,8 +35,6 @@ export const OPEN_MODERATION: ModerationConfig = {
   advertiserAllowlist: [],
 };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /** Routes that serve a campaign to new participants or publish it. */
 const GATED_ROUTES = new Set([
   "GET /v1/campaigns/:id/mission",
@@ -50,18 +50,6 @@ interface ModerationDependencies {
   authenticate: Authenticate;
   config: ModerationConfig;
   now: () => Date;
-}
-
-function fail(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  status: number,
-  code: string,
-  message: string,
-) {
-  return reply.status(status).send({
-    error: { code, message, requestId: request.id },
-  });
 }
 
 /** Effective status: a campaign without a state row is unreviewed. */
