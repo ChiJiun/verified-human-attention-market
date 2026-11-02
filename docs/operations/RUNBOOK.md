@@ -46,7 +46,8 @@ Worker (`INDEXER_METRICS_PORT`):
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
-| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
+| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
+| `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -152,6 +153,25 @@ supervisor restarts it: its database session ended (restart, failover,
 network, `idle_session_timeout`) and the server released the lock with it.
 If it repeats, check that `DATABASE_URL` is a direct or session-mode
 connection ([Running the built API](#running-the-built-api)).
+
+### VhamIndexerInconsistentReads
+
+Five or more passes in a row ended in `inconsistent_read`: the worker reads a
+range, the range's block headers (linked by hash), the logs and the range end
+again, and refuses to commit when they disagree (issue #76). Usually the RPC
+is load-balanced over nodes on different forks or heights, or a node lags.
+Nothing past the failing range is committed and no halt is recorded, so the
+index, status sync and linking stay behind while participation continues
+(the API's live contract checks still apply). The log line
+`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`.
+
+1. Check the RPC provider: pin the worker (and the API) to one endpoint or a
+   provider with sticky sessions, or remove the lagging node.
+2. If the same block keeps failing on a single consistent endpoint, compare
+   that block's hash and its logs across two providers; a provider serving
+   another fork means a deep reorg may be under way (see
+   VhamReorgBeyondConfirmations).
+3. The alert clears on the next successful pass.
 
 ### VhamChainHalted
 
