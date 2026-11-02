@@ -68,6 +68,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   // Conflicts and terminal state
   IDEMPOTENCY_CONFLICT: { retryable: false },
   CAMPAIGN_ALREADY_PUBLISHED: { retryable: false },
+  DRAFT_ALREADY_CREATED: { retryable: false },
   CAMPAIGN_START_PASSED: { retryable: false },
   CAMPAIGN_NOT_OPEN: { retryable: false },
   CAMPAIGN_ENDED: { retryable: false },

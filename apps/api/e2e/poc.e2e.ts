@@ -484,6 +484,16 @@ describeE2e("POC economic loop on a local chain", () => {
       status: "reconciling",
       code: "NOT_CREATED_YET",
     });
+    // The latest block already shows it, so no tab gets another intent (#78).
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/v1/campaigns/${campaignId}/publish`,
+          headers: auth,
+        })
+      ).json(),
+    ).toMatchObject({ error: { code: "DRAFT_ALREADY_CREATED" } });
     await testClient.mine({ blocks: CONFIRMATIONS });
 
     // Linking needs no hash: the contract knows this draft's campaign.
