@@ -23,6 +23,10 @@ export interface ClaimHarness {
   acceptedSubmission(
     campaignId: string,
   ): Promise<{ submissionId: string; claimant: Address }>;
+  /** A rejected submission (COMPREHENSION_FAILED), like `acceptedSubmission`. */
+  rejectedSubmission(
+    campaignId: string,
+  ): Promise<{ submissionId: string; claimant: Address }>;
 }
 
 const SIGNER = createClaimSigner(`0x${"11".repeat(32)}`);
@@ -37,12 +41,14 @@ const EXPIRED = new Date("2026-10-05T10:47:00.000Z");
 export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
   async function participant(
     campaign?: Awaited<ReturnType<ClaimHarness["linkedCampaign"]>>,
+    result: "accepted" | "rejected" = "accepted",
   ) {
-    const { claims, linkedCampaign, acceptedSubmission } = harness();
+    const { claims, linkedCampaign, acceptedSubmission, rejectedSubmission } =
+      harness();
     const linked = campaign ?? (await linkedCampaign());
-    const { submissionId, claimant } = await acceptedSubmission(
-      linked.campaignId,
-    );
+    const { submissionId, claimant } = await (
+      result === "accepted" ? acceptedSubmission : rejectedSubmission
+    )(linked.campaignId);
     let signatures = 0;
     const issue = (overrides: Partial<ClaimIssueInput> = {}) => {
       const now = overrides.now ?? NOW;
@@ -122,6 +128,24 @@ export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
       ).rejects.toMatchObject({ code: "ALREADY_CLAIMED" });
     }
     expect(signatures()).toBe(1);
+  });
+
+  it("refuses in one order: not accepted, then paid, then not active", async () => {
+    const rejected = await participant(undefined, "rejected");
+    await expect(
+      rejected.issue({ alreadyClaimed: true, canIssue: false }),
+    ).rejects.toMatchObject({ code: "SUBMISSION_NOT_ACCEPTED" });
+
+    // A paid wallet hears "already paid" after the close too, not "closed".
+    const paid = await participant();
+    await paid.issue();
+    await expect(
+      paid.issue({ now: EXPIRED, alreadyClaimed: true, canIssue: false }),
+    ).rejects.toMatchObject({ code: "ALREADY_CLAIMED" });
+    await expect(
+      paid.issue({ now: EXPIRED, canIssue: false }),
+    ).rejects.toMatchObject({ code: "CAMPAIGN_NOT_ACTIVE" });
+    expect(rejected.signatures() + paid.signatures()).toBe(1);
   });
 
   it("still replays when only another submission's nonce was paid", async () => {

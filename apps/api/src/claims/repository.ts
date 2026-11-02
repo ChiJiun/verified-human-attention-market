@@ -368,15 +368,27 @@ export class InMemoryClaimRepository implements ClaimRepository {
         this.getSubmission(input.submissionId),
         this.getCampaign(input.campaignId),
       ]);
+      // Same order of refusals as PostgresClaimRepository.
+      if (!campaign || campaign.onchainCampaignId == null) {
+        throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
+      }
+      if (
+        !submission ||
+        submission.campaignId !== input.campaignId ||
+        submission.result !== "accepted"
+      ) {
+        throw new ClaimIssueError("SUBMISSION_NOT_ACCEPTED");
+      }
+
+      const onchainCampaignId = BigInt(campaign.onchainCampaignId);
+      const contractAddress = campaign.onchainContractAddress?.toLowerCase();
       const unexpired = (claim: SignedClaim) =>
         Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
       // Signed for the link the campaign has now (see isBoundTo).
       const bound = (claim: SignedClaim) =>
-        campaign?.onchainCampaignId == null ||
-        (claim.payload.campaignId === BigInt(campaign.onchainCampaignId) &&
-          (campaign.onchainContractAddress == null ||
-            claim.contractAddress.toLowerCase() ===
-              campaign.onchainContractAddress.toLowerCase()));
+        claim.payload.campaignId === onchainCampaignId &&
+        (contractAddress == null ||
+          claim.contractAddress.toLowerCase() === contractAddress);
       const existing = this.records.get(input.submissionId);
       if (alreadyPaid(input, existing?.claim.payload.nonce)) {
         throw new ClaimIssueError("ALREADY_CLAIMED");
@@ -385,14 +397,7 @@ export class InMemoryClaimRepository implements ClaimRepository {
         return { claim: existing.claim, created: false };
       }
 
-      if (
-        !submission ||
-        submission.campaignId !== input.campaignId ||
-        submission.result !== "accepted"
-      ) {
-        throw new ClaimIssueError("SUBMISSION_NOT_ACCEPTED");
-      }
-      if (!campaign || !input.canIssue || campaign.status !== "active") {
+      if (!input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
       const redeemed = input.redeemedNonces ?? new Set<string>();

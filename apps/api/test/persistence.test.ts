@@ -41,6 +41,14 @@ describe("in-memory claim repository", () => {
     }
   >();
   let nextOnchainId = 1;
+  const submission = async (campaignId: string, result: string) => {
+    const submissionId = randomUUID();
+    submissions.set(submissionId, { campaignId, result });
+    return {
+      submissionId,
+      claimant: `0x${randomBytes(20).toString("hex")}` as Address,
+    };
+  };
   const harness: ClaimHarness = {
     claims: new InMemoryClaimRepository(
       async (id) => submissions.get(id) ?? null,
@@ -57,14 +65,8 @@ describe("in-memory claim repository", () => {
       });
       return { campaignId, onchainCampaignId, contractAddress };
     },
-    acceptedSubmission: async (campaignId) => {
-      const submissionId = randomUUID();
-      submissions.set(submissionId, { campaignId, result: "accepted" });
-      return {
-        submissionId,
-        claimant: `0x${randomBytes(20).toString("hex")}`,
-      };
-    },
+    acceptedSubmission: (campaignId) => submission(campaignId, "accepted"),
+    rejectedSubmission: (campaignId) => submission(campaignId, "rejected"),
   };
 
   defineClaimRepositoryContract(() => harness);

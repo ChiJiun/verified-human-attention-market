@@ -697,6 +697,21 @@ describeWithDatabase("PostgresCampaignRepository", () => {
           claimant: claimantAddress as `0x${string}`,
         };
       },
+      rejectedSubmission: async (campaignId) => {
+        const { claimantAddress, accepted } = await participantOf(campaignId);
+        const { submission } = await new PostgresSubmissionRepository(
+          database.db,
+        ).recordIdempotent({
+          ...accepted,
+          id: randomUUID(),
+          result: "rejected",
+          rejectionCode: "COMPREHENSION_FAILED",
+        });
+        return {
+          submissionId: submission.id,
+          claimant: claimantAddress as `0x${string}`,
+        };
+      },
     }));
   });
 
