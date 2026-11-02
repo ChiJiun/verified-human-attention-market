@@ -16,7 +16,14 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
+import { useAdvertiserSession } from "../../lib/advertiser-session";
 import { api, describeError } from "../../lib/api";
+import {
+  campaignLink,
+  campaignPath,
+  parseCampaignId,
+  type CampaignId,
+} from "../../lib/campaign-link";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import {
   describeChainError,
@@ -28,7 +35,6 @@ import {
   type SettlementAction,
   type SettlementTarget,
 } from "../../lib/settlement";
-import { signInWithEthereum, type Session } from "../../lib/siwe";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
 
@@ -222,8 +228,7 @@ function isUserRejection(error: unknown): boolean {
 
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
-  const [campaignId, setCampaignId] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<CampaignId | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [tx, setTx] = useState<TxStatus>({ state: "idle" });
   const [error, setError] = useState<string | null>(null);
@@ -241,15 +246,21 @@ export default function AdvertiserPage() {
     null,
   );
   const chainReads = useRef(0);
+  const auth = useAdvertiserSession(wallet, setError);
+  const activeSession = auth.active;
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("campaign");
-    if (id) {
-      setCampaignId(id);
+    const link = campaignLink(window.location.search);
+    if (link.kind === "campaign") {
+      setCampaignId(link.id);
       // A creation may still be pending from before a reload.
-      setAwaitingLink(recallAttempt(id) !== null);
+      setAwaitingLink(recallAttempt(link.id) !== null);
+    } else if (link.kind === "invalid") {
+      setError(
+        "This campaign link is not valid. Open the campaign from where you created it, or start a new one.",
+      );
     }
   }, []);
 
@@ -260,18 +271,18 @@ export default function AdvertiserPage() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!campaignId || !session) return;
+    if (!campaignId || !activeSession) return;
     try {
       const { data } = await api<Analytics>(
-        `/v1/campaigns/${campaignId}/analytics`,
-        { token: session.token },
+        campaignPath(campaignId, "/analytics"),
       );
       setAnalytics(data);
       if (data.status !== "draft") linked(campaignId);
     } catch (caught) {
       setError(describeError(caught));
+      void auth.syncFromError(caught);
     }
-  }, [campaignId, session, linked]);
+  }, [campaignId, activeSession, linked, auth.syncFromError]);
 
   useEffect(() => {
     void api<{ chainId: number; campaignManager: string }>("/v1/chain")
@@ -342,6 +353,7 @@ export default function AdvertiserPage() {
       await action();
     } catch (caught) {
       setError(describeError(caught));
+      void auth.syncFromError(caught);
     } finally {
       setBusy(false);
     }
@@ -363,8 +375,15 @@ export default function AdvertiserPage() {
   const connect = () =>
     run(async () => {
       setWallet(await connectWallet());
-      setSession(null);
     });
+
+  const disconnect = () =>
+    run(async () => {
+      await auth.signOut();
+      setWallet(null);
+    });
+
+  const signOut = () => run(auth.signOut);
 
   const switchNetwork = () =>
     run(async () => {
@@ -376,21 +395,22 @@ export default function AdvertiserPage() {
   const signIn = () =>
     run(async () => {
       if (!wallet) return;
-      setSession(await signInWithEthereum(wallet.walletClient, wallet.address));
+      await auth.signIn(wallet);
     });
 
   const createDraft = (payload: CampaignPayload) =>
     run(async () => {
-      if (!session) return;
+      if (!activeSession) return;
       const { data } = await api<{ id: string }>("/v1/campaigns", {
         method: "POST",
         body: payload,
-        token: session.token,
         // One key per draft submission: retries cannot create duplicates.
         idempotencyKey: crypto.randomUUID(),
       });
-      setCampaignId(data.id);
-      window.history.replaceState(null, "", `?campaign=${data.id}`);
+      const id = parseCampaignId(data.id);
+      if (!id) throw new Error("The API returned an invalid campaign id.");
+      setCampaignId(id);
+      window.history.replaceState(null, "", `?campaign=${id}`);
     });
 
   /**
@@ -398,12 +418,11 @@ export default function AdvertiserPage() {
    * otherwise by draft reference (ADR-0011). Retries while the API is still
    * reconciling. `attempts: 1` only checks.
    */
-  async function link(id: string, hash: Hash | null, attempts = 24) {
+  async function link(id: CampaignId, hash: Hash | null, attempts = 24) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const { status } = await api(`/v1/campaigns/${id}/onchain`, {
+      const { status } = await api(campaignPath(id, "/onchain"), {
         method: "POST",
         body: hash ? { txHash: hash } : {},
-        token: session?.token ?? null,
       });
       if (status === 200) return true;
       if (attempt + 1 < attempts) {
@@ -422,7 +441,7 @@ export default function AdvertiserPage() {
    */
   const createOnchain = () =>
     run(async () => {
-      if (!wallet || !session || !campaignId) return;
+      if (!wallet || !activeSession || !campaignId) return;
       const label = "Create campaign on-chain";
 
       // Already created (another tab, an earlier attempt, a lost response)?
@@ -434,8 +453,8 @@ export default function AdvertiserPage() {
       }
 
       const { data: intent } = await api<PublishIntent>(
-        `/v1/campaigns/${campaignId}/publish`,
-        { method: "POST", token: session.token },
+        campaignPath(campaignId, "/publish"),
+        { method: "POST" },
       );
       const args = intent.steps[0]!.args;
 
@@ -516,7 +535,7 @@ export default function AdvertiserPage() {
   /** Looks for the creation by draft reference; never sends anything. */
   const checkLink = () =>
     run(async () => {
-      if (!session || !campaignId) return;
+      if (!activeSession || !campaignId) return;
       if (await link(campaignId, null, 1)) {
         linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
@@ -533,7 +552,7 @@ export default function AdvertiserPage() {
 
   const fund = () =>
     run(async () => {
-      if (!wallet || !session || !campaignId) return;
+      if (!wallet || !activeSession || !campaignId) return;
       const current = analytics;
       if (!current?.onchainCampaignId) return;
 
@@ -769,7 +788,7 @@ export default function AdvertiserPage() {
 
   const settle = (action: SettlementAction) =>
     run(async () => {
-      if (!wallet || !session || !analytics) return;
+      if (!wallet || !activeSession || !analytics) return;
       const target = settlementTarget(analytics);
       if (!target) return;
       const manager = await prepareSettlement(
@@ -808,9 +827,23 @@ export default function AdvertiserPage() {
       <section className="card">
         <h2>Wallet</h2>
         {!wallet ? (
-          <button onClick={connect} disabled={busy}>
-            Connect wallet
-          </button>
+          <>
+            {auth.session && (
+              <p>
+                Signed in as <code>{auth.session.address}</code> until{" "}
+                {new Date(auth.session.expiresAt).toLocaleString()}. Connect
+                that wallet to manage its campaigns.
+              </p>
+            )}
+            <button onClick={connect} disabled={busy}>
+              Connect wallet
+            </button>
+            {auth.session && (
+              <button className="secondary" onClick={signOut} disabled={busy}>
+                Sign out
+              </button>
+            )}
+          </>
         ) : (
           <>
             <p>
@@ -824,30 +857,33 @@ export default function AdvertiserPage() {
                 Switch to {chain.name}
               </button>
             )}
-            {!wrongNetwork && !session && (
+            {!wrongNetwork && !activeSession && (
               <button onClick={signIn} disabled={busy}>
                 Sign in with Ethereum
               </button>
             )}
-            {session && (
+            {activeSession ? (
               <p>
-                Signed in until {new Date(session.expiresAt).toLocaleString()}
+                Signed in until{" "}
+                {new Date(activeSession.expiresAt).toLocaleString()}
               </p>
+            ) : (
+              auth.session && (
+                <p className="note">
+                  This browser is signed in as{" "}
+                  <code>{auth.session.address}</code>, not this wallet. Sign in
+                  again to manage this wallet&apos;s campaigns.
+                </p>
+              )
             )}
-            <button
-              className="secondary"
-              onClick={() => {
-                setWallet(null);
-                setSession(null);
-              }}
-            >
+            <button className="secondary" onClick={disconnect} disabled={busy}>
               Disconnect
             </button>
           </>
         )}
       </section>
 
-      {session && !campaignId && (
+      {activeSession && !campaignId && (
         <CampaignForm
           advertiser={wallet!.address}
           busy={busy}
@@ -855,7 +891,7 @@ export default function AdvertiserPage() {
         />
       )}
 
-      {session && campaignId && (
+      {activeSession && campaignId && (
         <section className="card">
           <h2>Campaign</h2>
           <p>

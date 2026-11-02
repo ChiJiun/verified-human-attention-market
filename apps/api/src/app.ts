@@ -18,7 +18,10 @@ import {
 } from "./api-clients/routes.js";
 import { registerErrorModel } from "./errors/catalog.js";
 import {
+  registerSessionCookieGuard,
   sessionAuthenticator,
+} from "./auth/credential.js";
+import {
   verifyEoaSignature,
   type Authenticate,
   type SignatureVerifier,
@@ -86,6 +89,11 @@ export interface AppDependencies {
   authRepository?: AuthRepository;
   /** SIWE domain/chain; null or absent = sign-in disabled (fail closed). */
   siwe?: SiweConfig | null;
+  /**
+   * Origin a cookie-authenticated mutation may come from when the browser
+   * sends no Fetch Metadata; null or absent = Fetch Metadata only.
+   */
+  webOrigin?: string | null;
   verifySignature?: SignatureVerifier;
   /** Overrides session lookup (tests of non-auth features). */
   authenticate?: Authenticate;
@@ -156,6 +164,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
   const worldIdVerifier =
     dependencies.worldIdVerifierOverride ??
     worldIdVerifierFor(worldIdConfig, chainId);
+  const webOrigin = dependencies.webOrigin ?? null;
   const sessions =
     dependencies.authenticate ?? sessionAuthenticator(authRepository, now);
   // API keys (#26) act as their advertiser; otherwise SIWE sessions.
@@ -202,6 +211,10 @@ export function buildApp(dependencies: AppDependencies = {}) {
   }
 
   registerErrorModel(app);
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("x-content-type-options", "nosniff");
+    return payload;
+  });
   registerApiClientGate(app, {
     clients: apiClientRepository,
     environment: apiEnvironment,
@@ -210,6 +223,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     metrics,
     now,
   });
+  registerSessionCookieGuard(app, { webOrigin });
 
   registerInstrumentation(app, {
     metrics,
@@ -268,6 +282,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     await registerAuthRoutes(instance, {
       repository: authRepository,
       config: dependencies.siwe ?? null,
+      webOrigin,
       verifySignature: dependencies.verifySignature ?? verifyEoaSignature,
       authenticate,
       now,

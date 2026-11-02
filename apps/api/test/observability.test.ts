@@ -234,6 +234,43 @@ describe("payout anomaly alert", () => {
   });
 });
 
+describe("log redaction", () => {
+  it("never logs credentials or session cookies", () => {
+    const lines: string[] = [];
+    const app = Fastify({
+      logger: {
+        redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
+        // Fastify's default req/res serializers drop headers before redaction.
+        serializers: {
+          req: (value: { headers?: unknown }) => value,
+          res: (value: { headers?: unknown }) => value,
+        },
+        stream: { write: (line: string) => lines.push(line) },
+      },
+    });
+    closers.push(app);
+
+    app.log.info(
+      {
+        req: {
+          headers: {
+            authorization: "Bearer secret-1",
+            cookie: "__Host-vham_session=secret-2",
+          },
+        },
+        res: {
+          headers: { "set-cookie": "__Host-vham_session=secret-3; Path=/" },
+        },
+        headers: { "set-cookie": ["__Host-vham_session=secret-4"] },
+      },
+      "headers",
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toMatch(/secret-\d/);
+  });
+});
+
 describe("readiness with a chain", () => {
   function chainDeps(
     rpc: Pick<ChainRpc, "blockNumber">,

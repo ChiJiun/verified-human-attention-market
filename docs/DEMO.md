@@ -147,10 +147,12 @@ export NEXT_PUBLIC_CHAIN_ID=84532           # 本機 anvil 用 31337
 pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 ```
 
+登入後的 session 放在 `HttpOnly`、`Secure` 的 cookie 裡（#72）。已確認 Chromium 會保留 `http://localhost` 與 `http://127.0.0.1` 設定的這個 cookie；其他瀏覽器沒有驗證過。瀏覽器沒有保留 cookie 時，登入會直接顯示原因，這時請改用 Chromium，或改用 `next dev --experimental-https`。
+
 頁面流程：
 
 1. 連接瀏覽器錢包；網路不對時會顯示切換按鈕。
-2. 用 Sign-In with Ethereum 登入。
+2. 用 Sign-In with Ethereum 登入。重新整理後 session 仍在；沒連錢包時，頁面顯示「Signed in as …」和「Sign out」。「Disconnect」會先登出再中斷錢包；登出失敗時兩者都保留，可以再按一次。
 3. 填寫 campaign（獎勵用十進位 USDC 輸入，內部以整數 atomic units 換算），並設計 1–3 題理解測驗。
 4. 按「Create on-chain」送出 createCampaign，API 驗證交易後完成連結。
 5. 按「Approve & fund」核准並入金。

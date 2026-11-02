@@ -1,13 +1,27 @@
+import { randomUUID } from "node:crypto";
+
+import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { createSiweMessage } from "viem/siwe";
 
 import { buildApp } from "../src/app.js";
+import {
+  registerSessionCookieGuard,
+  SESSION_COOKIE,
+} from "../src/auth/credential.js";
+import { parseWebOrigin } from "../src/auth/web-origin.js";
 
 const DOMAIN = "app.vham.test";
+const WEB_ORIGIN = `https://${DOMAIN}`;
 const CHAIN_ID = 84532;
 const advertiser = privateKeyToAccount(`0x${"a1".repeat(32)}`);
 const stranger = privateKeyToAccount(`0x${"b2".repeat(32)}`);
+const browserAdvertiser = privateKeyToAccount(`0x${"c3".repeat(32)}`);
+const otherBrowser = privateKeyToAccount(`0x${"d4".repeat(32)}`);
+
+const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+const cookie = (token: string) => ({ cookie: `${SESSION_COOKIE}=${token}` });
 
 const apps: ReturnType<typeof buildApp>[] = [];
 
@@ -15,13 +29,25 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-function setup(options: { configured?: boolean } = {}) {
+function setup(
+  options: {
+    configured?: boolean;
+    webOrigin?: string | null;
+    operators?: string[];
+  } = {},
+) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const app = buildApp({
     siwe:
       options.configured === false
         ? null
         : { domain: DOMAIN, chainId: CHAIN_ID, sessionTtlMs: 60 * 60_000 },
+    webOrigin: options.webOrigin === undefined ? WEB_ORIGIN : options.webOrigin,
+    moderation: {
+      mode: "open",
+      operators: options.operators ?? [],
+      advertiserAllowlist: [],
+    },
     now: () => now,
   });
   apps.push(app);
@@ -50,11 +76,23 @@ function setup(options: { configured?: boolean } = {}) {
     });
   }
 
-  function verify(text: string, signature: string) {
+  function verify(
+    text: string,
+    signature: string,
+    options: {
+      transport?: "bearer" | "cookie";
+      headers?: Record<string, string>;
+    } = {},
+  ) {
     return app.inject({
       method: "POST",
       url: "/v1/auth/verify",
-      payload: { message: text, signature },
+      headers: options.headers ?? {},
+      payload: {
+        message: text,
+        signature,
+        ...(options.transport ? { transport: options.transport } : {}),
+      },
     });
   }
 
@@ -65,6 +103,19 @@ function setup(options: { configured?: boolean } = {}) {
       await account.signMessage({ message: text }),
     );
     return response.json<{ token: string }>().token;
+  }
+
+  async function signInWithCookie(account: typeof advertiser) {
+    const text = await message(account);
+    const response = await verify(
+      text,
+      await account.signMessage({ message: text }),
+      { transport: "cookie", headers: { "sec-fetch-site": "same-origin" } },
+    );
+    const token = /^__Host-vham_session=([^;]*)/.exec(
+      String(response.headers["set-cookie"]),
+    )?.[1];
+    return { response, token: token ?? "" };
   }
 
   const campaignPayload = (owner: string) => ({
@@ -89,15 +140,28 @@ function setup(options: { configured?: boolean } = {}) {
     },
   });
 
-  function createCampaign(token: string | null, owner = advertiser.address) {
+  function createCampaign(
+    headers: Record<string, string>,
+    owner = advertiser.address,
+  ) {
     return app.inject({
       method: "POST",
       url: "/v1/campaigns",
-      headers: {
-        "idempotency-key": `key-${owner}-${token ?? "none"}`.slice(0, 200),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "idempotency-key": randomUUID(), ...headers },
       payload: campaignPayload(owner),
+    });
+  }
+
+  function session(headers: Record<string, string>) {
+    return app.inject({ method: "GET", url: "/v1/auth/session", headers });
+  }
+
+  function logout(headers: Record<string, string>, payload?: string) {
+    return app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      headers,
+      ...(payload === undefined ? {} : { payload }),
     });
   }
 
@@ -107,7 +171,10 @@ function setup(options: { configured?: boolean } = {}) {
     message,
     verify,
     signIn,
+    signInWithCookie,
     createCampaign,
+    session,
+    logout,
     setNow: (value: Date) => {
       now = value;
     },
@@ -262,7 +329,7 @@ describe("Sign-In with Ethereum", () => {
         await verify(text, await advertiser.signMessage({ message: text }))
       ).json(),
     ).toMatchObject({ error: { code: "AUTH_NOT_CONFIGURED" } });
-    expect((await createCampaign(null)).statusCode).toBe(401);
+    expect((await createCampaign({})).statusCode).toBe(401);
   });
 });
 
@@ -271,25 +338,26 @@ describe("advertiser-only endpoints", () => {
     const { signIn, createCampaign } = setup();
     const token = await signIn(advertiser);
 
-    expect((await createCampaign(null)).statusCode).toBe(401);
-    expect((await createCampaign("not-a-real-token-xxxxxxxx")).statusCode).toBe(
-      401,
-    );
+    expect((await createCampaign({})).statusCode).toBe(401);
+    expect(
+      (await createCampaign(bearer("not-a-real-token-xxxxxxxx"))).statusCode,
+    ).toBe(401);
 
-    const impersonation = await createCampaign(token, stranger.address);
+    const impersonation = await createCampaign(bearer(token), stranger.address);
     expect(impersonation.statusCode).toBe(403);
     expect(impersonation.json()).toMatchObject({
       error: { code: "NOT_CAMPAIGN_ADVERTISER" },
     });
 
-    expect((await createCampaign(token)).statusCode).toBe(201);
+    expect((await createCampaign(bearer(token))).statusCode).toBe(201);
   });
 
   it("restricts analytics, publish and linking to the campaign advertiser", async () => {
     const { app, signIn, createCampaign } = setup();
     const ownerToken = await signIn(advertiser);
     const strangerToken = await signIn(stranger);
-    const id = (await createCampaign(ownerToken)).json<{ id: string }>().id;
+    const id = (await createCampaign(bearer(ownerToken))).json<{ id: string }>()
+      .id;
 
     for (const [method, url] of [
       ["GET", `/v1/campaigns/${id}/analytics`],
@@ -315,5 +383,639 @@ describe("advertiser-only endpoints", () => {
       headers: { authorization: `Bearer ${ownerToken}` },
     });
     expect(own.statusCode).toBe(200);
+  });
+});
+
+describe("session cookie credential", () => {
+  it("authenticates GET requests from the cookie and never caches them", async () => {
+    const { signIn, session } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await session(cookie(token));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      address: browserAdvertiser.address.toLowerCase(),
+    });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("marks every response nosniff, as the web origin serves them", async () => {
+    const { app, session } = setup();
+
+    for (const response of [
+      await app.inject({ method: "GET", url: "/health/live" }),
+      await app.inject({ method: "GET", url: "/v1/nope" }),
+      await session({}),
+      await session(bearer("not-a-real-token-xxxxxxxx")),
+    ]) {
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    }
+  });
+
+  it("reads only the Authorization header when one is present", async () => {
+    const { signIn, session } = setup();
+    const headerToken = await signIn(browserAdvertiser);
+    const cookieToken = await signIn(otherBrowser);
+
+    const both = await session({
+      ...bearer(headerToken),
+      ...cookie(cookieToken),
+    });
+    expect(both.json()).toMatchObject({
+      address: browserAdvertiser.address.toLowerCase(),
+    });
+
+    const invalidHeader = await session({
+      authorization: "Bearer not-a-real-token-xxxxxxxx",
+      ...cookie(cookieToken),
+    });
+    expect(invalidHeader.statusCode).toBe(401);
+
+    const emptyHeader = await session({
+      authorization: "",
+      ...cookie(cookieToken),
+    });
+    expect(emptyHeader.statusCode).toBe(401);
+  });
+
+  it("never reads an API key from the cookie", async () => {
+    const { app, signIn, session, createCampaign } = setup();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/api-clients",
+      headers: bearer(await signIn(browserAdvertiser)),
+      payload: { name: "integration", scopes: ["campaigns:write"] },
+    });
+    const { key } = created.json<{ key: string }>();
+
+    expect(key).toHaveLength(54);
+    expect((await session(cookie(key))).statusCode).toBe(401);
+    expect(
+      (
+        await createCampaign(
+          { ...cookie(key), "sec-fetch-site": "same-origin" },
+          browserAdvertiser.address,
+        )
+      ).statusCode,
+    ).toBe(401);
+  });
+
+  it("treats API-key-shaped or ambiguous cookies as no credential", async () => {
+    const { signIn, createCampaign } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    for (const header of [
+      `${SESSION_COOKIE}=vhamk_test_${token}`,
+      `${SESSION_COOKIE}=${token}; ${SESSION_COOKIE}=${token}`,
+      `vham_session=${token}`,
+    ]) {
+      const response = await createCampaign(
+        { cookie: header, "sec-fetch-site": "same-origin" },
+        browserAdvertiser.address,
+      );
+      expect(response.statusCode).toBe(401);
+    }
+  });
+
+  it.each([
+    ["a cross-site request", { "sec-fetch-site": "cross-site" }, 403],
+    ["a same-site request", { "sec-fetch-site": "same-site" }, 403],
+    ["a same-origin request", { "sec-fetch-site": "same-origin" }, 201],
+    ["the web origin without Fetch Metadata", { origin: WEB_ORIGIN }, 201],
+    [
+      "another origin without Fetch Metadata",
+      { origin: "https://evil.example" },
+      403,
+    ],
+    ["no Fetch Metadata and no Origin", {}, 403],
+    ["a user-initiated request", { "sec-fetch-site": "none" }, 403],
+    [
+      "a cross-site request that names the web origin",
+      { "sec-fetch-site": "cross-site", origin: WEB_ORIGIN },
+      403,
+    ],
+    ["Origin null without Fetch Metadata", { origin: "null" }, 403],
+    ["the web origin with a trailing slash", { origin: `${WEB_ORIGIN}/` }, 403],
+  ])("cookie mutation from %s", async (_label, headers, status) => {
+    const { signIn, createCampaign } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...cookie(token), ...headers },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(status);
+    if (status === 403) {
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED", retryable: false },
+      });
+    }
+  });
+
+  it("refuses a duplicated Sec-Fetch-Site header", async () => {
+    const { app, signIn } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/campaigns",
+      headers: {
+        ...cookie(token),
+        "sec-fetch-site": ["same-origin", "same-origin"],
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"] as const)(
+    "refuses a cross-site cookie %s",
+    async (method) => {
+      const { app, signIn } = setup();
+      const token = await signIn(browserAdvertiser);
+
+      const response = await app.inject({
+        method,
+        url: "/v1/campaigns",
+        headers: { ...cookie(token), "sec-fetch-site": "cross-site" },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED" },
+      });
+    },
+  );
+
+  it("logs a refused cookie request without the requesting origin", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const app = Fastify({
+      logger: {
+        level: "warn",
+        stream: { write: (line: string) => lines.push(JSON.parse(line)) },
+      },
+    });
+    registerSessionCookieGuard(app, { webOrigin: WEB_ORIGIN });
+    app.post("/v1/probe", async () => ({ ok: true }));
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/probe",
+      headers: {
+        cookie: `${SESSION_COOKIE}=x`,
+        "sec-fetch-site": "cross-site",
+        origin: "https://evil.example",
+      },
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(403);
+    expect(lines).toContainEqual(
+      expect.objectContaining({
+        event: "csrf_rejected",
+        secFetchSite: "cross-site",
+        hasOrigin: true,
+      }),
+    );
+    expect(JSON.stringify(lines)).not.toContain("evil.example");
+  });
+
+  it("refuses the Origin fallback without WEB_ORIGIN", async () => {
+    const { signIn, createCampaign } = setup({ webOrigin: null });
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...cookie(token), origin: WEB_ORIGIN },
+      browserAdvertiser.address,
+    );
+
+    expect(response.json()).toMatchObject({ error: { code: "CSRF_REJECTED" } });
+  });
+
+  it("leaves bearer requests out of the CSRF check", async () => {
+    const { signIn, createCampaign } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    const response = await createCampaign(
+      { ...bearer(token), "sec-fetch-site": "cross-site" },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(201);
+  });
+
+  it.each([
+    ["https://app.vham.test", "app.vham.test"],
+    ["http://localhost:3000", "localhost:3000"],
+  ])("accepts WEB_ORIGIN %s with SIWE domain %s", (value, domain) => {
+    expect(parseWebOrigin(value, domain)).toBe(value);
+  });
+
+  it("leaves WEB_ORIGIN unset when it is empty", () => {
+    expect(parseWebOrigin(undefined, "app.vham.test")).toBeNull();
+    expect(parseWebOrigin("", null)).toBeNull();
+  });
+
+  it.each([
+    ["https://app.vham.test/", "app.vham.test", /origin without a path/],
+    ["https://app.vham.test/path", "app.vham.test", /origin without a path/],
+    ["ftp://app.vham.test", "app.vham.test", /origin without a path/],
+    ["app.vham.test", "app.vham.test", /origin without a path/],
+    ["https://other.vham.test", "app.vham.test", /must equal SIWE_DOMAIN/],
+    ["https://app.vham.test", null, /needs SIWE_DOMAIN/],
+  ])("refuses WEB_ORIGIN %s with SIWE domain %s", (value, domain, message) => {
+    expect(() => parseWebOrigin(value, domain)).toThrow(message);
+  });
+});
+
+describe("cookie transport", () => {
+  it("sets the session cookie and keeps the token out of the body", async () => {
+    const { signInWithCookie, session, createCampaign } = setup();
+
+    const { response, token } = await signInWithCookie(browserAdvertiser);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toMatch(
+      /^__Host-vham_session=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict$/,
+    );
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      transport: "cookie",
+      address: browserAdvertiser.address.toLowerCase(),
+      chainId: CHAIN_ID,
+      expiresAt: "2026-10-05T11:00:00.000Z",
+    });
+
+    expect((await session(cookie(token))).statusCode).toBe(200);
+    const created = await createCampaign(
+      { ...cookie(token), "sec-fetch-site": "same-origin" },
+      browserAdvertiser.address,
+    );
+    expect(created.statusCode).toBe(201);
+  });
+
+  it("keeps the bearer transport as the default", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+
+    const response = await verify(
+      text,
+      await browserAdvertiser.signMessage({ message: text }),
+    );
+
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect(response.json()).toMatchObject({
+      token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      tokenType: "Bearer",
+    });
+  });
+
+  it("accepts a cookie sign-in through the Origin fallback", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+
+    const response = await verify(
+      text,
+      await browserAdvertiser.signMessage({ message: text }),
+      { transport: "cookie", headers: { origin: WEB_ORIGIN } },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["set-cookie"]).toMatch(/^__Host-vham_session=/);
+  });
+
+  it("refuses a cross-site cookie sign-in and leaves the nonce usable", async () => {
+    const { message, verify } = setup();
+    const text = await message(browserAdvertiser);
+    const signature = await browserAdvertiser.signMessage({ message: text });
+
+    const crossSite = await verify(text, signature, {
+      transport: "cookie",
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(crossSite.statusCode).toBe(403);
+    expect(crossSite.json()).toMatchObject({
+      error: { code: "CSRF_REJECTED" },
+    });
+    expect(crossSite.headers["set-cookie"]).toBeUndefined();
+
+    const sameOrigin = await verify(text, signature, {
+      transport: "cookie",
+      headers: { "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOrigin.statusCode).toBe(200);
+  });
+
+  it("revokes the cookie session that a new cookie sign-in replaces", async () => {
+    const { message, verify, signInWithCookie, session } = setup();
+    const { token: previous } = await signInWithCookie(browserAdvertiser);
+    const text = await message(otherBrowser);
+
+    const response = await verify(
+      text,
+      await otherBrowser.signMessage({ message: text }),
+      {
+        transport: "cookie",
+        headers: { ...cookie(previous), "sec-fetch-site": "same-origin" },
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect((await session(cookie(previous))).statusCode).toBe(401);
+  });
+
+  it("keeps the cookie session when a new sign-in fails", async () => {
+    const { message, verify, signInWithCookie, session } = setup();
+    const { token: previous } = await signInWithCookie(browserAdvertiser);
+    const text = await message(otherBrowser);
+
+    const response = await verify(
+      text,
+      await stranger.signMessage({ message: text }),
+      {
+        transport: "cookie",
+        headers: { ...cookie(previous), "sec-fetch-site": "same-origin" },
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect((await session(cookie(previous))).statusCode).toBe(200);
+  });
+
+  it("logs out by clearing the cookie and revoking the session", async () => {
+    const { app, signInWithCookie, session } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const logout = await app.inject({
+      method: "POST",
+      url: "/v1/auth/logout",
+      headers: { ...cookie(token), "sec-fetch-site": "same-origin" },
+    });
+
+    expect(logout.statusCode).toBe(204);
+    expect(logout.headers["set-cookie"]).toBe(
+      "__Host-vham_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
+    );
+    expect((await session(cookie(token))).statusCode).toBe(401);
+  });
+});
+
+describe("logout", () => {
+  const sameOrigin = { "sec-fetch-site": "same-origin" };
+
+  it("revokes the cookie session along with a bearer session", async () => {
+    const { signIn, signInWithCookie, session, logout } = setup();
+    const headerToken = await signIn(otherBrowser);
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+
+    const response = await logout({
+      ...bearer(headerToken),
+      ...cookie(cookieToken),
+      ...sameOrigin,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect((await session(bearer(headerToken))).statusCode).toBe(401);
+    expect((await session(cookie(cookieToken))).statusCode).toBe(401);
+  });
+
+  it("revokes the cookie session when the Authorization header is invalid", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    await logout({
+      authorization: "Bearer not-a-real-token-xxxxxxxx",
+      ...cookie(token),
+      ...sameOrigin,
+    });
+
+    expect((await session(cookie(token))).statusCode).toBe(401);
+  });
+
+  it("revokes every session cookie the request carries", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token: first } = await signInWithCookie(browserAdvertiser);
+    const { token: second } = await signInWithCookie(otherBrowser);
+
+    await logout({
+      cookie: `${SESSION_COOKIE}=${first}; ${SESSION_COOKIE}=${second}`,
+      ...sameOrigin,
+    });
+
+    expect((await session(cookie(first))).statusCode).toBe(401);
+    expect((await session(cookie(second))).statusCode).toBe(401);
+  });
+
+  it("refuses a cross-site cookie logout and keeps the session", async () => {
+    const { signInWithCookie, session, logout } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const response = await logout({
+      ...cookie(token),
+      "sec-fetch-site": "cross-site",
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+    expect((await session(cookie(token))).statusCode).toBe(200);
+  });
+
+  it("sends no clearing cookie to a request without one", async () => {
+    const { logout } = setup();
+
+    const crossSiteForm = await logout(
+      {
+        "content-type": "text/plain",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        origin: "https://evil.example",
+      },
+      "",
+    );
+
+    expect(crossSiteForm.statusCode).toBe(204);
+    expect(crossSiteForm.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it.each([
+    ["a malformed session cookie", `${SESSION_COOKIE}=not-a-session-token`],
+    ["two session cookies", `${SESSION_COOKIE}=a; ${SESSION_COOKIE}=b`],
+  ])(
+    "refuses a cross-site logout carrying %s",
+    async (_label, cookieHeader) => {
+      const { logout } = setup();
+
+      const response = await logout({
+        cookie: cookieHeader,
+        "sec-fetch-site": "cross-site",
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "CSRF_REJECTED" },
+      });
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    },
+  );
+
+  it("refuses a cross-site mutation that carries the cookie next to a bearer token", async () => {
+    const { signIn, signInWithCookie, createCampaign } = setup();
+    const headerToken = await signIn(browserAdvertiser);
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+
+    const response = await createCampaign(
+      {
+        ...bearer(headerToken),
+        ...cookie(cookieToken),
+        "sec-fetch-site": "cross-site",
+      },
+      browserAdvertiser.address,
+    );
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "CSRF_REJECTED" } });
+  });
+});
+
+describe("routes that take header credentials only", () => {
+  const sameOrigin = { "sec-fetch-site": "same-origin" };
+
+  it("keeps API key management off the session cookie", async () => {
+    const { app, signIn, signInWithCookie } = setup();
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+    const headerToken = await signIn(browserAdvertiser);
+    const keyRequest = { name: "integration", scopes: ["campaigns:write"] };
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/api-clients",
+      headers: bearer(headerToken),
+      payload: keyRequest,
+    });
+    expect(created.statusCode).toBe(201);
+    const { id } = created.json<{ id: string }>();
+
+    for (const [method, url, payload] of [
+      ["POST", "/v1/api-clients", keyRequest],
+      ["GET", "/v1/api-clients", undefined],
+      ["DELETE", `/v1/api-clients/${id}`, undefined],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { ...cookie(cookieToken), ...sameOrigin },
+        ...(payload ? { payload } : {}),
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({
+        error: { code: "COOKIE_SESSION_NOT_ALLOWED", retryable: false },
+      });
+    }
+  });
+
+  it("keeps operator routes off the session cookie", async () => {
+    const { app, signIn, signInWithCookie } = setup({
+      operators: [browserAdvertiser.address.toLowerCase()],
+    });
+    const { token: cookieToken } = await signInWithCookie(browserAdvertiser);
+    const headerToken = await signIn(browserAdvertiser);
+
+    const withHeader = await app.inject({
+      method: "GET",
+      url: "/v1/admin/moderation",
+      headers: bearer(headerToken),
+    });
+    const withCookie = await app.inject({
+      method: "GET",
+      url: "/v1/admin/moderation",
+      headers: cookie(cookieToken),
+    });
+
+    expect(withHeader.statusCode).toBe(200);
+    expect(withCookie.statusCode).toBe(403);
+    expect(withCookie.json()).toMatchObject({
+      error: { code: "COOKIE_SESSION_NOT_ALLOWED" },
+    });
+  });
+});
+
+describe("session check", () => {
+  const cleared =
+    "__Host-vham_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict";
+
+  it("answers 204 when the request presents no credential", async () => {
+    const { session } = setup();
+
+    const response = await session({});
+
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+  });
+
+  it("is never cached, whatever the credential", async () => {
+    const { signIn, session } = setup();
+    const token = await signIn(browserAdvertiser);
+
+    for (const response of [
+      await session({}),
+      await session(bearer(token)),
+      await session(bearer("not-a-real-token-xxxxxxxx")),
+    ]) {
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+  });
+
+  it("answers 401 to an Authorization header that is not a session", async () => {
+    const { session } = setup();
+
+    const response = await session(bearer("not-a-real-token-xxxxxxxx"));
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("clears an expired session cookie", async () => {
+    const { signInWithCookie, session, createCampaign, setNow } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+    setNow(new Date("2026-10-05T11:00:01.000Z"));
+
+    const check = await session(cookie(token));
+    const mutation = await createCampaign(
+      { ...cookie(token), "sec-fetch-site": "same-origin" },
+      browserAdvertiser.address,
+    );
+
+    expect(check.statusCode).toBe(401);
+    expect(check.headers["set-cookie"]).toBe(cleared);
+    expect(mutation.statusCode).toBe(401);
+    expect(mutation.headers["set-cookie"]).toBe(cleared);
+  });
+
+  it("clears a session cookie that holds no session token", async () => {
+    const { session } = setup();
+
+    const response = await session({
+      cookie: `${SESSION_COOKIE}=not-a-session-token`,
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBe(cleared);
+  });
+
+  it("keeps the cookie when the 401 is about the Authorization header", async () => {
+    const { signInWithCookie, session } = setup();
+    const { token } = await signInWithCookie(browserAdvertiser);
+
+    const response = await session({
+      authorization: "Basic dXNlcjpwYXNz",
+      ...cookie(token),
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 });
