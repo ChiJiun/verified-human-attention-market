@@ -88,6 +88,10 @@ function decode(
  *   losing or duplicating events: (chain, tx, logIndex) is the identity.
  * - The cursor stores the hash of the last confirmed block; if it changes,
  *   the pass stops with ReorgBeyondConfirmationsError instead of guessing.
+ *   Every batch must also continue that chain: the parent of its first
+ *   block is the last committed block. A deeper reorg during the pass is
+ *   therefore a halt too, and a batch read from another fork than the
+ *   committed chain is retried; neither is ever committed.
  * - A confirmed batch is committed only if the hash of its last block is the
  *   same before and after eth_getLogs (and matches the logs of that block),
  *   so logs read across a reorg or a provider node switch are never stored
@@ -109,6 +113,8 @@ export async function indexOnce(
   const cursor = await repository.getCursor(scope);
   let confirmedThrough =
     cursor?.latestConfirmedBlock ?? config.deployBlock - 1n;
+  // Hash of the last committed block, which the next batch must extend.
+  let committedHash = cursor?.latestConfirmedBlockHash ?? null;
 
   if (cursor?.latestConfirmedBlockHash) {
     const block = await rpc.getBlock(cursor.latestConfirmedBlock);
@@ -159,6 +165,23 @@ export async function indexOnce(
       }
     }
 
+    // The range must extend the committed chain. If it does not, the last
+    // committed block is re-read: replaced means a reorg deeper than the
+    // confirmation depth (halt, as at the start of the pass); unchanged
+    // means the reads came from different forks (retry).
+    if (committedHash !== null) {
+      const first = from === to ? toBlock : await rpc.getBlock(from);
+
+      if (!first || first.parentHash !== committedHash) {
+        const committed = await rpc.getBlock(confirmedThrough);
+
+        if (!committed || committed.hash !== committedHash) {
+          throw new ReorgBeyondConfirmationsError(confirmedThrough);
+        }
+        throw new InconsistentChainReadError(from);
+      }
+    }
+
     const toBlockAgain = await rpc.getBlock(to);
 
     if (!toBlockAgain || toBlockAgain.hash !== toBlock.hash) {
@@ -175,6 +198,7 @@ export async function indexOnce(
     confirmedEvents += events.length;
     skippedLogs += skipped;
     confirmedThrough = to;
+    committedHash = toBlock.hash;
   }
 
   const tailFrom =

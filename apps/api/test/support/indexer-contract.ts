@@ -270,4 +270,109 @@ export function defineIndexerContract(harness: IndexerHarness) {
     await indexOnce(chain, repository, config);
     expect(await repository.listCampaignEvents(scope, "1")).toEqual([]);
   });
+
+  /** Indexes a creation, then mines `more` blocks for the next pass. */
+  async function indexedWithMoreBlocks(
+    fixture: ReturnType<typeof setup>,
+    more: number,
+  ) {
+    const { chain, config, repository, scope } = fixture;
+    chain.mine(1, [logs.created(1, ADVERTISER)]);
+    chain.mine(10);
+    await indexOnce(chain, repository, config);
+    chain.mine(more);
+    return (await repository.getCursor(scope))!;
+  }
+
+  /** Runs `act` once, just before the first getBlock call `when` accepts. */
+  function onGetBlock(
+    chain: FakeChain,
+    when: (number: bigint, call: number) => boolean,
+    act: () => void,
+  ) {
+    const getBlock = chain.getBlock.bind(chain);
+    let calls = 0;
+    let done = false;
+    chain.getBlock = async (number) => {
+      calls += 1;
+      if (!done && when(number, calls)) {
+        done = true;
+        act();
+      }
+      return getBlock(number);
+    };
+  }
+
+  const reorgError = async (pass: Promise<unknown>) => {
+    const error = await pass.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ReorgBeyondConfirmationsError);
+    return (error as ReorgBeyondConfirmationsError).blockNumber;
+  };
+
+  it("halts on a deeper reorg between the cursor check and the first batch (issue #76)", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope } = fixture;
+    const cursor = await indexedWithMoreBlocks(fixture, 6);
+
+    // The pass has just checked the cursor's hash when the reorg lands.
+    onGetBlock(
+      chain,
+      (_number, call) => call === 2,
+      () => chain.reorg(cursor.latestConfirmedBlock - 1n),
+    );
+
+    expect(await reorgError(indexOnce(chain, repository, config))).toBe(
+      cursor.latestConfirmedBlock,
+    );
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+  });
+
+  it("halts on a deeper reorg between two batches of a pass (issue #76)", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope } = fixture;
+    const cursor = await indexedWithMoreBlocks(fixture, 12);
+    const firstBatchEnd = cursor.latestConfirmedBlock + config.maxBlockRange;
+
+    // The first batch is committed, then a reorg replaces its last blocks.
+    onGetBlock(
+      chain,
+      (number) => number > firstBatchEnd,
+      () => chain.reorg(firstBatchEnd - 1n),
+    );
+
+    expect(await reorgError(indexOnce(chain, repository, config))).toBe(
+      firstBatchEnd,
+    );
+    expect((await repository.getCursor(scope))?.latestConfirmedBlock).toBe(
+      firstBatchEnd,
+    );
+  });
+
+  it("retries, without a halt, a batch whose first block came from another fork (issue #76)", async () => {
+    const fixture = setup(harness);
+    const { chain, config, repository, scope } = fixture;
+    const cursor = await indexedWithMoreBlocks(fixture, 6);
+    const from = cursor.latestConfirmedBlock + 1n;
+
+    // A load-balanced node answers the batch's first header from another
+    // fork; the committed block itself is unchanged.
+    const getBlock = chain.getBlock.bind(chain);
+    let forged = false;
+    chain.getBlock = async (number) => {
+      const header = await getBlock(number);
+      if (!forged && number === from && header) {
+        forged = true;
+        return { ...header, parentHash: "0x" + "ee".repeat(32) };
+      }
+      return header;
+    };
+
+    await expect(indexOnce(chain, repository, config)).rejects.toBeInstanceOf(
+      InconsistentChainReadError,
+    );
+    expect(await repository.getCursor(scope)).toEqual(cursor);
+    expect((await indexOnce(chain, repository, config)).confirmedThrough).toBe(
+      chain.head - 3n,
+    );
+  });
 }
