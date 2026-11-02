@@ -126,7 +126,7 @@
 
 ## FR-009 Refund Unused Budget
 
-**Status:** implemented — refund only after issuance deadline + `MAX_AUTHORIZATION_TTL` (`test_RefundWaitsForAuthorizationGracePeriod`), `CampaignRefunded` event indexed and reconciled. The web app has no refund button yet (sent with `cast`).
+**Status:** implemented — refund only after issuance deadline + `MAX_AUTHORIZATION_TTL` (`test_RefundWaitsForAuthorizationGracePeriod`), `CampaignRefunded` event indexed and reconciled. The advertiser page offers **Refund unused budget** once the contract accepts it (#69); campaigns on an earlier deployment still use `cast`.
 
 **Requirement:** Advertiser 可以回收合法 unused USDC。
 

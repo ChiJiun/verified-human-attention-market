@@ -144,7 +144,7 @@ Database (`campaigns.status`): `draft` → `pending_onchain` (linked, unfunded) 
 4. Participant connects a wallet, obtains an RP-signed World ID request, proves personhood in World App; the API verifies the proof and binds the human to the wallet for this campaign.
 5. Participant answers the comprehension questions. The API checks the campaign live on-chain (canonical creation, funded, open, within window, budget left), evaluates the answers, and — in one database transaction — records the acceptance and signs the authorization.
 6. Participant sends `claim`; the indexer confirms `RewardClaimed`; analytics and reconciliation agree with the contract.
-7. Advertiser closes (optional) and, after the grace period, refunds. Close and refund are sent from the wallet (`cast` today; no buttons in the web app yet).
+7. Advertiser closes (optional) and, after the grace period, refunds. The advertiser page offers **Close campaign** until one minute before `endTime`. It offers **Refund unused budget** once the block time passes the issuance deadline (`closedAt`, else `endTime`) plus `MAX_AUTHORIZATION_TTL` (15 min), unless the contract is paused. The page reads the campaign, the paused flag and the latest block time through the advertiser's wallet and simulates each transaction before asking for a signature. The contract still enforces both rules.
 
 ## Consistency and Failure Rules
 
@@ -172,7 +172,7 @@ These do not block the testnet POC but must be revisited before real funds (#29)
 - **One RPC endpoint** per process; the public Base Sepolia RPC limits `eth_getLogs` to 200 blocks. A second provider is a deployment task.
 - **Bearer session token in browser memory** (SIWE): XSS exposure; CSP / HttpOnly cookies before beta (Threat Model T-015).
 - **Deep-reorg recovery is manual** by design; Base is an L2 with a centralized sequencer, so this is expected to be rare.
-- **No close/refund UI**; the advertiser uses `cast` for those two transactions.
+- **Close and refund buttons appear only for campaigns on the current deployment.** A campaign on an earlier deployment, such as the pre-ADR-0011 contract, is retired and gets no buttons, so its advertiser still uses `cast` for both transactions.
 - **Base mainnet is deliberately not configurable** until the production-readiness gate passes.
 
 ## Deferred Architecture

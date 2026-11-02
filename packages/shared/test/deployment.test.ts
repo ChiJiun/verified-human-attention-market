@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isCurrentDeployment, isFundingTarget } from "../src/deployment.js";
+import { isCurrentDeployment, isDraftCampaign } from "../src/deployment.js";
 
 const CURRENT = {
   chainId: 84532,
@@ -60,7 +60,7 @@ describe("isCurrentDeployment (ADR-0011)", () => {
   });
 });
 
-describe("isFundingTarget (ADR-0011)", () => {
+describe("isDraftCampaign (ADR-0011)", () => {
   const expected = {
     onchainCampaignId: "1",
     rewardPerCompletion: "1000000",
@@ -79,29 +79,29 @@ describe("isFundingTarget (ADR-0011)", () => {
   };
 
   it("accepts the draft's own campaign", () => {
-    expect(isFundingTarget(reading, expected)).toBe(true);
+    expect(isDraftCampaign(reading, expected)).toBe(true);
   });
 
   it("rejects a reused id that now belongs to another draft with the same budget", () => {
     // After a deep reorg this draft maps to nothing (or another id) while
     // id 1, with identical economics, is another draft's campaign.
     expect(
-      isFundingTarget({ ...reading, mappedCampaignId: 0n }, expected),
+      isDraftCampaign({ ...reading, mappedCampaignId: 0n }, expected),
     ).toBe(false);
     expect(
-      isFundingTarget({ ...reading, mappedCampaignId: 2n }, expected),
+      isDraftCampaign({ ...reading, mappedCampaignId: 2n }, expected),
     ).toBe(false);
   });
 
   it("rejects changed parameters on the same id", () => {
     expect(
-      isFundingTarget(
+      isDraftCampaign(
         { ...reading, onchain: { ...reading.onchain, maxCompletions: 9 } },
         expected,
       ),
     ).toBe(false);
     expect(
-      isFundingTarget(
+      isDraftCampaign(
         { ...reading, onchain: { ...reading.onchain, endTime: 0n } },
         expected,
       ),

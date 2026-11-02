@@ -3,14 +3,31 @@
 import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   isCurrentDeployment,
-  isFundingTarget,
+  isDraftCampaign,
   type Deployment,
 } from "@vham/shared/deployment";
-import { useCallback, useEffect, useState } from "react";
+import {
+  closeAvailability,
+  refundAvailability,
+  type CloseAvailability,
+  type RefundAvailability,
+  type UnixSeconds,
+} from "@vham/shared/settlement";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
+import {
+  describeChainError,
+  describeSimulationFailure,
+  formatRemaining,
+  readSettlement,
+  SETTLEMENT_CALLS,
+  type ChainSettlement,
+  type SettlementAction,
+  type SettlementTarget,
+} from "../../lib/settlement";
 import { signInWithEthereum, type Session } from "../../lib/siwe";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
@@ -56,7 +73,11 @@ interface Analytics {
       remaining: string;
       paidCompletions: number;
     };
-    pending: { funded: string };
+    pending: {
+      funded: string;
+      status:
+        "not_found" | "created" | "active" | "closed" | "settled" | "cancelled";
+    };
     hasUnconfirmedEvents: boolean;
   } | null;
 }
@@ -71,6 +92,88 @@ type TxStatus =
 
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
+
+type ChainView =
+  | { state: "unread" }
+  | { state: "read"; onchain: ChainSettlement }
+  | { state: "failed"; message: string };
+
+const UNREAD: ChainView = { state: "unread" };
+
+function settlementTarget(analytics: Analytics): SettlementTarget | null {
+  return analytics.onchainCampaignId === null
+    ? null
+    : {
+        onchainCampaignId: analytics.onchainCampaignId,
+        rewardPerCompletion: analytics.rewardPerCompletion,
+        maxCompletions: analytics.maxCompletions,
+        startAt: analytics.startAt,
+        endAt: analytics.endAt,
+        draftRef: analytics.draftRef,
+      };
+}
+
+function Countdown({
+  availableAt,
+  onchain,
+}: {
+  availableAt: UnixSeconds;
+  onchain: ChainSettlement;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const elapsed = Math.max(
+    0,
+    Math.floor((nowMs - onchain.readAtLocalMs) / 1_000),
+  );
+  const remaining =
+    Number(availableAt - onchain.reading.blockTimestamp) - elapsed;
+  return remaining > 0 ? `in ${formatRemaining(remaining)}` : "any moment now";
+}
+
+function SettlementNotes({
+  onchain,
+  close,
+  refund,
+}: {
+  onchain: ChainSettlement;
+  close: CloseAvailability | null;
+  refund: RefundAvailability | null;
+}) {
+  const maxAuthorizationMinutes = Number(
+    onchain.reading.maxAuthorizationTtl / 60n,
+  );
+  return (
+    <>
+      {close?.kind === "unavailable" && close.reason === "ending-soon" && (
+        <p className="note">
+          A close sent in the last minute before the end would probably be mined
+          too late, so it is not offered.
+        </p>
+      )}
+      {refund?.kind === "waiting" && (
+        <p className="note">
+          Refund opens at{" "}
+          {new Date(Number(refund.availableAt) * 1_000).toLocaleString()} (
+          <Countdown availableAt={refund.availableAt} onchain={onchain} />
+          ). A claim authorization issued right before the close or end time
+          stays valid for {maxAuthorizationMinutes} minutes, so the contract
+          holds the unused budget until every one has expired.
+        </p>
+      )}
+      {refund?.kind === "unavailable" && refund.reason === "paused" && (
+        <p className="note">
+          Refunds are paused by the contract owner and resume after the contract
+          is unpaused.
+        </p>
+      )}
+    </>
+  );
+}
 
 /**
  * Per-draft marker that a createCampaign transaction may have been broadcast
@@ -133,6 +236,11 @@ export default function AdvertiserPage() {
    * gas.
    */
   const [awaitingLink, setAwaitingLink] = useState(false);
+  const [chainView, setChainView] = useState<ChainView>(UNREAD);
+  const [awaitingEffect, setAwaitingEffect] = useState<SettlementAction | null>(
+    null,
+  );
+  const chainReads = useRef(0);
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
@@ -197,6 +305,36 @@ export default function AdvertiserPage() {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  const readChain = useCallback(async () => {
+    const read = ++chainReads.current;
+    const target = analytics ? settlementTarget(analytics) : null;
+    if (
+      !wallet ||
+      !deployment ||
+      !analytics ||
+      !target ||
+      !onCurrentDeployment ||
+      (analytics.status !== "active" && analytics.status !== "closed")
+    ) {
+      setChainView(UNREAD);
+      return;
+    }
+    try {
+      const settlement = await readSettlement(wallet, deployment, target);
+      if (read === chainReads.current) {
+        setChainView({ state: "read", onchain: settlement });
+      }
+    } catch (caught) {
+      if (read === chainReads.current) {
+        setChainView({ state: "failed", message: describeChainError(caught) });
+      }
+    }
+  }, [wallet, deployment, analytics, onCurrentDeployment]);
+
+  useEffect(() => {
+    void readChain();
+  }, [readChain]);
+
   async function run(action: () => Promise<void>) {
     setError(null);
     setBusy(true);
@@ -206,6 +344,19 @@ export default function AdvertiserPage() {
       setError(describeError(caught));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function confirmInWallet<T>(
+    label: string,
+    walletCall: () => Promise<T>,
+  ): Promise<T> {
+    setTx({ state: "signing", label });
+    try {
+      return await walletCall();
+    } catch (caught) {
+      setTx({ state: "idle" });
+      throw caught;
     }
   }
 
@@ -288,27 +439,28 @@ export default function AdvertiserPage() {
       );
       const args = intent.steps[0]!.args;
 
-      setTx({ state: "signing", label });
       // From here on a transaction may exist even if this page never learns
       // its hash (reload, lost response): remember it before asking the wallet.
       rememberAttempt(campaignId, Date.now());
       setAwaitingLink(true);
       let hash: Hash;
       try {
-        hash = await wallet.walletClient.writeContract({
-          account: wallet.address,
-          chain,
-          address: intent.campaignManager,
-          abi: campaignManagerAbi,
-          functionName: "createCampaign",
-          args: [
-            BigInt(args.rewardPerCompletion!),
-            Number(args.maxCompletions),
-            BigInt(args.startTime!),
-            BigInt(args.endTime!),
-            args.draftRef as Hash,
-          ],
-        });
+        hash = await confirmInWallet(label, () =>
+          wallet.walletClient.writeContract({
+            account: wallet.address,
+            chain,
+            address: intent.campaignManager,
+            abi: campaignManagerAbi,
+            functionName: "createCampaign",
+            args: [
+              BigInt(args.rewardPerCompletion!),
+              Number(args.maxCompletions),
+              BigInt(args.startTime!),
+              BigInt(args.endTime!),
+              args.draftRef as Hash,
+            ],
+          }),
+        );
       } catch (caught) {
         // The transaction may have been broadcast before the error. Look for
         // it by draft reference; pressing Create again is safe either way.
@@ -430,7 +582,7 @@ export default function AdvertiserPage() {
         }),
       ]);
       if (
-        !isFundingTarget(
+        !isDraftCampaign(
           {
             mappedCampaignId,
             onchain: {
@@ -463,15 +615,16 @@ export default function AdvertiserPage() {
       });
 
       if (allowance < amount) {
-        setTx({ state: "signing", label: "Approve USDC" });
-        const approveHash = await wallet.walletClient.writeContract({
-          account: wallet.address,
-          chain,
-          address: usdcAddress,
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [manager, amount],
-        });
+        const approveHash = await confirmInWallet("Approve USDC", () =>
+          wallet.walletClient.writeContract({
+            account: wallet.address,
+            chain,
+            address: usdcAddress,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [manager, amount],
+          }),
+        );
         setTx({ state: "pending", label: "Approve USDC", hash: approveHash });
         const approved = await waitForTx(wallet.publicClient, approveHash);
         if (approved.kind !== "confirmed") {
@@ -492,18 +645,20 @@ export default function AdvertiserPage() {
         }
       }
 
-      setTx({ state: "signing", label: "Fund campaign" });
-      const fundHash = await wallet.walletClient.writeContract({
-        account: wallet.address,
-        chain,
-        address: manager,
-        abi: campaignManagerAbi,
-        functionName: "fundCampaign",
-        // The contract re-checks the draft reference inside the funding
-        // transaction, closing the gap between this page's read and the
-        // moment the money moves (ADR-0011).
-        args: [BigInt(current.onchainCampaignId), amount, current.draftRef],
-      });
+      const onchainCampaignId = BigInt(current.onchainCampaignId);
+      const fundHash = await confirmInWallet("Fund campaign", () =>
+        wallet.walletClient.writeContract({
+          account: wallet.address,
+          chain,
+          address: manager,
+          abi: campaignManagerAbi,
+          functionName: "fundCampaign",
+          // The contract re-checks the draft reference inside the funding
+          // transaction, closing the gap between this page's read and the
+          // moment the money moves (ADR-0011).
+          args: [onchainCampaignId, amount, current.draftRef],
+        }),
+      );
       setTx({ state: "pending", label: "Fund campaign", hash: fundHash });
       const funded = await waitForTx(wallet.publicClient, fundHash);
       setTx(
@@ -519,6 +674,132 @@ export default function AdvertiserPage() {
       );
       await refresh();
     });
+
+  async function prepareSettlement(
+    wallet: Wallet,
+    analytics: Analytics,
+    target: SettlementTarget,
+    action: SettlementAction,
+  ): Promise<Address> {
+    const { data: chainInfo } = await api<{
+      chainId: number;
+      campaignManager: Address;
+    }>("/v1/chain");
+    const configured = {
+      chainId: chainInfo.chainId,
+      contractAddress: chainInfo.campaignManager,
+    };
+    if (
+      !isCurrentDeployment(
+        {
+          chainId: analytics.chainId,
+          contractAddress: analytics.onchainContractAddress,
+        },
+        configured,
+      )
+    ) {
+      throw new Error(
+        "This campaign was created on an earlier CampaignManager deployment and cannot be settled here.",
+      );
+    }
+
+    const settlement = await readSettlement(wallet, configured, target);
+    setChainView({ state: "read", onchain: settlement });
+    const verdict =
+      action === "close"
+        ? closeAvailability(settlement.reading)
+        : refundAvailability(settlement.reading);
+    if (verdict.kind !== "available") {
+      throw new Error(
+        "This is no longer available. The page has been updated.",
+      );
+    }
+    return chainInfo.campaignManager;
+  }
+
+  async function sendSettlementOnce(
+    wallet: Wallet,
+    manager: Address,
+    target: SettlementTarget,
+    action: SettlementAction,
+  ) {
+    const { functionName, label, done } = SETTLEMENT_CALLS[action];
+    const call = {
+      account: wallet.address,
+      address: manager,
+      abi: campaignManagerAbi,
+      functionName,
+      args: [BigInt(target.onchainCampaignId)],
+    } as const;
+    try {
+      await wallet.publicClient.simulateContract(call);
+    } catch (caught) {
+      throw new Error(describeSimulationFailure(caught), { cause: caught });
+    }
+
+    let hash: Hash;
+    try {
+      hash = await confirmInWallet(label, () =>
+        wallet.walletClient.writeContract({ ...call, chain }),
+      );
+    } catch (caught) {
+      throw new Error(
+        isUserRejection(caught)
+          ? "You rejected the request in your wallet, so nothing was sent."
+          : describeChainError(caught),
+        { cause: caught },
+      );
+    }
+
+    setAwaitingEffect(action);
+    setTx({ state: "pending", label, hash });
+    const mined = await waitForTx(wallet.publicClient, hash);
+    if (mined.kind === "pending") {
+      setTx({ state: "reconciling", label, hash });
+      return;
+    }
+    if (mined.kind === "reverted") {
+      setAwaitingEffect(null);
+      setTx({ state: "failed", label, message: "The transaction reverted." });
+    } else {
+      setTx({ state: "done", label: done, hash });
+    }
+    await Promise.all([refresh(), readChain()]);
+  }
+
+  const settle = (action: SettlementAction) =>
+    run(async () => {
+      if (!wallet || !session || !analytics) return;
+      const target = settlementTarget(analytics);
+      if (!target) return;
+      const manager = await prepareSettlement(
+        wallet,
+        analytics,
+        target,
+        action,
+      );
+      await sendSettlementOnce(wallet, manager, target, action);
+    });
+
+  const apiStatus = analytics?.settlement?.pending.status;
+  const onchain = chainView.state === "read" ? chainView.onchain : null;
+  const closeVerdict =
+    onchain &&
+    analytics?.status === "active" &&
+    apiStatus !== "closed" &&
+    apiStatus !== "settled"
+      ? closeAvailability(onchain.reading)
+      : null;
+  const refundVerdict =
+    onchain &&
+    (analytics?.status === "active" || analytics?.status === "closed") &&
+    apiStatus !== "settled"
+      ? refundAvailability(onchain.reading)
+      : null;
+  const closeOffered =
+    closeVerdict?.kind === "available" && !busy && awaitingEffect !== "close";
+  const refundOffered =
+    refundVerdict?.kind === "available" && !busy && awaitingEffect !== "refund";
 
   return (
     <main className="container">
@@ -639,6 +920,19 @@ export default function AdvertiserPage() {
               Some on-chain activity is still being confirmed.
             </p>
           )}
+          {chainView.state === "failed" && (
+            <p className="note">
+              Could not read the campaign from the chain ({chainView.message}).
+              Close and refund stay hidden until it works.
+            </p>
+          )}
+          {onchain && (
+            <SettlementNotes
+              onchain={onchain}
+              close={closeVerdict}
+              refund={refundVerdict}
+            />
+          )}
           <div className="actions">
             {analytics?.status === "draft" && !awaitingLink && (
               <button onClick={createOnchain} disabled={busy || wrongNetwork}>
@@ -673,6 +967,21 @@ export default function AdvertiserPage() {
                   Approve &amp; fund
                 </button>
               )}
+            {closeOffered && (
+              <button
+                className="secondary"
+                onClick={() => settle("close")}
+                disabled={wrongNetwork}
+                title="Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+              >
+                Close campaign
+              </button>
+            )}
+            {refundOffered && (
+              <button onClick={() => settle("refund")} disabled={wrongNetwork}>
+                Refund unused budget
+              </button>
+            )}
             <button className="secondary" onClick={() => void refresh()}>
               Refresh
             </button>
