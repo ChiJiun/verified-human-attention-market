@@ -1,6 +1,5 @@
 "use client";
 
-import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   newWorldIdSignalSalt,
   worldIdSignal,
@@ -13,7 +12,7 @@ import {
   type RpContext,
 } from "@worldcoin/idkit";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatUnits, type Address, type Hash, type Hex } from "viem";
+import { formatUnits, type Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
 import {
@@ -25,6 +24,12 @@ import {
   type CampaignLink,
   type SubmissionId,
 } from "../../lib/campaign-link";
+import {
+  claimCall,
+  isAlreadyPaid,
+  simulateClaim,
+  type Authorization,
+} from "../../lib/claim";
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
@@ -45,19 +50,6 @@ interface Mission {
     prompt: string;
     choices: { id: string; label: string }[];
   }[];
-}
-
-interface Authorization {
-  campaignId: string;
-  /** The campaign's draft reference, checked by the contract (ADR-0011). */
-  draftRef: Hex;
-  claimant: Address;
-  amount: string;
-  nonce: Hex;
-  issuedAt: number;
-  expiresAt: number;
-  signature: Hex;
-  contractAddress: Address;
 }
 
 interface LiveWorldIdRequest {
@@ -85,7 +77,9 @@ type Step =
   | { kind: "rejected"; code: string }
   | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
-  | { kind: "paid"; hash: Hash | null };
+  | { kind: "paid"; hash: Hash }
+  /** Paid earlier (another tab, an earlier visit); no transaction was sent. */
+  | { kind: "already-paid" };
 
 function progressKey(campaignId: string, wallet: string, name: string) {
   return `vham:${campaignId.toLowerCase()}:${wallet.toLowerCase()}:${name}`;
@@ -158,7 +152,9 @@ export default function MissionPage() {
     try {
       await action();
     } catch (caught) {
-      setError(describeError(caught));
+      // ALREADY_CLAIMED from the submission or the authorization (#82).
+      if (isAlreadyPaid(caught)) setStep({ kind: "already-paid" });
+      else setError(describeError(caught));
     } finally {
       setBusy(false);
     }
@@ -283,30 +279,19 @@ export default function MissionPage() {
       ) {
         return;
       }
-      // Re-requesting after expiry returns a fresh authorization.
+      // Re-requesting after expiry returns a fresh authorization; once the
+      // wallet was paid the API answers ALREADY_CLAIMED instead.
       const { data: auth } = await api<Authorization>(
         claimAuthorizationPath(campaignId, step.submissionId),
         { method: "POST", body: { eligibilityToken } },
       );
-      const hash = await wallet.walletClient.writeContract({
-        account: wallet.address,
-        chain,
-        address: auth.contractAddress,
-        abi: campaignManagerAbi,
-        functionName: "claim",
-        args: [
-          {
-            campaignId: BigInt(auth.campaignId),
-            draftRef: auth.draftRef,
-            claimant: auth.claimant,
-            amount: BigInt(auth.amount),
-            nonce: auth.nonce,
-            issuedAt: BigInt(auth.issuedAt),
-            expiresAt: BigInt(auth.expiresAt),
-          },
-          auth.signature,
-        ],
-      });
+      const call = claimCall(wallet.address, auth);
+      // A claim the contract would refuse never reaches the wallet.
+      if ((await simulateClaim(wallet.publicClient, call)) === "already-paid") {
+        setStep({ kind: "already-paid" });
+        return;
+      }
+      const hash = await wallet.walletClient.writeContract({ ...call, chain });
       setStep({ kind: "pending", hash });
       const outcome = await waitForTx(wallet.publicClient, hash);
       if (outcome.kind === "confirmed") {
@@ -316,10 +301,6 @@ export default function MissionPage() {
         setError("The claim transaction reverted. You can request it again.");
       }
     }).catch(() => undefined);
-
-  useEffect(() => {
-    if (error?.includes("already paid")) setStep({ kind: "paid", hash: null });
-  }, [error]);
 
   if (!campaignId) {
     return (
@@ -485,11 +466,16 @@ export default function MissionPage() {
       {step.kind === "paid" && (
         <section className="card tx done" aria-live="polite">
           <strong>Reward paid to your wallet.</strong>
-          {step.hash && (
-            <p>
-              <code>{step.hash}</code>
-            </p>
-          )}
+          <p>
+            <code>{step.hash}</code>
+          </p>
+        </section>
+      )}
+
+      {step.kind === "already-paid" && (
+        <section className="card tx done" aria-live="polite">
+          <strong>This reward was already paid to your wallet.</strong> No
+          transaction was sent.
         </section>
       )}
 

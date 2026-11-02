@@ -121,15 +121,19 @@ export function describeChainError(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-export function describeSimulationFailure(error: unknown): string {
+/** The contract's custom error name in a viem error, if it reverted. */
+export function revertName(error: unknown): string | undefined {
   const reverted =
     error instanceof BaseError
       ? error.walk((cause) => cause instanceof ContractFunctionRevertedError)
       : null;
-  const name =
-    reverted instanceof ContractFunctionRevertedError
-      ? reverted.data?.errorName
-      : undefined;
+  return reverted instanceof ContractFunctionRevertedError
+    ? reverted.data?.errorName
+    : undefined;
+}
+
+export function describeSimulationFailure(error: unknown): string {
+  const name = revertName(error);
 
   return name
     ? `The contract would reject this transaction (${name}), so nothing was sent.`
