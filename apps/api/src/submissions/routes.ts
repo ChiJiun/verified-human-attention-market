@@ -123,8 +123,9 @@ export async function registerSubmissionRoutes(
             authorization: serializeClaim(authorization.claim),
           };
         } else if (refusal === "ALREADY_CLAIMED") {
-          // Final: the wallet was paid, and the authorization route answers
-          // 409 with the same code (#82).
+          // The wallet was paid, and the authorization route answers 409
+          // with the same code (#82). Read at the latest block, so a shallow
+          // reorg can still undo it; the next request reads it again.
           claim = { status: "claimed", code: refusal };
         } else {
           // Why it could not be signed now (it can be requested again).

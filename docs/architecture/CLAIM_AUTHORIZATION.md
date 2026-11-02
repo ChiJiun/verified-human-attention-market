@@ -100,7 +100,8 @@ The response says `pending_authorization` only without a configured signer
 (code `null`) and on a replay whose authorization cannot be reissued (with the
 reason code). `POST .../authorization` can then be called again. A replay for
 a wallet that was already paid says `claimed` with code `ALREADY_CLAIMED`,
-the code `POST .../authorization` answers with `409` (see **Paid** below).
+the code `POST .../authorization` answers with `409` (see **Paid** below; it
+is read at the latest block, so a shallow reorg can undo it).
 
 The accepted submission is the issuance identity. Its signed payload, nonce,
 signature and EIP-712 domain are persisted atomically. A concurrent or repeated
@@ -148,7 +149,21 @@ holds `KEY SHARE` on the campaign row through its submission's foreign key and
   claim mined after the live read (from another tab, say) can still reach the
   web app with an authorization; the mission page therefore simulates `claim`
   before the wallet sends it and shows "already paid" for `NonceAlreadyUsed`
-  and `WalletAlreadyClaimed` without opening a wallet transaction.
+  and `WalletAlreadyClaimed` without opening a wallet transaction. It first
+  checks that the wallet is still on the campaign's chain. The API signs with
+  `issuedAt` = now while the simulation runs on the latest block, which can be
+  a second or two older, so on `AuthorizationNotYetValid` the page waits (up
+  to 15 s) for a block at or after `issuedAt` and simulates once more. The answer
+  is not final: `claimedWallet` and the simulation read the latest block, so
+  a shallow reorg can briefly show "already paid" for a payout that is then
+  undone. The stored authorization is untouched by the refusal, and the next
+  request (a reload, another press) reads the chain again and replays it,
+  or reissues it after expiry.
+- **Order of refusals:** both claim repositories check, in this order, the
+  campaign link (`CAMPAIGN_NOT_ACTIVE`), the submission
+  (`SUBMISSION_NOT_ACCEPTED`), payment (`ALREADY_CLAIMED`), then the replay,
+  the open campaign (`CAMPAIGN_NOT_ACTIVE`), the cap and the payout limit. So
+  a paid wallet hears "already paid" after the close as well.
 - **Close:** issuance stops as soon as `closedAt != 0` on-chain, so no
   authorization is issued after the issuance deadline that the refund grace
   period relies on.
