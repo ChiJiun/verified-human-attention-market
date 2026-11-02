@@ -1,4 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
+import { EVM_ADDRESS } from "../http/validation.js";
 
 import type { Database } from "../db/client.js";
 
@@ -184,7 +185,7 @@ export async function eraseWallet(
   address: string,
   now: Date,
 ): Promise<ErasureResult> {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+  if (!EVM_ADDRESS.test(address)) {
     throw new Error("address must be a 20-byte hex address");
   }
 

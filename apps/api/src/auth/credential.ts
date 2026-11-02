@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import { fail } from "../errors/catalog.js";
 import type { AuthRepository } from "./repository.js";
 import { hashToken, SESSION_TOKEN, type Authenticate } from "./siwe.js";
 
@@ -119,13 +120,13 @@ export function csrfRejected(request: FastifyRequest, reply: FastifyReply) {
     },
     "Cookie request refused: not proven same-origin",
   );
-  return reply.status(403).send({
-    error: {
-      code: "CSRF_REJECTED",
-      message: "Cookie sessions only accept same-origin requests",
-      requestId: request.id,
-    },
-  });
+  return fail(
+    request,
+    reply,
+    403,
+    "CSRF_REJECTED",
+    "Cookie sessions only accept same-origin requests",
+  );
 }
 
 export function registerSessionCookieGuard(
@@ -150,14 +151,13 @@ export function registerSessionCookieGuard(
       credential.source === "cookie" &&
       HEADER_ONLY_ROUTE.test(request.routeOptions.url ?? "")
     ) {
-      return reply.status(403).send({
-        error: {
-          code: "COOKIE_SESSION_NOT_ALLOWED",
-          message:
-            "Browser sessions cannot call this endpoint; send an Authorization header",
-          requestId: request.id,
-        },
-      });
+      return fail(
+        request,
+        reply,
+        403,
+        "COOKIE_SESSION_NOT_ALLOWED",
+        "Browser sessions cannot call this endpoint; send an Authorization header",
+      );
     }
   });
 

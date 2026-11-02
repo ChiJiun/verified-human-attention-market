@@ -11,8 +11,8 @@ import { buildApp } from "../src/app.js";
 import type { Authenticate } from "../src/auth/siwe.js";
 import { ERROR_CATALOG } from "../src/errors/catalog.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
+import { TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
 
-const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const OTHER = "0x" + "5a".repeat(20);
 const OPERATOR = "0x" + "0e".repeat(20);
 const UNKNOWN_CAMPAIGN = "00000000-0000-4000-8000-000000000999";

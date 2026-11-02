@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { signedInAs } from "./support/auth.js";
+import { signedInAs, TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
 import {
   autoLinkCreatedCampaigns,
   draftRefFor,
@@ -23,29 +23,12 @@ import {
 } from "../src/chain/worker-pass.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
-import type {
-  WorldIdResult,
-  WorldIdVerifier,
-} from "../src/identity/world-id.js";
-
-/** Accepts a proof whose action matches; the nullifier is `human`. */
-class FakeWorldId implements WorldIdVerifier {
-  async verify(request: {
-    action: string;
-    idkitResponse: unknown;
-  }): Promise<WorldIdResult> {
-    const proof = request.idkitResponse as { action: string; human: string };
-    return proof.action === request.action
-      ? { ok: true, nullifier: proof.human }
-      : { ok: false, code: "ACTION_MISMATCH" };
-  }
-}
 import { FakeChain, logs } from "./support/fake-chain.js";
+import { FakeWorldId } from "./support/world-id.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const CONTRACT = "0x" + "c0".repeat(20);
 const USDC_ADDRESS = "0x" + "d0".repeat(20);
-const ADVERTISER = "0x1234567890abcdef1234567890abcdef12345678";
 const CLAIMANT = "0x" + "b".repeat(40);
 const SIGNAL_SALT = `0x${"11".repeat(32)}`;
 const USDC = 1_000_000n;

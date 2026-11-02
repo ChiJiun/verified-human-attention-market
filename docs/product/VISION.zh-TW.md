@@ -796,8 +796,6 @@ Happy-path demo 成功，不代表可以直接移除風險上限。
 verified-human-attention-market/
 ├─ README.md
 ├─ README.zh-TW.md
-├─ ROADMAP.md
-├─ ROADMAP.zh-TW.md
 ├─ docs/
 │  ├─ architecture/
 │  ├─ adr/

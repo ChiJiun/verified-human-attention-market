@@ -16,10 +16,10 @@
 
 | | |
 | --- | --- |
-| **里程碑** | M1（概念驗證）：完整流程已於 2026-10-14 在 **Base Sepolia** 執行。實測紀錄正在 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) 審查中，紀錄被接受前 #12、#13、#19 維持開啟 |
-| **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。交易紀錄見 [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
-| **合約** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc)，Base Sepolia（chain `84532`） |
-| **下一步** | 完成 M1 收尾，接著決定 [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61)：瀏覽即累積，登入與提領時驗證 World ID |
+| **里程碑** | M1（概念驗證）：完整流程已於 2026-10-14 以 v1 合約在 **Base Sepolia** 執行。ADR-0011（冪等建立）改動了合約，因此需在重新部署後再跑一次，#12、#13 才會關閉 |
+| **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。交易紀錄見 [docs/DEMO.md](docs/DEMO.md) |
+| **合約** | v1 `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc)，Base Sepolia（chain `84532`），已因 ADR-0011 退役；重新部署待進行 |
+| **下一步** | 重新部署並重跑以完成 M1，接著決定 [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md)：瀏覽即累積，登入與提領時驗證 World ID |
 
 詳細進度：[docs/SDLC_STATUS.md](docs/SDLC_STATUS.md)。
 
@@ -186,7 +186,8 @@ CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。不�
 | [0007](docs/adr/0007-world-id-integration.md) | 透過 IDKit 接 World ID，每個 campaign 一個 action，不儲存原始身份資料 |
 | [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | 領取簽名金鑰的保管、管理權限與發放上限 |
 | [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | 品質訊號只限單一 campaign，暫不做跨 campaign 信譽 |
-| 0010 | *提議中：* 瀏覽即累積，登入與提領時驗證 World ID（[PR #61](https://github.com/ChiJiun/verified-human-attention-market/pull/61)） |
+| [0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md) | *提議中：* 瀏覽即累積，登入與提領時驗證 World ID |
+| [0011](docs/adr/0011-idempotent-campaign-creation.md) | 每個草稿只在鏈上建立一次（`draftRef`）；深度 reorg 時停止簽發 |
 
 ---
 
@@ -195,7 +196,7 @@ CI 在每次 push 時執行 `javascript`、`e2e`、`solidity` 三個 job。不�
 | 里程碑 | 目標 | 狀態 |
 | --- | --- | --- |
 | M0 | 產品決策：第一個買家、鏈、gas、領取模型、經濟參數 | ✅ 完成 |
-| **M1** | **POC：在測試網跑通完整的金流** | 🟡 已在 Base Sepolia 執行；紀錄與 #12、#13、#19 審查中 |
+| **M1** | **POC：在測試網跑通完整的金流** | 🟡 已在 Base Sepolia 以 v1 合約執行；ADR-0011 重新部署與重跑待進行（#12、#13） |
 | M2 | 給真實買家的 MVP：監控、隱私、審核、簽名金鑰保管 | 🟡 工程基礎已完成；尚無真實買家 |
 | M3 | 封閉測試：品質訊號、公開 API、publisher SDK | 🟡 #25、#26 完成；#27 SDK 未開始 |
 | M4 | AI agent 透過 x402 購買 campaign | ⬜ 未開始（#28） |

@@ -1,10 +1,9 @@
 import { z } from "zod";
+import { EVM_ADDRESS } from "../http/validation.js";
 
 import { httpsUrlSchema, missionInputSchema } from "../missions/schemas.js";
 
-const evmAddressSchema = z
-  .string()
-  .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address");
+const evmAddressSchema = z.string().regex(EVM_ADDRESS, "Invalid EVM address");
 
 const positiveAtomicAmountSchema = z
   .string()

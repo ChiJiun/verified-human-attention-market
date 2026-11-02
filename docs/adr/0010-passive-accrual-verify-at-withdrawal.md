@@ -20,7 +20,7 @@ The product owner's target is different:
 
 The current design conflicts with all four: the comprehension check is the engagement evidence (R1), each campaign needs its own proof and authorization (R2, R4), and the claimant sends the claim transaction (R3, ADR-0003).
 
-Constraint that does not go away: **Proof of Human is not Proof of Engagement** (AGENTS.md §13). Passive browsing is weaker evidence than an answered question, so the risk moves from bots to humans who farm or automate their own verified account.
+Constraint that does not go away: **Proof of Human is not Proof of Engagement** (AGENTS.md §12). Passive browsing is weaker evidence than an answered question, so the risk moves from bots to humans who farm or automate their own verified account.
 
 ## Owner decisions (2026-10-14)
 
@@ -46,7 +46,7 @@ Constraint that does not go away: **Proof of Human is not Proof of Engagement** 
 
 - The platform's own pages report engagement for a logged-in session (D1). The session comes from the World ID login, not from per-event signatures (R2).
 - The API credits a campaign once the reported active, visible dwell time reaches the campaign's threshold (D2). The server enforces the threshold; the client only reports. `UNIQUE(account, campaign)` makes a second credit impossible.
-- Stored per account: which campaigns were credited and the amount. No URL-level browsing history, no raw event stream after crediting (AGENTS.md §13, #22).
+- Stored per account: which campaigns were credited and the amount. No URL-level browsing history, no raw event stream after crediting (AGENTS.md §12, #22).
 - The comprehension check becomes an optional, higher-reward campaign type instead of the default (R1).
 
 ### 1a. Measuring dwell time
@@ -117,7 +117,7 @@ Recommended for the MVP: **option A**.
 | B. User claim via paymaster (ERC-4337) | one signature per withdrawal | paymaster | Keeps user-initiated claims; adds smart accounts and a paymaster provider |
 | C. Merkle root per epoch | one signature, relayed | relayer | Good for many recipients; more operational complexity |
 
-Gas becomes a platform cost, funded by a protocol fee (ADR-0005 currently sets 0%) or a minimum withdrawal amount. Paymaster and relayer availability on Base must be re-checked against official docs before option B or C is chosen (AGENTS.md §19).
+Gas becomes a platform cost, funded by a protocol fee (ADR-0005 currently sets 0%) or a minimum withdrawal amount. Paymaster and relayer availability on Base must be re-checked against official docs before option B or C is chosen (AGENTS.md §18).
 
 ### 5. New settlement contract
 

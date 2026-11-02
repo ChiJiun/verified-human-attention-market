@@ -20,6 +20,8 @@ import {
 } from "../moderation/url-policy.js";
 import { createCampaignSchema } from "./schemas.js";
 import type { CampaignRecord } from "./types.js";
+import { fail } from "../errors/catalog.js";
+import { readIdempotencyKey, UUID } from "../http/validation.js";
 
 interface CampaignRoutesOptions {
   authenticate: Authenticate;
@@ -30,9 +32,6 @@ interface CampaignRoutesOptions {
   /** Runs after create and on idempotent replays (e.g. moderation state). */
   onCampaignCreated?: (campaign: CampaignRecord) => Promise<void>;
 }
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function serializeCampaign(campaign: CampaignRecord) {
   return {
@@ -58,20 +57,16 @@ export async function registerCampaignRoutes(
   const now = options.now ?? (() => new Date());
 
   app.post("/v1/campaigns", async (request, reply) => {
-    const idempotencyKey = request.headers["idempotency-key"];
+    const idempotencyKey = readIdempotencyKey(request);
 
-    if (
-      typeof idempotencyKey !== "string" ||
-      idempotencyKey.length === 0 ||
-      idempotencyKey.length > 200
-    ) {
-      return reply.status(400).send({
-        error: {
-          code: "INVALID_IDEMPOTENCY_KEY",
-          message: "A valid Idempotency-Key header is required",
-          requestId: request.id,
-        },
-      });
+    if (!idempotencyKey) {
+      return fail(
+        request,
+        reply,
+        400,
+        "INVALID_IDEMPOTENCY_KEY",
+        "A valid Idempotency-Key header is required",
+      );
     }
 
     const parsed = createCampaignSchema.safeParse(request.body);
@@ -118,13 +113,13 @@ export async function registerCampaignRoutes(
     const createdAt = now();
 
     if (parsed.data.startAt < createdAt) {
-      return reply.status(400).send({
-        error: {
-          code: "CAMPAIGN_START_IN_PAST",
-          message: "Campaign startAt cannot be in the past",
-          requestId: request.id,
-        },
-      });
+      return fail(
+        request,
+        reply,
+        400,
+        "CAMPAIGN_START_IN_PAST",
+        "Campaign startAt cannot be in the past",
+      );
     }
 
     const advertiserAddress = parsed.data.advertiser.toLowerCase();
@@ -175,14 +170,13 @@ export async function registerCampaignRoutes(
         .send(serializeCampaign(result.campaign));
     } catch (error) {
       if (error instanceof IdempotencyConflictError) {
-        return reply.status(409).send({
-          error: {
-            code: "IDEMPOTENCY_CONFLICT",
-            message:
-              "Idempotency-Key was already used with a different request",
-            requestId: request.id,
-          },
-        });
+        return fail(
+          request,
+          reply,
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          "Idempotency-Key was already used with a different request",
+        );
       }
 
       throw error;
@@ -192,18 +186,18 @@ export async function registerCampaignRoutes(
   app.get<{ Params: { id: string } }>(
     "/v1/campaigns/:id",
     async (request, reply) => {
-      const campaign = UUID_PATTERN.test(request.params.id)
+      const campaign = UUID.test(request.params.id)
         ? await options.repository.getById(request.params.id)
         : null;
 
       if (!campaign) {
-        return reply.status(404).send({
-          error: {
-            code: "CAMPAIGN_NOT_FOUND",
-            message: "Campaign was not found",
-            requestId: request.id,
-          },
-        });
+        return fail(
+          request,
+          reply,
+          404,
+          "CAMPAIGN_NOT_FOUND",
+          "Campaign was not found",
+        );
       }
 
       return reply.send(serializeCampaign(campaign));
@@ -213,18 +207,18 @@ export async function registerCampaignRoutes(
   app.get<{ Params: { id: string } }>(
     "/v1/campaigns/:id/mission",
     async (request, reply) => {
-      const mission = UUID_PATTERN.test(request.params.id)
+      const mission = UUID.test(request.params.id)
         ? await options.repository.getMission(request.params.id)
         : null;
 
       if (!mission) {
-        return reply.status(404).send({
-          error: {
-            code: "MISSION_NOT_FOUND",
-            message: "Mission was not found",
-            requestId: request.id,
-          },
-        });
+        return fail(
+          request,
+          reply,
+          404,
+          "MISSION_NOT_FOUND",
+          "Mission was not found",
+        );
       }
 
       // Answer key and pass threshold stay server-side.

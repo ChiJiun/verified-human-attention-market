@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { EVM_ADDRESS } from "../http/validation.js";
 
 import {
   getAddress,
@@ -150,7 +151,7 @@ export function createRemoteClaimSigner(
     throw new Error("CLAIM_SIGNER_URL must be an http(s) URL");
   }
 
-  if (!/^0x[0-9a-fA-F]{40}$/.test(options.address)) {
+  if (!EVM_ADDRESS.test(options.address)) {
     throw new Error("CLAIM_SIGNER_ADDRESS must be a 20-byte hex address");
   }
 

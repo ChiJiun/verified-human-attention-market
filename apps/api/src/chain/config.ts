@@ -1,4 +1,7 @@
+import { getSupportedChain, SUPPORTED_CHAINS } from "@vham/shared/chains";
+
 import { FUNCTION_SELECTORS } from "./abi.js";
+import { EVM_ADDRESS } from "../http/validation.js";
 
 /**
  * Contract/chain configuration validated at API startup (issue #19).
@@ -6,13 +9,7 @@ import { FUNCTION_SELECTORS } from "./abi.js";
  * silently pointing financial flows at the wrong deployment.
  */
 
-const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
-
-/** Mirrors packages/shared/src/chains.ts (official sources checked 2026-10-12). */
-const OFFICIAL_USDC: Readonly<Record<number, string>> = {
-  84532: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-};
-const SUPPORTED_CHAIN_IDS = new Set([84532, 31337]);
+const SUPPORTED_CHAIN_IDS = Object.keys(SUPPORTED_CHAINS).map(Number);
 
 export interface ChainConfig {
   chainId: number;
@@ -87,9 +84,9 @@ export function loadChainConfig(
 
   const chainId = Number(env.EVM_CHAIN_ID ?? "");
 
-  if (!SUPPORTED_CHAIN_IDS.has(chainId)) {
+  if (!SUPPORTED_CHAIN_IDS.includes(chainId)) {
     problems.push(
-      `EVM_CHAIN_ID must be one of ${[...SUPPORTED_CHAIN_IDS].join(", ")}`,
+      `EVM_CHAIN_ID must be one of ${SUPPORTED_CHAIN_IDS.join(", ")}`,
     );
   }
 
@@ -107,12 +104,12 @@ export function loadChainConfig(
     ["USDC_ADDRESS", usdcAddress],
     ["CAMPAIGN_MANAGER_ADDRESS", campaignManagerAddress],
   ] as const) {
-    if (value && !ADDRESS_PATTERN.test(value)) {
+    if (value && !EVM_ADDRESS.test(value)) {
       problems.push(`${key} is not an EVM address`);
     }
   }
 
-  const official = OFFICIAL_USDC[chainId];
+  const official = getSupportedChain(chainId)?.usdcAddress?.toLowerCase();
   if (official && usdcAddress && usdcAddress !== official) {
     problems.push(
       `USDC_ADDRESS does not match the official USDC on chain ${chainId}`,

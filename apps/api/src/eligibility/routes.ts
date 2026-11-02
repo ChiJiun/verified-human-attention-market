@@ -6,6 +6,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { isRetiredDeployment } from "../campaigns/types.js";
+import { sendError } from "../errors/catalog.js";
+import { EVM_ADDRESS, UUID } from "../http/validation.js";
 import { campaignAction } from "../identity/world-id.js";
 import type { WorldIdConfig } from "../identity/world-id-config.js";
 import {
@@ -13,11 +15,8 @@ import {
   type EligibilityServiceDependencies,
 } from "./service.js";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 const verifyEligibilitySchema = z.object({
-  claimant: z.string().regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address"),
+  claimant: z.string().regex(EVM_ADDRESS, "Invalid EVM address"),
   signalSalt: z.custom<WorldIdSignalSalt>(
     isWorldIdSignalSalt,
     "signalSalt must be 32 bytes as 0x hex",
@@ -36,11 +35,9 @@ export async function registerEligibilityRoutes(
     "/v1/campaigns/:id/world-id/request",
     async (request, reply) => {
       const fail = (status: number, code: string, message: string) =>
-        reply.status(status).send({
-          error: { code, message, requestId: request.id },
-        });
+        sendError(request, reply, status, { code, message });
 
-      if (!UUID_PATTERN.test(request.params.id)) {
+      if (!UUID.test(request.params.id)) {
         return fail(404, "CAMPAIGN_NOT_FOUND", "Campaign was not found");
       }
 
@@ -105,25 +102,19 @@ export async function registerEligibilityRoutes(
   app.post<{ Params: { id: string } }>(
     "/v1/campaigns/:id/eligibility/verify",
     async (request, reply) => {
-      if (!UUID_PATTERN.test(request.params.id)) {
-        return reply.status(404).send({
-          error: {
-            code: "CAMPAIGN_NOT_FOUND",
-            message: "Campaign was not found",
-            requestId: request.id,
-          },
+      if (!UUID.test(request.params.id)) {
+        return sendError(request, reply, 404, {
+          code: "CAMPAIGN_NOT_FOUND",
+          message: "Campaign was not found",
         });
       }
 
       const parsed = verifyEligibilitySchema.safeParse(request.body);
 
       if (!parsed.success || parsed.data.idkitResponse === undefined) {
-        return reply.status(400).send({
-          error: {
-            code: "INVALID_ELIGIBILITY_REQUEST",
-            message: "claimant, signalSalt and idkitResponse are required",
-            requestId: request.id,
-          },
+        return sendError(request, reply, 400, {
+          code: "INVALID_ELIGIBILITY_REQUEST",
+          message: "claimant, signalSalt and idkitResponse are required",
         });
       }
 
@@ -143,12 +134,9 @@ export async function registerEligibilityRoutes(
         }
 
         // Never echo proof material back or into logs.
-        return reply.status(outcome.status).send({
-          error: {
-            code: outcome.code,
-            message: "Eligibility verification was not successful",
-            requestId: request.id,
-          },
+        return sendError(request, reply, outcome.status, {
+          code: outcome.code,
+          message: "Eligibility verification was not successful",
         });
       }
 

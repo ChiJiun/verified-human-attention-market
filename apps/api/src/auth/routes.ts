@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
+import { fail } from "../errors/catalog.js";
+
 import {
   CLEARED_SESSION_COOKIE,
   csrfRejected,
@@ -48,13 +50,13 @@ export async function registerAuthRoutes(
     const parsed = verifySchema.safeParse(request.body);
 
     if (!parsed.success) {
-      return reply.status(400).send({
-        error: {
-          code: "INVALID_SIGN_IN_REQUEST",
-          message: "message and signature are required",
-          requestId: request.id,
-        },
-      });
+      return fail(
+        request,
+        reply,
+        400,
+        "INVALID_SIGN_IN_REQUEST",
+        "message and signature are required",
+      );
     }
 
     const { message, signature, transport } = parsed.data;
@@ -72,13 +74,13 @@ export async function registerAuthRoutes(
     });
 
     if (!outcome.ok) {
-      return reply.status(outcome.status).send({
-        error: {
-          code: outcome.code,
-          message: "Sign-in failed",
-          requestId: request.id,
-        },
-      });
+      return fail(
+        request,
+        reply,
+        outcome.status,
+        outcome.code,
+        "Sign-in failed",
+      );
     }
 
     const { session } = outcome;
@@ -152,13 +154,13 @@ export function unauthorized(request: FastifyRequest, reply: FastifyReply) {
     reply.header("set-cookie", CLEARED_SESSION_COOKIE);
   }
 
-  return reply.status(401).send({
-    error: {
-      code: "UNAUTHENTICATED",
-      message: "Sign in with Ethereum is required",
-      requestId: request.id,
-    },
-  });
+  return fail(
+    request,
+    reply,
+    401,
+    "UNAUTHENTICATED",
+    "Sign in with Ethereum is required",
+  );
 }
 
 /**
@@ -179,13 +181,13 @@ export async function requireWallet(
   }
 
   if (session.address !== advertiserAddress.toLowerCase()) {
-    await reply.status(403).send({
-      error: {
-        code: "NOT_CAMPAIGN_ADVERTISER",
-        message: "The signed-in wallet is not this campaign's advertiser",
-        requestId: request.id,
-      },
-    });
+    await fail(
+      request,
+      reply,
+      403,
+      "NOT_CAMPAIGN_ADVERTISER",
+      "The signed-in wallet is not this campaign's advertiser",
+    );
     return null;
   }
 

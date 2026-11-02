@@ -177,7 +177,7 @@ These do not block the testnet POC but must be revisited before real funds (#29)
 
 ## Deferred Architecture
 
-Not in the critical path (AGENTS.md §6):
+Not in the critical path (AGENTS.md §5):
 
 - x402 agent payments (#28; research draft in PR #66 is not a decision);
 - AARC / multi-chain (#30);

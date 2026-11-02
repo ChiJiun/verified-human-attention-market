@@ -16,10 +16,10 @@ Advertisers pay for attention from **verified unique humans**, and those humans 
 
 | | |
 | --- | --- |
-| **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14. The run record is under review in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62), and #12, #13 and #19 stay open until it is accepted |
-| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
-| **Contract** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`) |
-| **Next** | Close M1, then decide [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61): earn while browsing, with World ID at login and withdrawal |
+| **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14 with the v1 contract. ADR-0011 (idempotent creation) changed the contract, so the flow is repeated on a redeploy before #12 and #13 close |
+| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [docs/DEMO.md](docs/DEMO.md) |
+| **Contract** | v1 `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`), retired by ADR-0011; the redeploy is pending |
+| **Next** | Redeploy and re-run to close M1, then decide [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md): earn while browsing, with World ID at login and withdrawal |
 
 Detailed status: [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md).
 
@@ -186,7 +186,8 @@ CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit 
 | [0007](docs/adr/0007-world-id-integration.md) | World ID via IDKit, one action per campaign, no raw identity stored |
 | [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | Claim-signer custody, admin roles and payout limits |
 | [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | Campaign-scoped quality signals, no cross-campaign reputation yet |
-| 0010 | *Proposed:* earn while browsing, World ID at login and withdrawal ([PR #61](https://github.com/ChiJiun/verified-human-attention-market/pull/61)) |
+| [0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md) | *Proposed:* earn while browsing, World ID at login and withdrawal |
+| [0011](docs/adr/0011-idempotent-campaign-creation.md) | Idempotent on-chain campaign creation per draft (`draftRef`); a deep reorg halts signing |
 
 ---
 
@@ -195,7 +196,7 @@ CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit 
 | Milestone | Goal | Status |
 | --- | --- | --- |
 | M0 | Product decisions: first buyer, chain, gas, claim model, economics | ✅ Done |
-| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia; record and #12, #13, #19 under review |
+| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia (v1 contract); ADR-0011 redeploy and re-run pending (#12, #13) |
 | M2 | MVP for a real buyer: observability, privacy, moderation, signer custody | 🟡 Engineering baseline done; no real buyer yet |
 | M3 | Closed beta: quality signals, public API, publisher SDK | 🟡 #25 and #26 done; #27 SDK open |
 | M4 | AI agents buy campaigns over x402 | ⬜ Not started (#28) |

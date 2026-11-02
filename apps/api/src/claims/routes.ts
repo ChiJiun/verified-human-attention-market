@@ -2,9 +2,10 @@ import type { SignedClaim } from "./signer.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { sendError } from "../errors/catalog.js";
+import { UUID } from "../http/validation.js";
 import { authorizeClaim, type ClaimDependencies } from "./service.js";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bodySchema = z.object({ eligibilityToken: z.string().regex(UUID) });
 
 export async function registerClaimRoutes(
@@ -15,12 +16,9 @@ export async function registerClaimRoutes(
     "/v1/campaigns/:id/submissions/:submissionId/authorization",
     async (request, reply) => {
       const fail = (status: number, code: string) =>
-        reply.status(status).send({
-          error: {
-            code,
-            message: "Claim authorization unavailable",
-            requestId: request.id,
-          },
+        sendError(request, reply, status, {
+          code,
+          message: "Claim authorization unavailable",
         });
 
       if (
