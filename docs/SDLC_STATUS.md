@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-02
+> Last reviewed: 2026-11-03
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -88,7 +88,7 @@ Official references:
 | Deployment tooling / canonical ABI | ✅ Script + CI-checked ABI + fail-fast config; API and web use the canonical ABI at runtime; the API refuses a CampaignManager from before ADR-0011. The 2026-10-14 record is archived in `packages/contracts/deployments/archive/`; no current Base Sepolia record until the redeploy |
 | Claim authorization service | ✅ EIP-712 signing, live on-chain checks, paid + outstanding cap, reissue after expiry (#10) |
 | Wallet authentication (SIWE) | ✅ #37 |
-| Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16) |
+| Chain indexer / reconciliation | ✅ Reorg-safe event worker and confirmed campaign state (#17, #16). Every committed range is hash-linked to the cursor and bloom-flagged blocks are proven complete from their receipts (#76, #102); links are read at the indexed block's hash (#76); recovery cannot race the worker (#77) |
 | Advertiser analytics | ✅ Reconciled, advertiser-only via SIWE (#20, #37) |
 | Observability | ✅ Request ids, redacted JSON logs, Prometheus metrics, payout anomaly alert, runbook (#21) |
 | Privacy / retention | ✅ Policy, scheduled enforcement, wallet erasure (#22, docs/privacy/DATA_RETENTION.md) |
@@ -97,11 +97,11 @@ Official references:
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
-| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69) |
+| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69). Unknown approve, fund, close and refund outcomes resolve without a reload, linking resumes after a transient 503, and a paid wallet sees "already paid" without a transaction (#78, #82, #86, #103) |
 | End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12). Only World ID 4.0 proofs are accepted (#74, PR #79); the 2026-10-14 proof may have been a 3.0 proof, so the re-run repeats it |
 | Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
-| Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
+| Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml; chain-halt and inconsistent-read alerts, built `:start` scripts, client-address topology for rate limits (#75, #76, #77) |
 
 ## Implementation Evidence
 
@@ -140,11 +140,27 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30. #80 awaits the owner's decision above.
+Open issues: #80 and #70 are owner decisions (#80 has a recommendation in the issue, 2026-11-03); #74 and #71 wait for the #13 re-run; #104 (DOM tests for the web pages) adds dev dependencies and is left for the owner; the epics #27, #29 and #30.
+
+## Follow-ups merged 2026-11-03
+
+Each was reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e).
+
+| PR | Closes | What changed |
+| --- | --- | --- |
+| #96 | #75 | CI smoke proves the `/api` rewrite forwards `X-Forwarded-For` unchanged; RUNBOOK documents the proxy topology and `TRUST_PROXY_HOPS=1` |
+| #97 | #82 | A paid wallet gets `ALREADY_CLAIMED` instead of a stored authorization; the mission page simulates the claim and shows "already paid" without a transaction |
+| #98 | #78, #86 | Linking resumes after a transient 503; `/publish` refuses a draft already created at the latest block; unknown close/refund outcomes resolve without a reload |
+| #99 | #76 | Links are read at the indexed block's hash; the indexer commits only ranges hash-linked to its cursor and retries, rather than halts, on an inconsistent read |
+| #100 | #77 | Deployment lock and cursor compare-and-set keep `reorg:recover` from racing the worker; `vham_chain_halted` gauge and alert; the built `:start` scripts run again |
+| #101 | — | The API retries its startup chain check instead of crash-looping |
+| #105 | — | Shared `campaignInput()` test fixture |
+| #106 | #102 | Bloom-flagged blocks are proven complete from their receipts before a range commits |
+| #107 | #103 | Unknown Approve and Fund outcomes resolve without a reload |
 
 ## Next SDLC Actions
 
-1. Owner answers #80.
+1. Owner answers #80 (a recommendation is in the issue).
 2. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow (`docs/deployment/BASE_SEPOLIA_RERUN.md`); then close M1 (#12, #13) and, if the swap test passes, #71.
 3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
 4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
