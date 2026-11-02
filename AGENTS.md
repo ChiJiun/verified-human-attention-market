@@ -55,9 +55,9 @@ The long-term product may become **Verified Human Attention as an API**, but the
 
 `docs/SDLC_STATUS.md` is the single status page (phases, ADR status, review gates); GitHub issues and CI are authoritative over both files. Implementation and testing are active, and the only deployment is the Base Sepolia testnet with no real funds. Do **not** restart planning from zero.
 
-On 2026-11-03 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87, #88, #90, #92, #93) reached `main` through #94, which resolved the conflicts between those PRs. Next, in dependency order:
+On 2026-11-03 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87, #88, #90, #92, #93) reached `main` through #94, which resolved the conflicts between those PRs. The same day #75, #76, #77, #78, #82, #86, #102 and #103 were fixed in #96–#107 (see `docs/SDLC_STATUS.md`). Next, in dependency order:
 
-1. **Owner gate before the redeploy**: decide issue #80 (`CampaignManager` cleanup), because the redeploy is the next on-chain change.
+1. **Owner gate before the redeploy**: decide issue #80 (`CampaignManager` cleanup; a recommendation is in the issue), because the redeploy is the next on-chain change.
 2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` takes a `draftRef`, so the 2026-10-14 contract is incompatible. Follow the migration steps in `docs/deployment/TESTNET.md` and the runbook `docs/deployment/BASE_SEPOLIA_RERUN.md`, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13). #71 closes only after the #13 swap test passes as ADR-0007 describes.
 3. **ADR-0010 (proposed only)**: passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
@@ -177,9 +177,8 @@ Current baseline:
 - Foundry v1.8.4
 - Solidity 0.8.30
 - PostgreSQL 16 in CI
-- Foundry is currently invoked via WSL on Windows
 
-If Docker Desktop is not running locally, PostgreSQL integration tests may skip locally. GitHub Actions runs PostgreSQL as a service, so CI is the required integration check.
+Since the machine was reset on 2026-11-02 it has only Node 24 and pnpm; Foundry (otherwise native or in WSL), PostgreSQL and the anvil e2e run in CI, which is the required check for them. Without a local database the PostgreSQL integration tests skip.
 
 Do not install or upgrade major dependencies casually. If an upgrade changes architecture/runtime behavior, document it.
 
