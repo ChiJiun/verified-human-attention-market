@@ -2,1604 +2,226 @@
 
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
-[Roadmap](#roadmap)
+Advertisers pay for attention from **verified unique humans**, and those humans are paid in **USDC**. Budgets sit in an on-chain escrow, World ID proves a participant is a unique person, and an off-chain verifier decides whether the work was actually done before the contract releases a reward.
 
-**New developer / AI session:** start with [AGENTS.md](AGENTS.md).
+> **This is not a "watch ads to earn crypto" site.** The goal is a market, and later an API, for buying human attention that can be verified, so that bots and farms cannot drain the budget.
 
-> Working title. A Web3 marketplace/protocol for buying **verified human attention** and rewarding real users in **USDC**.
+> ⚠️ **Testnet only.** The contracts are not audited and the project has not passed its production-readiness gate ([#29](https://github.com/ChiJiun/verified-human-attention-market/issues/29)). Do not use real funds.
 
-This repository is the product and engineering master plan for turning the idea from a proof of concept into a production system.
-
-The core thesis is simple:
-
-> **Do not build a “watch ads to earn crypto” website. Build a market and protocol for verifiable human attention.**
-
-The protocol should let advertisers, creators, publishers, and AI agents fund campaigns; let verified humans complete meaningful missions; and settle rewards transparently.
-
-## SDLC Status
-
-**Current phase:** Implementation
-
-**Planning / Requirements / System Design:** Baseline complete
-
-**Implementation:** Active — monorepo and `CampaignManager` baseline implemented
-
-**Testing:** Active — JavaScript checks plus Foundry unit/fuzz/invariant tests
-
-The first SDLC artifacts are now maintained in the repository:
-
-- [SDLC status](docs/SDLC_STATUS.md)
-- [Product brief](docs/product/PRODUCT_BRIEF.md)
-- [MVP requirements](docs/product/REQUIREMENTS.md)
-- [MVP architecture](docs/architecture/MVP_ARCHITECTURE.md)
-- [ADR-0001: Base as proposed MVP chain](docs/adr/0001-mvp-chain-base.md)
-- [ADR-0002: Sponsored content + comprehension check](docs/adr/0002-first-use-case-sponsored-content.md)
-- [Threat model v0](docs/threat-model/THREAT_MODEL.md)
-
-Working assumptions are intentionally reversible until the Product Decision Gate is accepted.
-
-### Local development
-
-**End-to-end demo:** see [docs/DEMO.md](docs/DEMO.md) (Traditional Chinese). It runs the full create → fund → verify → claim → settle loop on a local chain with the real contract, API and database.
-
-Requirements: Node.js 24+, pnpm 12.4.2, and Foundry v1.8.4 for Solidity work. On Windows, Foundry is currently used through WSL.
-
-```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm lint
-pnpm build
-pnpm format:check
-```
-
-Run the web app and API together:
-
-```bash
-pnpm dev
-```
-
-Contract checks:
-
-```bash
-cd packages/contracts
-forge fmt --check
-forge build --sizes
-forge test -vv
-```
-
-Copy `.env.example` to a local `.env` file when environment-specific values are needed. Never commit real keys or credentials.
-
-### Testing
-
-| Layer | Command | Covers | Needs |
-| --- | --- | --- | --- |
-| Unit + API | `pnpm test` | verifier, World ID, SIWE, EIP-712 authorization, indexer, reconciliation, metrics/alerts, moderation, API keys and rate limits, every API endpoint (in-memory) | nothing |
-| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` | the same scenarios on a real database: idempotency, unique constraints, concurrency, reorgs, issuance lock, retention/erasure, audit triggers | PostgreSQL 16 |
-| Contracts | `cd packages/contracts && forge test -vv` | unit, fuzz, stateful invariants, deploy script, event topics | Foundry |
-| ABI drift | `cd packages/contracts && forge build && node scripts/export-abi.mjs --check` | shared ABI matches the compiled contract | Foundry |
-| End-to-end demo | `pnpm --filter @vham/api test:e2e` | full loop on a local chain, with final accounting checked | anvil + PostgreSQL |
-
-```bash
-docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham_e2e postgres:16-alpine
-anvil                                   # second terminal (WSL on Windows)
-(cd packages/contracts && forge build)
-export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
-export E2E_RPC_URL=http://127.0.0.1:8545
-pnpm test && pnpm --filter @vham/api test:e2e
-```
-
-PostgreSQL tests skip when `TEST_DATABASE_URL` is unset. The e2e run wipes its database tables, so use a dedicated database. Only World ID is simulated. See [docs/DEMO.md](docs/DEMO.md) for details and Windows notes. CI runs the `javascript`, `e2e` and `solidity` jobs on every push and reports failures as annotations.
-
-`pnpm install` also builds `@vham/shared` (the canonical contract ABI used by API and web); after changing it run `pnpm --filter @vham/shared build`.
-
-Operating it: `GET /health/ready`, `GET /metrics` (Prometheus; `METRICS_TOKEN`), worker metrics on `INDEXER_METRICS_PORT`, alert rules and responses in [docs/operations/RUNBOOK.md](docs/operations/RUNBOOK.md). Data retention runs in the indexer worker or via `pnpm --filter @vham/api retention` ([policy](docs/privacy/DATA_RETENTION.md)).
-
----
-
-## 1. Problem
-
-Digital advertising has several structural problems:
-
-- advertisers pay for impressions/clicks that may be generated by bots, farms, or low-quality traffic;
-- users provide attention but usually receive none of the economic value;
-- advertisers cannot easily purchase a small amount of verifiable, high-quality human engagement through an API;
-- Web3 campaigns often rely on wallet activity as a proxy for “real user,” which does not prove unique humanity;
-- “proof that someone is human” and “proof that someone actually engaged” are different problems.
-
-This project separates those problems and solves them with different layers.
-
----
-
-## 2. Product Positioning
-
-**Verified Human Attention Marketplace**
-
-The platform is a two-sided market plus an integration protocol.
-
-| Actor | What they want | What the platform provides |
-| --- | --- | --- |
-| Advertiser / Creator | Real human attention and measurable outcomes | Verified-human targeting, escrow, analytics |
-| User | Compensation for attention, feedback, or actions | USDC rewards, preferences, reputation |
-| Publisher | Monetize existing traffic | SDK / widget / API and revenue share |
-| AI Agent | Programmatic access to real humans | API-first campaign creation and machine payments |
-
-The long-term product is not only a website. The website is one client of the protocol.
-
----
-
-## 3. Core Design Principles
-
-1. **Single-chain first.** Do not introduce cross-chain complexity before product-market need exists.
-2. **Identity and engagement are separate.** World ID can help prove unique humanity; it cannot prove that the user paid attention.
-3. **USDC is the settlement asset.** Avoid launching a speculative native token for the MVP.
-4. **Smart contracts handle escrow and rewards.** Off-chain services handle flexible engagement verification and analytics.
-5. **x402 belongs on the machine/API payment side.** It is not a click-to-earn protocol.
-6. **AARC is optional infrastructure for later chain abstraction.** It should not be an MVP dependency.
-7. **Every interaction should accumulate defensible network value:** reputation, fraud signals, advertiser workflow integrations, publisher distribution, and market liquidity.
-
----
-
-## 4. System Overview
-
-```mermaid
-flowchart LR
-    A[Advertiser / Creator] -->|Wallet payment| E[Campaign Escrow]
-    G[AI Agent] -->|x402 / API payment| API[Campaign API]
-    API --> E
-
-    U[User] --> ID[World ID / Proof of Human]
-    ID --> V[Engagement Verifier]
-    U --> V
-
-    V -->|valid completion| R[Reward Distributor]
-    E --> R
-
-    R -->|USDC reward| U
-    R -->|protocol fee| P[Protocol Treasury]
-    R -->|publisher share| PUB[Publisher]
-
-    PUB -->|SDK / Widget| U
-
-    V --> REP[Reputation / Fraud Signals]
-    REP --> API
-```
-
-### Layer responsibilities
-
-| Layer | Responsibility |
-| --- | --- |
-| World ID / Proof of Human | Unique-human / anti-Sybil signal |
-| Engagement verifier | Whether a campaign mission was actually completed |
-| Smart contracts | Budget escrow, accounting, claims, refunds, fees |
-| USDC | Settlement |
-| x402 | Machine/API payment path for agents and automated clients |
-| AARC | Future chain abstraction / cross-chain UX if needed |
-| Backend | Campaign orchestration, analytics, fraud detection, attestations |
-| Frontend | Advertiser dashboard, user mission feed, publisher integration UI |
-
----
-
-## 5. Why x402 Is Useful — and Where It Is Not
-
-x402 should be treated as a **payment mechanism for HTTP/API resources**, especially when the payer is software.
-
-Good use cases:
-
-- an AI agent pays to create or fund a campaign;
-- an AI agent purchases access to a verified-human response API;
-- a publisher or partner pays for a metered API;
-- machine-to-machine workflows need automated settlement.
-
-Do **not** make x402 responsible for:
-
-- determining whether a user is human;
-- deciding whether a click is valid;
-- reward accounting;
-- campaign escrow;
-- paying the user merely because a page was clicked.
-
-A human advertiser can still use x402, but a normal wallet checkout may be the simpler UX. x402 becomes strategically important when the same product is exposed to autonomous agents and external software.
-
----
-
-## 6. World ID / Proof of Human
-
-World ID is a candidate identity layer for proving that a claimant is a unique human without requiring the protocol to build its own identity network.
-
-A target claim flow:
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant W as World ID
-    participant B as Backend
-    participant C as Reward Contract
-
-    U->>W: Request proof
-    W-->>U: Proof / nullifier-related output
-    U->>B: Submit campaign completion + proof
-    B->>B: Verify unique human + engagement
-    B-->>U: Signed/authorized claim
-    U->>C: claimReward(...)
-    C->>C: Prevent replay / duplicate claim
-    C-->>U: USDC
-```
-
-### Important distinction
-
-**Proof of Human != Proof of Engagement.**
-
-A verified human can still:
-
-- instantly close the content;
-- randomly answer a quiz;
-- mechanically farm campaigns;
-- coordinate with other humans;
-- submit low-quality feedback.
-
-World ID is therefore one anti-Sybil input, not the entire fraud system.
-
----
-
-## 7. Engagement Verification
-
-The first production advantage should come from better measurement of **quality**, not from adding more chains.
-
-Possible mission types:
-
-- read an article;
-- watch content;
-- try a dApp;
-- complete a survey;
-- answer comprehension questions;
-- perform a testnet/mainnet action;
-- join a beta program;
-- submit structured feedback;
-- compare two product experiences;
-- complete a research task.
-
-Possible quality signals:
-
-- active dwell time;
-- completion percentage;
-- interaction events;
-- comprehension score;
-- task-specific on-chain evidence;
-- advertiser acceptance/rejection;
-- repeated behavioral patterns;
-- historical completion quality;
-- fraud-risk score.
-
-Do not rely on a single signal such as dwell time. It is easy to game.
-
----
-
-## 8. Reputation
-
-The platform should build **pseudonymous behavioral reputation**, not necessarily expose real-world identity.
-
-A reputation profile may include:
-
-- campaign completion rate;
-- accepted completion rate;
-- average comprehension score;
-- consistency across missions;
-- response quality;
-- dispute frequency;
-- suspicious-behavior score;
-- domain-specific experience.
-
-Conceptually:
-
-```
-Verified Human
-    +
-Behavioral Reputation
-    +
-Campaign Context
-    =
-Priced Attention Quality
-```
-
-The reputation system is one of the major long-term moats because a competitor can copy code but cannot instantly reproduce historical quality data.
-
----
-
-## 9. Payment and Chain Strategy
-
-### MVP recommendation
-
-Start with **one EVM-compatible chain** and native/officially supported USDC on that chain.
-
-Candidate environments include:
-
-- **Base** — strong fit for USDC, EVM tooling, API/agent payment experiments;
-- **World Chain** — attractive if the product becomes deeply centered on the World ecosystem and verified humans.
-
-The final chain choice should be made after validating:
-
-- current USDC support;
-- World ID integration path;
-- transaction cost;
-- smart-contract tooling;
-- user wallet UX;
-- x402 ecosystem support;
-- operational reliability.
-
-### Do not build cross-chain in the MVP
-
-Cross-chain introduces additional:
-
-- bridge risk;
-- failure states;
-- liquidity assumptions;
-- monitoring requirements;
-- support burden;
-- smart-contract attack surface.
-
-A user should not have to understand bridging merely to earn a small campaign reward.
-
----
-
-## 10. AARC
-
-AARC is a **candidate future chain-abstraction layer**, not a core protocol dependency for the first release.
-
-Potential future use cases:
-
-- advertiser funds exist on a different chain from campaign settlement;
-- users want rewards on different chains;
-- the system expands to multiple EVM networks;
-- bridge/swap/gas details should be hidden from the end user;
-- the product wants a chain-agnostic funding UX.
-
-Proposed evolution:
-
-```
-Phase 1: Single-chain EVM
-Phase 2: Multi-chain demand appears
-Phase 3: Integrate AARC / chain abstraction
-Phase 4: Chain becomes an implementation detail for users
-```
-
-Before implementation, validate AARC's current SDK, supported networks, security model, fees, and integration constraints.
-
----
-
-## 11. Smart Contract Scope
-
-Keep contracts intentionally small.
-
-### Candidate contracts
-
-```
-CampaignFactory
-CampaignEscrow
-RewardDistributor
-FeeRouter
-```
-
-A minimal campaign model:
-
-```solidity
-struct Campaign {
-    address advertiser;
-    address rewardToken;
-    uint256 budget;
-    uint256 rewardPerCompletion;
-    uint64 startTime;
-    uint64 endTime;
-    uint32 maxParticipants;
-    CampaignStatus status;
-}
-```
-
-Candidate operations:
-
-```
-createCampaign()
-fundCampaign()
-authorizeClaim()
-claimReward()
-closeCampaign()
-withdrawUnusedBudget()
-```
-
-### Contract invariants
-
-At minimum:
-
-- rewards + fees + remaining balance must never exceed funded budget;
-- a claim cannot be replayed;
-- one campaign eligibility proof cannot be reused by the same user;
-- closed/expired campaigns cannot create new liabilities;
-- unused budget has a deterministic refund path;
-- protocol fee accounting must be auditable.
-
----
-
-## 12. Off-chain vs On-chain Boundary
-
-Not everything belongs on-chain.
-
-### On-chain
-
-- campaign funding;
-- escrow;
-- payout;
-- fee accounting;
-- immutable settlement events;
-- replay protection;
-- campaign lifecycle state that affects funds.
-
-### Off-chain
-
-- content delivery;
-- dwell/activity telemetry;
-- anti-fraud models;
-- reputation computation;
-- advertiser analytics;
-- mission rules that change frequently;
-- moderation;
-- indexing.
-
-For early releases, the backend may authorize claims with signed attestations. Production design should ensure that compromise of one service cannot drain arbitrary escrow funds.
-
----
-
-## 13. Business Model
-
-Possible revenue streams:
-
-1. percentage fee on funded/settled campaign value;
-2. fee per verified completion;
-3. premium audience targeting;
-4. analytics subscription;
-5. API/Agent access;
-6. publisher revenue-share spread;
-7. enterprise fraud / verified-human API.
-
-Avoid optimizing too early for token economics. A simple USDC-denominated business is easier to validate.
-
----
-
-## 14. Distribution Strategy
-
-The strongest version of the product should not require all users to visit one website.
-
-### Publisher SDK
-
-Allow other sites, apps, games, blogs, and dApps to embed campaigns.
-
-Possible integration surfaces:
-
-```
-<VerifiedMission campaign="..." />
-```
-
-or:
-
-```
-POST /v1/missions/match
-POST /v1/completions
-GET  /v1/campaigns/:id
-```
-
-A publisher network creates distribution that is significantly harder to replicate than a standalone UI.
-
----
-
-## 15. AI Agent Strategy
-
-AI agents can become a distinct demand-side customer.
-
-Example:
-
-1. an agent determines that it needs 100 verified human judgments;
-2. it calls the platform API;
-3. payment is handled programmatically via x402 or another supported machine-payment path;
-4. a campaign is created;
-5. verified users complete the task;
-6. the agent retrieves structured responses.
-
-Long-term positioning can therefore extend beyond advertising:
-
-> **Verified Human Attention as an API**
-
-Potential demand:
-
-- market research;
-- human evaluation for AI;
-- preference collection;
-- product testing;
-- human-in-the-loop verification;
-- community discovery.
-
----
-
-## 16. Moat
-
-User habit alone is a weak moat. A funded incumbent can subsidize switching.
-
-The defensible assets should be:
-
-### 16.1 Reputation data
-
-Historical verified-human quality and fraud signals.
-
-### 16.2 Market liquidity
-
-Enough demand and supply that campaigns fill quickly at predictable prices.
-
-### 16.3 Publisher distribution
-
-Third-party websites and apps embed the protocol.
-
-### 16.4 Workflow integration
-
-Advertisers and agents build the API into production workflows.
-
-### 16.5 Fraud intelligence
-
-Attack patterns and detection data improve with scale.
-
-### 16.6 Trust
-
-Reliable settlement, dispute handling, privacy, and security become brand assets.
-
-A large company can copy the frontend and contracts. It cannot instantly copy the network state accumulated across these dimensions.
-
----
-
-## 17. Threat Model
-
-Production planning must assume adversarial users.
-
-Key threats:
-
-- Sybil accounts;
-- replayed identity proofs;
-- duplicate claims;
-- scripted engagement;
-- human farming;
-- advertiser-created malicious content;
-- publisher attribution fraud;
-- compromised backend claim signer;
-- oracle/attestation manipulation;
-- smart-contract reentrancy or accounting bugs;
-- fake campaigns / phishing;
-- privacy leakage from identity + behavioral data;
-- wash activity designed to manufacture reputation.
-
-Security requirements should be defined before adding financial scale.
-
----
-
-## 18. Privacy Principles
-
-Proof of humanity should not become a surveillance identity graph.
-
-Principles:
-
-- collect the minimum data necessary;
-- keep real-world identity separate from campaign behavior;
-- use campaign-scoped or privacy-preserving identifiers where possible;
-- avoid publicly exposing a user's full history;
-- define retention periods for telemetry;
-- make consent explicit for analytics and research data;
-- threat-model deanonymization across campaigns.
-
----
-
-# SDLC Plan
-
-The project should use a normal **Software Development Life Cycle (SDLC)** inside each product stage.
-
-```
-Planning
-   ↓
-Requirements
-   ↓
-System Design
-   ↓
-Implementation
-   ↓
-Testing
-   ↓
-Deployment
-   ↓
-Operations & Maintenance
-   ↺
-```
-
-Separately, the product evolves through:
-
-```
-POC → MVP → Beta → Production → Protocol / Ecosystem
-```
-
-These are two different dimensions: **SDLC describes how each release is built; the product roadmap describes what maturity level is being built.**
-
----
-
-## 19. SDLC Phase 1 — Planning
-
-### Questions
-
-- Who is the first paying customer?
-- Is the first use case advertising, product research, or human evaluation?
-- What constitutes a valid completion?
-- What is the initial reward size?
-- Which single chain will be used?
-- Which party absorbs gas?
-- What information must remain private?
-
-### Deliverables
-
-- product brief;
-- target persona;
-- first mission type;
-- architecture decision records (ADRs);
-- initial legal/compliance review;
-- threat model v0.
-
-### Exit criteria
-
-A developer should be able to explain the complete first-user flow without unresolved payment or identity assumptions.
-
----
-
-## 20. SDLC Phase 2 — Requirements
-
-### MVP functional requirements
-
-- advertiser connects wallet;
-- advertiser creates campaign;
-- advertiser deposits USDC;
-- user verifies unique-human eligibility;
-- user completes one mission type;
-- backend validates completion;
-- user claims reward;
-- advertiser sees basic results;
-- unused campaign funds can be recovered safely.
-
-### Non-functional requirements
-
-- no duplicate payout;
-- deterministic budget accounting;
-- mobile-compatible user flow;
-- observable transaction failures;
-- privacy-sensitive identity storage;
-- testable smart-contract invariants.
-
-### Exit criteria
-
-Each requirement has an acceptance test.
-
----
-
-## 21. SDLC Phase 3 — System Design
-
-Produce:
-
-- contract interfaces;
-- database schema;
-- API specification;
-- identity flow;
-- claim authorization design;
-- sequence diagrams;
-- monitoring plan;
-- key management model;
-- failure/retry strategy.
-
-### Architecture decision
-
-For the MVP:
-
-```
-Frontend:     Next.js / React
-Wallet:       EVM wallet stack
-Identity:     World ID
-Settlement:   USDC
-Chain:        one EVM chain
-Contracts:    Solidity
-Backend:      TypeScript service
-Database:     PostgreSQL
-Indexing:     event indexer
-Agent pay:    x402 added after core claim path works
-Cross-chain:  none
-```
-
----
-
-## 22. SDLC Phase 4 — Implementation
-
-Suggested implementation order:
-
-1. repository / CI skeleton;
-2. local contract environment;
-3. CampaignFactory;
-4. CampaignEscrow;
-5. USDC test-token funding;
-6. reward claim path;
-7. World ID integration;
-8. one mission type;
-9. backend completion verifier;
-10. advertiser dashboard;
-11. user mission feed;
-12. event indexing;
-13. analytics;
-14. x402 API;
-15. publisher SDK;
-16. reputation prototype;
-17. AARC only after multi-chain demand is validated.
-
----
-
-## 23. SDLC Phase 5 — Testing
-
-### Smart-contract testing
-
-- unit tests;
-- fuzz tests;
-- invariant tests;
-- boundary timestamps;
-- exhausted budgets;
-- duplicate claims;
-- signer compromise simulations;
-- pause/emergency behavior.
-
-### Application testing
-
-- API unit/integration tests;
-- identity failure paths;
-- wallet rejection;
-- RPC outage;
-- insufficient funds;
-- failed USDC transfer;
-- stale campaign state;
-- retry/idempotency;
-- multi-device user flow.
-
-### Adversarial testing
-
-- scripted clicks;
-- automated quiz answering;
-- replayed proofs;
-- multiple wallets;
-- publisher spoofing;
-- telemetry forgery.
-
-### Production gate
-
-No mainnet funds until:
-
-- contract invariants pass;
-- critical flows have integration tests;
-- secrets/key management is reviewed;
-- monitoring and pause procedures exist;
-- independent contract review/audit is completed for meaningful TVL.
-
----
-
-## 24. SDLC Phase 6 — Deployment
-
-Deployment progression:
-
-```
-Local
-  ↓
-Testnet
-  ↓
-Closed Alpha
-  ↓
-Limited Mainnet Beta
-  ↓
-Production
-```
-
-Start mainnet with:
-
-- capped campaign budgets;
-- capped daily payout;
-- allowlisted advertisers if needed;
-- emergency pause;
-- explicit incident runbook.
-
-Do not remove limits simply because the happy-path demo works.
-
----
-
-## 25. SDLC Phase 7 — Operations & Maintenance
-
-Monitor:
-
-- funded value;
-- settled reward value;
-- claim success rate;
-- fraud rejection rate;
-- campaign fill time;
-- RPC/API errors;
-- signer activity;
-- abnormal payout patterns;
-- cost per verified engagement.
-
-Operational processes:
-
-- incident response;
-- contract upgrade policy;
-- dependency updates;
-- fraud-rule iteration;
-- dispute handling;
-- privacy/data deletion process;
-- postmortems.
-
----
-
-# Product Roadmap
-
-## Phase 0 — POC
-
-Goal: prove the full economic loop.
-
-Scope:
-
-- one chain;
-- one USDC-like settlement token;
-- World ID proof;
-- one mission;
-- escrow;
-- reward claim;
-- no cross-chain;
-- no complex reputation.
-
-Success means:
-
-> One advertiser can fund a campaign, one unique human can complete it, and the system can safely settle a reward end-to-end.
-
----
-
-## Phase 1 — MVP
-
-Goal: prove that somebody wants the product.
-
-Add:
-
-- real USDC;
-- advertiser dashboard;
-- mission feed;
-- basic analytics;
-- expiration/refund logic;
-- basic fraud signals;
-- campaign templates.
-
-Primary validation metric:
-
-**Will advertisers repeatedly pay for verified human completions?**
-
----
-
-## Phase 2 — Beta
-
-Goal: prove repeatability.
-
-Add:
-
-- multiple mission types;
-- publisher integration;
-- reputation;
-- stronger fraud engine;
-- dispute workflow;
-- API;
-- x402 experiment for automated buyers.
-
-Metrics:
-
-- repeat advertiser rate;
-- campaign fill time;
-- fraud-adjusted cost per valid completion;
-- user retention;
-- publisher contribution;
-- gross margin.
-
----
-
-## Phase 3 — Production
-
-Goal: operate safely at meaningful value.
-
-Requirements:
-
-- audited contracts;
-- mature monitoring;
-- access/key controls;
-- abuse tooling;
-- privacy controls;
-- financial reconciliation;
-- documented incident response;
-- campaign budget caps/risk controls;
-- reliable analytics.
-
----
-
-## Phase 4 — Protocol / Ecosystem
-
-Goal: become infrastructure instead of only an application.
-
-Add:
-
-- public SDK;
-- publisher ecosystem;
-- agent-native API;
-- x402 programmatic demand;
-- permissionless integrations;
-- third-party mission providers;
-- optional multi-chain support;
-- AARC / chain abstraction if justified.
-
----
-
-# Initial Backlog
-
-## P0 — Must have
-
-- [ ] Choose MVP chain
-- [ ] Confirm current USDC deployment/support
-- [ ] Confirm current World ID integration path
-- [ ] Define campaign state machine
-- [ ] Implement escrow contract
-- [ ] Implement payout/claim contract
-- [ ] Implement duplicate-claim protection
-- [ ] Build one mission type
-- [ ] Build World ID verification flow
-- [ ] Build backend completion verifier
-- [ ] Build advertiser funding UI
-- [ ] Build user claim UI
-- [ ] Add contract + integration tests
-
-## P1 — MVP quality
-
-- [ ] Campaign expiration/refund
-- [x] Event indexer
-- [x] Advertiser analytics
-- [ ] Basic reputation
-- [ ] Basic fraud rules
-- [x] Observability
-- [x] Admin/dispute tooling
-- [x] Privacy/data retention policy
-
-## P2 — Growth
-
-- [ ] Publisher widget/SDK
-- [ ] API documentation
-- [ ] x402 payment endpoint
-- [ ] Agent campaign creation API
-- [ ] Mission marketplace
-- [ ] More sophisticated reputation
-- [ ] Fraud model / anomaly detection
-
-## P3 — Only after evidence of need
-
-- [ ] Multi-chain settlement
-- [ ] AARC integration
-- [ ] Chain abstraction
-- [ ] Cross-chain liquidity management
-
----
-
-# Suggested Repository Structure
-
-```text
-verified-human-attention-market/
-├─ README.md
-├─ docs/
-│  ├─ architecture/
-│  ├─ adr/
-│  ├─ threat-model/
-│  └─ product/
-├─ apps/
-│  ├─ web/
-│  └─ api/
-├─ packages/
-│  ├─ contracts/
-│  ├─ sdk/
-│  └─ shared/
-├─ tests/
-└─ .github/
-   └─ workflows/
-```
-
-This is a target structure, not a requirement for the first commit.
-
----
-
-# Key Metrics
-
-Do not optimize for raw clicks.
-
-Prefer:
-
-- cost per **verified valid completion**;
-- fraud-adjusted completion rate;
-- advertiser repeat rate;
-- median campaign fill time;
-- accepted completion rate;
-- user earnings per active hour;
-- publisher-sourced liquidity;
-- API/agent-generated demand;
-- protocol take rate;
-- gross margin after chain/payment costs.
-
----
-
-# Open Decisions
-
-Before writing production code, resolve these:
-
-1. **First market:** ads, product research, or AI human-evaluation?
-2. **MVP chain:** Base or World Chain?
-3. **Gas UX:** user pays, advertiser sponsors, or relayer/paymaster?
-4. **Claim trust model:** backend-signed attestations vs more decentralized verification?
-5. **First mission:** article + comprehension quiz, survey, dApp trial, or another task?
-6. **Reward model:** fixed amount, auction, or quality-tiered pricing?
-7. **Privacy model:** what reputation is public, private, or selectively disclosed?
-8. **Dispute model:** who can reject a completion and under what evidence?
-9. **Publisher model:** fixed share or market-based share?
-10. **When to introduce x402:** after core MVP or from the first API release?
-
----
-
-# Current Recommended MVP
-
-If development started today, the narrowest credible MVP would be:
-
-```
-Advertiser
-  → connects wallet
-  → creates campaign
-  → deposits USDC
-
-Verified User
-  → World ID verification
-  → reads content
-  → answers a short comprehension check
-  → receives authorized claim
-  → claims USDC
-
-Protocol
-  → prevents duplicate claims
-  → records settlement
-  → exposes basic campaign analytics
-```
-
-**No native token. No DAO. No cross-chain. No AARC in the critical path. No complex ML fraud model yet.**
-
-After this loop demonstrates real demand, expand toward x402 agent buyers, publisher distribution, reputation, and eventually chain abstraction.
+**New developer or AI session?** Start with [AGENTS.md](AGENTS.md).
 
 ---
 
 ## Status
 
-**Stage:** Planning / Requirements  
-**Target:** POC → MVP  
-**Repository:** Product specification and future implementation workspace
-
----
-
-# Roadmap
-
-This roadmap tracks product maturity from **POC → MVP → Beta → Production → Protocol / Ecosystem**.
-
-It intentionally avoids fixed calendar dates until team capacity and the first target market are decided. Each milestone has explicit deliverables and exit criteria so progress is measured by evidence rather than by feature count.
-
----
-
-## Roadmap Principles
-
-- **Single-chain first.**
-- **USDC before native token.**
-- **World ID / Proof of Human is one anti-Sybil layer, not proof of engagement.**
-- **x402 is introduced for API/agent payments after the core economic loop works.**
-- **AARC / chain abstraction is deferred until real multi-chain demand exists.**
-- **No production scaling before financial invariants, monitoring, and incident controls are in place.**
-- **Optimize for verified valid completions, not raw clicks.**
-
----
-
-## Current Status
-
-| Area | Status |
+| | |
 | --- | --- |
-| Product thesis | Defined |
-| Initial architecture | Defined |
-| SDLC | Defined |
-| Threat model | Initial |
-| MVP chain | Decision required |
-| First customer/use case | Decision required |
-| Smart contracts | Not started |
-| Frontend | Not started |
-| Backend | Not started |
-| World ID integration | Not started |
-| USDC settlement | Not started |
-| x402 integration | Deferred |
-| AARC integration | Deferred |
+| **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14. The run record is under review in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62), and #12, #13 and #19 stay open until it is accepted |
+| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [PR #62](https://github.com/ChiJiun/verified-human-attention-market/pull/62) |
+| **Contract** | `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`) |
+| **Next** | Close M1, then decide [ADR-0010](https://github.com/ChiJiun/verified-human-attention-market/pull/61): earn while browsing, with World ID at login and withdrawal |
 
-Current stage: **Planning / Requirements**
+Detailed status: [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md).
 
 ---
 
-# Milestone 0 — Product Decision Gate
-
-## Goal
-
-Freeze the smallest problem worth proving before implementation begins.
-
-## P0 Deliverables
-
-- [ ] Select first customer segment:
-  - advertisers / creators;
-  - product research teams;
-  - AI human-evaluation buyers.
-- [ ] Define first mission type.
-- [ ] Define what counts as a valid completion.
-- [ ] Select MVP chain after checking current integration support.
-- [ ] Confirm current USDC deployment/support on the selected chain.
-- [ ] Confirm current World ID integration path.
-- [ ] Decide gas model.
-- [ ] Define first reward model.
-- [x] Define basic privacy/data-retention boundaries.
-- [ ] Create ADRs for the major architecture decisions.
-
-## Dependencies
-
-None.
-
-## Exit Criteria
-
-A developer can explain the complete first flow:
-
-> advertiser funds campaign → unique human completes mission → completion is verified → USDC is claimed → unused funds can be recovered
-
-with no unresolved assumptions about identity, settlement, or campaign validity.
-
----
-
-# Milestone 1 — POC: End-to-End Economic Loop
-
-## Goal
-
-Prove that the economic loop works technically.
-
-## Scope
-
-One chain, one mission, one advertiser, one verified user path.
-
-## P0 Deliverables
-
-### Contracts
-
-- [ ] Campaign state machine.
-- [ ] CampaignFactory.
-- [ ] CampaignEscrow.
-- [ ] Reward claim mechanism.
-- [ ] Refund unused budget.
-- [ ] Duplicate/replay protection.
-- [ ] Contract events for indexing.
-
-### Identity
-
-- [ ] World ID proof flow.
-- [ ] Campaign-specific uniqueness strategy.
-- [ ] Proof replay handling.
-
-### Backend
-
-- [ ] Create/read campaign API.
-- [ ] Completion verification endpoint.
-- [ ] Claim authorization path.
-- [ ] Idempotent completion handling.
-
-### Frontend
-
-- [ ] Advertiser wallet connection.
-- [ ] Create/fund campaign screen.
-- [ ] User mission page.
-- [ ] World ID verification UX.
-- [ ] Claim reward UX.
-
-### Testing
-
-- [ ] Contract unit tests.
-- [ ] Basic invariant tests.
-- [ ] End-to-end happy path.
-- [ ] Duplicate claim test.
-- [ ] Expired campaign test.
-- [ ] Failed transfer / rejected wallet test.
-
-## Explicitly Out of Scope
-
-- x402;
-- AARC;
-- multi-chain;
-- native token;
-- DAO;
-- sophisticated reputation;
-- ML fraud detection;
-- permissionless publisher ecosystem.
-
-## Exit Criteria
-
-On a development environment or testnet:
-
-1. advertiser funds a campaign;
-2. an eligible human completes the mission;
-3. the system rejects a duplicate claim;
-4. the valid claimant receives the expected reward;
-5. contract accounting remains correct;
-6. advertiser can recover unused budget.
-
----
-
-# Milestone 2 — MVP: Real Buyer Validation
-
-## Goal
-
-Determine whether a real buyer will repeatedly pay for verified human completions.
-
-## P0 Deliverables
-
-- [ ] Real supported USDC settlement.
-- [ ] Campaign expiration/refund.
-- [ ] Basic advertiser dashboard.
-- [ ] User mission feed.
-- [x] Basic campaign analytics.
-- [x] Event indexing.
-- [x] Mission result storage.
-- [ ] Basic fraud rules.
-- [ ] Basic reputation fields.
-- [x] Observability for API and blockchain failures.
-- [x] Privacy/data-retention policy.
-- [x] Admin/dispute tooling.
-
-## P1 Deliverables
-
-- [ ] Multiple campaign templates.
-- [ ] User preference filters.
-- [ ] Basic publisher attribution model.
-- [ ] Exportable advertiser results.
-
-## Key Metrics
-
-- cost per verified valid completion;
-- advertiser repeat rate;
-- accepted completion rate;
-- fraud-adjusted completion rate;
-- campaign fill time;
-- user earnings per active hour.
-
-## Exit Criteria
-
-At least one real buyer demonstrates repeated willingness to fund campaigns, and the product can measure fraud-adjusted unit economics.
-
----
-
-# Milestone 3 — Closed Beta: Repeatability and Quality
-
-## Goal
-
-Show that the marketplace can operate repeatedly without manual intervention for every campaign.
-
-## Deliverables
-
-### Mission System
-
-- [ ] Multiple mission types.
-- [ ] Mission templates.
-- [ ] Configurable eligibility and completion rules.
-- [ ] Better comprehension / quality checks.
-
-### Reputation
-
-- [ ] Pseudonymous reputation model.
-- [ ] Accepted-completion history.
-- [ ] Domain/task-specific quality signals.
-- [ ] Dispute impact on reputation.
-- [ ] Abuse-resistant score update rules.
-
-### Fraud
-
-- [ ] Behavioral anomaly rules.
-- [ ] Telemetry forgery detection.
-- [ ] Human farming heuristics.
-- [ ] Rate limits.
-- [ ] Risk review tooling.
-
-### Publisher
-
-- [ ] First embeddable widget or SDK.
-- [ ] Publisher attribution.
-- [ ] Revenue-share accounting.
-
-### API
-
-- [ ] Stable campaign API.
-- [ ] Stable completion/result API.
-- [ ] API authentication and rate limits.
-- [ ] Versioning policy.
-
-## Exit Criteria
-
-- campaigns can be created, completed, settled, and reported with limited operator intervention;
-- fraud can be quantified rather than treated as an unknown;
-- at least one external publisher or integration works end to end.
-
----
-
-# Milestone 4 — Agent-Native Demand / x402
-
-## Goal
-
-Allow software and AI agents to purchase verified human work programmatically.
-
-## Dependencies
-
-- stable campaign API;
-- stable settlement;
-- reliable fraud controls;
-- clear machine-readable task/result schema.
-
-## Deliverables
-
-- [ ] x402 feasibility validation against current ecosystem/specification.
-- [ ] Machine-readable campaign creation endpoint.
-- [ ] Programmatic payment flow.
-- [ ] Agent-friendly task schema.
-- [ ] Structured result retrieval.
-- [ ] Idempotency and payment reconciliation.
-- [ ] Per-agent limits / abuse controls.
-- [ ] API documentation and examples.
-
-## Example Target Flow
-
-```
-AI Agent
-  → requests 100 verified human judgments
-  → pays programmatically
-  → campaign is created
-  → humans complete tasks
-  → agent retrieves structured results
+## How it works
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor A as Advertiser
+    actor U as Participant
+    participant W as Web app
+    participant API as API + indexer
+    participant ID as World ID
+    participant C as CampaignManager (Base)
+
+    A->>W: Create campaign (content, reward, questions)
+    W->>API: Save draft
+    A->>C: createCampaign + fund (USDC escrow)
+    C-->>API: Events, confirmed by the indexer → campaign "active"
+
+    U->>W: Open mission link, connect wallet
+    W->>API: Ask for a signed World ID request
+    U->>ID: Prove unique human (World App)
+    ID-->>API: Proof, verified by the backend
+    U->>API: Submit answers
+    API-->>U: EIP-712 claim authorization (signed off-chain)
+    U->>C: claim(authorization)
+    C-->>U: 1 USDC
+
+    A->>C: closeCampaign, then refund after the waiting period
 ```
 
-## Exit Criteria
+**Who decides what**
 
-An external software client can purchase and retrieve verified-human work without a human operator manually funding each campaign.
+| Question | Decided by | Why there |
+| --- | --- | --- |
+| Is this a unique human? | World ID (zero-knowledge proof) | We never learn who the person is, only a per-campaign identifier that blocks a second claim |
+| Did they actually engage? | API (off-chain verifier) | Rules change often and must stay private, such as the answer key |
+| Is the payout valid? | Contract | Checks the signature, budget, completion cap, expiry and replay on-chain |
+| How much was paid? | **The chain** | The database is reconciled from confirmed events, never the other way round |
 
----
+**Safety rules built into the contract**
 
-# Milestone 5 — Production Readiness
-
-## Goal
-
-Operate with meaningful real funds and predictable incident handling.
-
-## Smart Contract Security
-
-- [ ] Unit tests.
-- [ ] Fuzz tests.
-- [ ] Invariant tests.
-- [ ] Access-control review.
-- [ ] Replay protection review.
-- [ ] Budget accounting review.
-- [ ] Pause/emergency mechanisms.
-- [ ] Independent security review / audit appropriate to TVL.
-
-## Infrastructure
-
-- [ ] Production secrets/key management.
-- [ ] Monitoring and alerting.
-- [ ] RPC/provider failure handling.
-- [ ] Database backup/restore.
-- [ ] Queue/retry strategy.
-- [ ] Financial reconciliation.
-- [ ] Structured logging.
-- [ ] On-call / incident process.
-
-## Risk Controls
-
-- [ ] Campaign funding limits.
-- [ ] Daily payout limits.
-- [ ] Suspicious-payout alerts.
-- [ ] Signer anomaly alerts.
-- [ ] Emergency pause runbook.
-- [ ] Incident postmortem template.
-
-## Privacy / Abuse
-
-- [x] Data-retention enforcement.
-- [ ] User deletion/privacy workflow where applicable.
-- [ ] Malicious campaign/content moderation.
-- [ ] Phishing/scam controls.
-- [ ] Publisher abuse controls.
-
-## Exit Criteria
-
-The platform can survive expected infrastructure failures and has a documented response path for financial/security incidents before limits are raised.
+- **Budget conservation:** total payouts and refunds can never exceed what was funded.
+- **No replay:** each authorization has a one-time nonce, and each wallet can claim once per campaign.
+- **Delayed refund:** the advertiser can refund only after the last authorization that could have been issued has expired. An issued authorization therefore never races a refund, but the participant still has to claim it before it expires (at most 15 minutes).
+- **Exposure limits:** reward, completions and budget per campaign are capped on-chain (POC: 1 USDC × 10).
 
 ---
 
-# Milestone 6 — Publisher Network
+## Architecture
 
-## Goal
+```mermaid
+flowchart LR
+    subgraph Browser
+        WEB["apps/web<br/>Next.js<br/>advertiser + mission pages"]
+        WALLET[Wallet]
+        WAPP[World App]
+    end
 
-Move distribution beyond the first-party website.
+    subgraph Server
+        API["apps/api<br/>Fastify REST API"]
+        IDX[Indexer worker]
+        DB[(PostgreSQL)]
+    end
 
-## Deliverables
+    subgraph Base
+        CM[CampaignManager]
+        USDC[USDC]
+    end
 
-- [ ] Public publisher SDK.
-- [ ] Embeddable mission component.
-- [ ] Revenue-share rules.
-- [ ] Attribution system.
-- [ ] Publisher analytics.
-- [ ] Integration documentation.
-- [ ] Versioned SDK releases.
-- [ ] Sandbox environment.
+    WEB --> API
+    WALLET -->|create, fund, claim| CM
+    WAPP -->|proof| WEB
+    API -->|verify proof| WID[World ID API]
+    API --> DB
+    IDX -->|read events| CM
+    IDX --> DB
+    CM --> USDC
+```
 
-## Exit Criteria
-
-Multiple independent third-party properties can source users and receive auditable revenue share without custom one-off integration work.
-
----
-
-# Milestone 7 — Protocol / Ecosystem
-
-## Goal
-
-Become infrastructure rather than only an application.
-
-## Deliverables
-
-- [ ] Stable public API.
-- [ ] Stable SDK.
-- [ ] Permissionless or semi-permissionless campaign integration model.
-- [ ] Third-party mission providers.
-- [ ] Agent-native demand.
-- [ ] Publisher network.
-- [ ] Reputation portability policy.
-- [ ] Governance/security policy for protocol changes.
-
-## Exit Criteria
-
-A meaningful portion of demand and supply originates outside the first-party UI.
-
----
-
-# Milestone 8 — Multi-Chain / AARC Decision Gate
-
-## Goal
-
-Add chain abstraction only when the market demonstrates that chain fragmentation is a real problem.
-
-## Trigger Conditions
-
-Proceed only if one or more are true:
-
-- important advertisers hold funds on unsupported chains;
-- users materially prefer reward settlement on other chains;
-- publisher/agent partners require other networks;
-- bridging friction measurably hurts conversion;
-- liquidity/fees on the original chain become a material constraint.
-
-## Validation Before Implementation
-
-- [ ] Confirm current AARC SDK/API capabilities.
-- [ ] Confirm supported networks.
-- [ ] Review security/trust assumptions.
-- [ ] Model bridge/swap failure states.
-- [ ] Model additional fees.
-- [ ] Define fallback and recovery behavior.
-- [ ] Decide where canonical campaign accounting lives.
-
-## Deliverables
-
-Only if the decision gate passes:
-
-- [ ] chain abstraction layer;
-- [ ] cross-chain funding UX;
-- [ ] cross-chain reward UX where justified;
-- [ ] liquidity/reconciliation monitoring;
-- [ ] cross-chain incident runbook.
-
-## Exit Criteria
-
-Users can interact without needing to understand the underlying chain, while accounting remains deterministic and failure recovery is documented.
-
----
-
-# Cross-Cutting Workstreams
-
-These run across milestones rather than belonging to only one release.
-
-## Security
-
-- threat model;
-- contract invariants;
-- key management;
-- dependency review;
-- incident response.
-
-## Privacy
-
-- data minimization;
-- pseudonymous reputation;
-- campaign-scoped identifiers;
-- retention limits;
-- deanonymization analysis.
-
-## Fraud Intelligence
-
-- Sybil signals;
-- behavioral signals;
-- publisher fraud;
-- campaign abuse;
-- anomaly datasets.
-
-## Developer Experience
-
-- API docs;
-- SDK;
-- examples;
-- sandbox;
-- versioning;
-- backward compatibility.
-
-## Market Design
-
-- reward pricing;
-- platform take rate;
-- publisher share;
-- reputation effects;
-- dispute incentives.
-
----
-
-# Priority Model
-
-| Priority | Meaning |
+| Package | What it is |
 | --- | --- |
-| P0 | Required for current milestone / blocks validation |
-| P1 | Important for quality and repeatability |
-| P2 | Growth feature after core demand is proven |
-| P3 | Only after evidence of need |
+| [`apps/web`](apps/web) | Next.js app: advertiser dashboard (`/advertiser`) and participant mission page (`/mission?campaign=…`) with the World ID widget |
+| [`apps/api`](apps/api) | Fastify API on PostgreSQL (Drizzle): campaigns, SIWE login, World ID verification, submissions, claim signing, moderation, analytics. Also runs the chain indexer and reconciliation worker |
+| [`packages/contracts`](packages/contracts) | Solidity + Foundry: `CampaignManager` escrow with unit, fuzz and invariant tests, plus deployment scripts and records |
+| [`packages/shared`](packages/shared) | Canonical contract ABI and chain configuration shared by the API and the web app |
 
-Current focus should remain on **P0 Milestone 0 → Milestone 1**.
-
----
-
-# What We Should Not Build Yet
-
-Until the core loop shows real demand:
-
-- native token;
-- DAO;
-- speculative tokenomics;
-- multi-chain settlement;
-- AARC in the critical path;
-- complex ML fraud scoring;
-- fully decentralized engagement verification;
-- large publisher marketplace;
-- advanced auction/pricing system.
-
-These may become useful later, but they currently add execution risk without validating the central hypothesis.
+Exact versions are in the package manifests and the lockfile.
 
 ---
 
-# Definition of Success
+## Run it locally
 
-The first major proof point is not TVL, token price, or raw clicks.
+Requirements: Node.js 24+, pnpm 12.4.2, Foundry v1.8.4 (on Windows, inside WSL), Docker for PostgreSQL 16.
 
-It is:
+**Minimal start** (web + API only; sign-in, World ID and the chain stay disabled until configured):
 
-> **A real buyer repeatedly pays for fraud-adjusted, verified-human completions because the output is more useful than conventional unverified traffic.**
+```bash
+pnpm install
+docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+pnpm --filter @vham/api db:migrate
+pnpm dev            # web on :3000, API on :3001
+```
 
-Everything in the roadmap should support or test that statement.
+The API and indexer read settings only from environment variables, never from a `.env` file. [`.env.example`](.env.example) lists every variable. To keep them in a git-ignored `.env`, load it into the shell first: `set -a; source .env; set +a` (bash/zsh) or one `$env:NAME = "value"` line per variable (PowerShell).
+
+**Full flow** (local chain, contract, indexer, wallet, simulated World ID): follow **[docs/DEMO.md](docs/DEMO.md)** (Traditional Chinese). It runs the real contract on anvil; only World ID is simulated.
+
+Before every commit:
+
+```bash
+pnpm typecheck && pnpm test && pnpm lint && pnpm build && pnpm format:check
+cd packages/contracts && forge fmt --check && forge build --sizes && forge test -vv
+```
+
+| Test layer | Command | Needs |
+| --- | --- | --- |
+| Unit + API (in memory) | `pnpm test` | nothing |
+| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` set | PostgreSQL 16 |
+| Contracts | `forge test -vv` in `packages/contracts` | Foundry |
+| ABI drift | `forge build && node scripts/export-abi.mjs --check` in `packages/contracts` | Foundry |
+| End-to-end on a local chain | `pnpm --filter @vham/api test:e2e` | anvil + PostgreSQL |
+
+CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit keys or a filled-in `.env`. Testnet deployment: [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md).
+
+---
+
+## Documentation map
+
+| Document | Read it when you want to know… |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | The rules for working on this repo, what is done and what comes next |
+| [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | Where the project is right now |
+| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | Who the product is for and why |
+| [docs/product/REQUIREMENTS.md](docs/product/REQUIREMENTS.md) | What the MVP must do |
+| [docs/product/VISION.md](docs/product/VISION.md) | The long-term vision, business model and full roadmap (formerly this README) |
+| [docs/architecture/MVP_ARCHITECTURE.md](docs/architecture/MVP_ARCHITECTURE.md) | How the components fit together |
+| [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | Exactly what the contract does and guarantees |
+| [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | How the signed claim authorization works |
+| [docs/architecture/API_SPEC.md](docs/architecture/API_SPEC.md) | Every API endpoint and error code |
+| [docs/architecture/DATA_MODEL.md](docs/architecture/DATA_MODEL.md) | The database tables and their constraints |
+| [docs/adr/](docs/adr/) | Why each major decision was made (see below) |
+| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | What can go wrong and how it is mitigated |
+| [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) | What is tested and how |
+| [docs/privacy/DATA_RETENTION.md](docs/privacy/DATA_RETENTION.md) | What data is kept, for how long, and how it is deleted |
+| [docs/operations/](docs/operations/) | Runbook, alerts, incidents, backups, moderation, production readiness |
+| [docs/DEMO.md](docs/DEMO.md) | How to run the full flow, and the Base Sepolia run log |
+| [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md) | How to deploy to Base Sepolia |
+
+### Architecture decisions (ADRs)
+
+| ADR | Decision |
+| --- | --- |
+| [0001](docs/adr/0001-mvp-chain-base.md) | Base is the MVP chain; single chain first |
+| [0002](docs/adr/0002-first-use-case-sponsored-content.md) | First mission: sponsored content + a short comprehension check |
+| [0003](docs/adr/0003-poc-gas-ux.md) | In the POC the user pays testnet gas; revisit before real money |
+| [0004](docs/adr/0004-claim-authorization-eip712.md) | Claims are authorized off-chain with EIP-712 and verified on-chain |
+| [0005](docs/adr/0005-poc-campaign-economics.md) | POC economics: 1 test USDC × max 10, 0% fee |
+| [0006](docs/adr/0006-onchain-exposure-limits.md) | Exposure limits enforced by the contract |
+| [0007](docs/adr/0007-world-id-integration.md) | World ID via IDKit, one action per campaign, no raw identity stored |
+| [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | Claim-signer custody, admin roles and payout limits |
+| [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | Campaign-scoped quality signals, no cross-campaign reputation yet |
+| 0010 | *Proposed:* earn while browsing, World ID at login and withdrawal ([PR #61](https://github.com/ChiJiun/verified-human-attention-market/pull/61)) |
+
+---
+
+## Roadmap
+
+| Milestone | Goal | Status |
+| --- | --- | --- |
+| M0 | Product decisions: first buyer, chain, gas, claim model, economics | ✅ Done |
+| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia; record and #12, #13, #19 under review |
+| M2 | MVP for a real buyer: observability, privacy, moderation, signer custody | 🟡 Engineering baseline done; no real buyer yet |
+| M3 | Closed beta: quality signals, public API, publisher SDK | 🟡 #25 and #26 done; #27 SDK open |
+| M4 | AI agents buy campaigns over x402 | ⬜ Not started (#28) |
+| M5 | Production readiness for real funds: audit, on-call | 🟡 Partial (#29) |
+| M6–M7 | Publisher network, protocol ecosystem | ⬜ Not started |
+| M8 | Multi-chain, only with evidence of demand | ⬜ Deferred (#30) |
+
+Full roadmap with deliverables and exit criteria: [docs/product/VISION.md](docs/product/VISION.md#roadmap).
+
+---
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| **ADR** | Architecture Decision Record: a short document explaining one decision, the alternatives and the consequences. Status goes *Proposed → Accepted* |
+| **M0–M8** | Milestones in the roadmap above |
+| **P0–P3** | Issue priority: P0 must be done and blocks later work; P3 only after evidence of need |
+| **EPIC** | A large issue that will be split into smaller ones |
+| **World ID** | A zero-knowledge proof that someone is a unique human, without revealing who |
+| **Nullifier** | The anonymous value World ID returns per app and action; the same person always gets the same one, which is how a second claim is blocked |
+| **RP / RP signature** | Relying Party: our app. The backend signs every World ID request so nobody can impersonate it |
+| **IDKit** | World's SDK; the widget shows the QR code the World App scans |
+| **EIP-712** | A standard for signing structured data; the backend signs a claim authorization the contract can verify |
+| **SIWE** | Sign-In with Ethereum: logging in by signing a message with the wallet |
+| **Indexer** | A worker that reads confirmed contract events into the database, handling chain reorganizations |
+| **Atomic units** | USDC has 6 decimals, so `1000000` means 1 USDC. Money is never stored as floating point |
+| **Base Sepolia** | Base's public testnet (chain ID `84532`) |
+| **anvil** | Foundry's local blockchain used for development and CI |
