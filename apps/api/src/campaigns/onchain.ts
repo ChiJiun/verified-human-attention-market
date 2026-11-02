@@ -10,7 +10,7 @@ import type {
   ChainEventRepository,
   ChainScope,
 } from "../chain/events-repository.js";
-import { RpcError, type ChainRpc } from "../chain/rpc.js";
+import { RpcError, type BlockRef, type ChainRpc } from "../chain/rpc.js";
 import {
   CampaignLinkConflictError,
   type CampaignRepository,
@@ -52,7 +52,7 @@ export async function readCampaignIdByDraft(
   contractAddress: string,
   advertiser: string,
   draftRef: string,
-  block?: bigint,
+  block?: BlockRef,
 ): Promise<string | null> {
   const result = await rpc.call(
     contractAddress,
@@ -80,7 +80,7 @@ export async function readOnchainCampaign(
   rpc: Pick<ChainRpc, "call">,
   contractAddress: string,
   onchainCampaignId: string,
-  block?: bigint,
+  block?: BlockRef,
 ): Promise<OnchainCampaign | null> {
   const result = await rpc.call(
     contractAddress,
@@ -216,6 +216,11 @@ export interface OnchainDependencies {
   campaigns: CampaignRepository;
   rpc: ChainRpc;
   chain: ChainScope & { usdcAddress: string };
+  /**
+   * The indexer's cursor (links are read at its confirmed block) and halt
+   * (a stale-looking link may still be relinked by recovery).
+   */
+  events: Pick<ChainEventRepository, "getCursor" | "getHalt">;
   now: () => Date;
   /**
    * Blocks a creation must be buried under before it is linked, so a
@@ -233,6 +238,30 @@ async function confirmedHead(
   const confirmed =
     head - BigInt(dependencies.confirmations ?? DEFAULT_CONFIRMATIONS);
   return confirmed < 0n ? null : confirmed;
+}
+
+/**
+ * The block every link is read at: the indexer's latest confirmed block,
+ * addressed by its hash (EIP-1898) so that a node on another fork cannot
+ * answer for it. A link is then always backed by a block the indexer has
+ * committed, and a reorg that removes the creation also rewrites the
+ * cursor block, which the worker records as a halt (issue #76). null
+ * before the first indexed block, or while the cursor block is no longer
+ * canonical (the worker halts on it).
+ */
+async function indexedBlock(
+  dependencies: OnchainDependencies,
+): Promise<{ number: bigint; hash: string } | null> {
+  const cursor = await dependencies.events.getCursor(dependencies.chain);
+
+  if (!cursor?.latestConfirmedBlockHash) {
+    return null;
+  }
+
+  const block = await dependencies.rpc.getBlock(cursor.latestConfirmedBlock);
+  return block?.hash === cursor.latestConfirmedBlockHash
+    ? { number: block.number, hash: block.hash }
+    : null;
 }
 
 /** Transaction intent for the advertiser's wallet (issue #16 / #11). */
@@ -296,11 +325,60 @@ export type LinkFailureCode =
   | "TX_UNCONFIRMED"
   | "PARAMETERS_MISMATCH"
   | "ALREADY_LINKED"
-  | "ONCHAIN_CAMPAIGN_ALREADY_LINKED";
+  | "ONCHAIN_CAMPAIGN_ALREADY_LINKED"
+  | "LINK_NOT_CANONICAL";
 
 export type LinkOutcome =
   | { ok: true; campaign: CampaignRecord }
   | { ok: false; status: number; code: LinkFailureCode };
+
+/**
+ * An existing link is answered from the chain, not from the database: at
+ * the indexed block the contract must still map the draft to the linked id
+ * with the draft's parameters. A stale link (issue #76) is answered with
+ * 409 LINK_NOT_CANONICAL until the worker relinks the draft or halts.
+ * `pending` (202) is the answer while that cannot be decided: no indexed
+ * block, a mapping still empty at it (an index rebuilt after
+ * `reorg:recover` has not reached the creation yet), or a recorded halt.
+ */
+async function confirmExistingLink(
+  dependencies: OnchainDependencies,
+  campaign: CampaignRecord,
+  pending: "TX_UNCONFIRMED" | "NOT_CREATED_YET",
+): Promise<LinkOutcome> {
+  const indexed = await indexedBlock(dependencies);
+
+  if (!indexed) {
+    return { ok: false, status: 202, code: pending };
+  }
+
+  const block = { blockHash: indexed.hash };
+  const mapped = await readCampaignIdByDraft(
+    dependencies.rpc,
+    dependencies.chain.contractAddress,
+    campaign.advertiserAddress,
+    draftRefFor(campaign.id),
+    block,
+  );
+  const onchain =
+    mapped !== null && mapped === campaign.onchainCampaignId
+      ? await readOnchainCampaign(
+          dependencies.rpc,
+          dependencies.chain.contractAddress,
+          mapped,
+          block,
+        )
+      : null;
+
+  if (onchain && matchesDraft(campaign, onchain)) {
+    return { ok: true, campaign };
+  }
+
+  return mapped === null ||
+    (await dependencies.events.getHalt(dependencies.chain)) !== null
+    ? { ok: false, status: 202, code: pending }
+    : { ok: false, status: 409, code: "LINK_NOT_CANONICAL" };
+}
 
 /**
  * Links a draft to the on-chain campaign created by `txHash`.
@@ -327,18 +405,19 @@ export async function linkCampaignByTransaction(
 
   const txHash = input.txHash.toLowerCase();
 
-  if (
-    campaign.onchainCampaignId !== null &&
-    campaign.publishTxHash === txHash
-  ) {
-    // The same hash on an earlier deployment is not this contract's creation.
-    return campaign.onchainContractAddress ===
-      dependencies.chain.contractAddress
-      ? { ok: true, campaign }
-      : { ok: false, status: 409, code: "ALREADY_LINKED" };
-  }
-
   try {
+    if (
+      campaign.onchainCampaignId !== null &&
+      campaign.publishTxHash === txHash
+    ) {
+      // The same hash on an earlier deployment is not this contract's
+      // creation.
+      return campaign.onchainContractAddress ===
+        dependencies.chain.contractAddress
+        ? await confirmExistingLink(dependencies, campaign, "TX_UNCONFIRMED")
+        : { ok: false, status: 409, code: "ALREADY_LINKED" };
+    }
+
     const receipt = await dependencies.rpc.getTransactionReceipt(txHash);
 
     if (!receipt) {
@@ -367,37 +446,46 @@ export async function linkCampaignByTransaction(
     }
 
     // Already linked another way (by draft reference or the indexer): the
-    // same creation is idempotent, anything else is a conflict.
+    // same creation is idempotent if it is still canonical, anything else is
+    // a conflict.
     if (campaign.onchainCampaignId !== null) {
       return campaign.onchainCampaignId === created.campaignId &&
         campaign.onchainContractAddress === dependencies.chain.contractAddress
-        ? { ok: true, campaign }
+        ? await confirmExistingLink(dependencies, campaign, "TX_UNCONFIRMED")
         : { ok: false, status: 409, code: "ALREADY_LINKED" };
     }
 
-    // Only a creation buried under the confirmation depth is linked.
+    // Only a creation buried under the confirmation depth, in a block the
+    // indexer has committed, is linked.
     const confirmed = await confirmedHead(dependencies);
+    const indexed = await indexedBlock(dependencies);
 
-    if (confirmed === null || receipt.blockNumber > confirmed) {
+    if (
+      confirmed === null ||
+      indexed === null ||
+      receipt.blockNumber > confirmed ||
+      receipt.blockNumber > indexed.number
+    ) {
       return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
     }
 
     // A load-balanced RPC can return a receipt from a stale fork: the
     // receipt's block must be the canonical block at that height, and at the
-    // same confirmed height the contract must map this draft to the event's
-    // id. Inconsistent answers are "reconciling", never a link.
+    // indexed block the contract must map this draft to the event's id.
+    // Inconsistent answers are "reconciling", never a link.
     const canonicalBlock = await dependencies.rpc.getBlock(receipt.blockNumber);
 
     if (!canonicalBlock || canonicalBlock.hash !== receipt.blockHash) {
       return { ok: false, status: 202, code: "TX_UNCONFIRMED" };
     }
 
+    const block = { blockHash: indexed.hash };
     const mapped = await readCampaignIdByDraft(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       campaign.advertiserAddress,
       draftRefFor(campaign.id),
-      confirmed,
+      block,
     );
 
     if (mapped !== created.campaignId) {
@@ -410,7 +498,7 @@ export async function linkCampaignByTransaction(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       created.campaignId,
-      confirmed,
+      block,
     );
 
     if (!onchain || !matchesDraft(campaign, onchain)) {
@@ -459,27 +547,31 @@ export async function linkCampaignByDraft(
     return { ok: false, status: 409, code: "WRONG_CHAIN" };
   }
 
-  if (campaign.onchainCampaignId !== null) {
-    // Linked on another deployment (before a redeploy): never reuse it.
-    return campaign.onchainContractAddress ===
-      dependencies.chain.contractAddress
-      ? { ok: true, campaign }
-      : { ok: false, status: 409, code: "ALREADY_LINKED" };
-  }
-
   try {
-    // Read at the confirmed block: an unconfirmed creation is not linked yet.
-    const confirmed = await confirmedHead(dependencies);
-    const onchainCampaignId =
-      confirmed === null
-        ? null
-        : await readCampaignIdByDraft(
-            dependencies.rpc,
-            dependencies.chain.contractAddress,
-            campaign.advertiserAddress,
-            draftRefFor(campaign.id),
-            confirmed,
-          );
+    if (campaign.onchainCampaignId !== null) {
+      // Linked on another deployment (before a redeploy): never reuse it.
+      return campaign.onchainContractAddress ===
+        dependencies.chain.contractAddress
+        ? await confirmExistingLink(dependencies, campaign, "NOT_CREATED_YET")
+        : { ok: false, status: 409, code: "ALREADY_LINKED" };
+    }
+
+    // Read at the indexed block: a creation the indexer has not confirmed
+    // yet is not linked yet.
+    const indexed = await indexedBlock(dependencies);
+
+    if (!indexed) {
+      return { ok: false, status: 202, code: "NOT_CREATED_YET" };
+    }
+
+    const block = { blockHash: indexed.hash };
+    const onchainCampaignId = await readCampaignIdByDraft(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+      block,
+    );
 
     if (!onchainCampaignId) {
       return { ok: false, status: 202, code: "NOT_CREATED_YET" };
@@ -489,7 +581,7 @@ export async function linkCampaignByDraft(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       onchainCampaignId,
-      confirmed!,
+      block,
     );
 
     if (!onchain || !matchesDraft(campaign, onchain)) {
@@ -613,9 +705,13 @@ export async function syncCampaignStatuses(dependencies: {
  * the economics. Events without a matching draft are ignored; `ambiguous`
  * stays for events whose economics contradict their draft.
  *
- * A confirmed creation is canonical. If its id is linked to a different
- * draft (a link to a creation that a reorg removed), that link is released
- * (`relinked`) so the draft the event names can be linked instead.
+ * A confirmed creation that the contract confirms at the indexed block is
+ * canonical. If its id is linked to a different draft (a link to a creation
+ * that a reorg removed), that link is released (`relinked`) so the draft the
+ * event names can be linked instead. So is a link of the draft the event
+ * names to any other id: one creation per advertiser and draft on a fork, so
+ * the other id is not this draft's (issue #76). The economics are read at
+ * the same block.
  */
 export async function autoLinkCreatedCampaigns(
   dependencies: OnchainDependencies & { events: ChainEventRepository },
@@ -626,6 +722,43 @@ export async function autoLinkCreatedCampaigns(
   const createdEvents = await dependencies.events.listConfirmedCreations(
     dependencies.chain,
   );
+  const draftKey = (advertiser: string, draftRef: string) =>
+    `${advertiser}:${draftRef}`;
+  const linkedByDraft = new Map(
+    (
+      await dependencies.campaigns.listLinked(
+        dependencies.chain.chainId,
+        dependencies.chain.contractAddress,
+      )
+    ).map((campaign) => [
+      draftKey(campaign.advertiserAddress, draftRefFor(campaign.id)),
+      campaign,
+    ]),
+  );
+
+  // Index rows alone are not proof: they could hold creations of one draft,
+  // or of one id, from two forks. Every release and link below acts only
+  // when the contract at the indexed block maps the event's draft to the
+  // event's id (issue #76). Returns that block's hash, or null.
+  let indexed: { number: bigint; hash: string } | null | undefined;
+  const confirmedAt = async (
+    created: (typeof createdEvents)[number],
+  ): Promise<string | null> => {
+    if (indexed === undefined) {
+      indexed = await indexedBlock(dependencies);
+    }
+    if (indexed === null) {
+      return null;
+    }
+    const mapped = await readCampaignIdByDraft(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      created.advertiser,
+      created.draftRef,
+      { blockHash: indexed.hash },
+    );
+    return mapped === created.onchainCampaignId ? indexed.hash : null;
+  };
 
   for (const created of createdEvents) {
     const existing = await dependencies.campaigns.findByOnchainId(
@@ -634,44 +767,70 @@ export async function autoLinkCreatedCampaigns(
       created.onchainCampaignId,
     );
 
-    if (existing) {
-      if (
-        draftRefFor(existing.id) === created.draftRef &&
-        existing.advertiserAddress === created.advertiser
-      ) {
-        continue;
-      }
+    if (
+      existing &&
+      draftRefFor(existing.id) === created.draftRef &&
+      existing.advertiserAddress === created.advertiser
+    ) {
+      continue;
+    }
 
-      // Orphaned: the canonical creation for this id belongs to another
-      // draft. Release the stale link; that draft may create again.
-      if (
-        await dependencies.campaigns.unlinkOnchain(
-          existing.id,
-          {
-            onchainCampaignId: created.onchainCampaignId,
-            contractAddress: dependencies.chain.contractAddress,
-          },
-          dependencies.now(),
-        )
-      ) {
-        relinked.push(existing.id);
+    let confirmed: string | null | undefined;
+    const confirmation = async () => {
+      if (confirmed === undefined) {
+        confirmed = await confirmedAt(created);
       }
+      return confirmed;
+    };
+
+    // Orphaned: the canonical creation for this id belongs to another
+    // draft. Release the stale link; that draft may create again.
+    if (
+      existing &&
+      (await confirmation()) !== null &&
+      (await dependencies.campaigns.unlinkOnchain(
+        existing.id,
+        {
+          onchainCampaignId: created.onchainCampaignId,
+          contractAddress: dependencies.chain.contractAddress,
+        },
+        dependencies.now(),
+      ))
+    ) {
+      relinked.push(existing.id);
+    }
+
+    // Stale: the draft the event names is linked to another id.
+    const named = linkedByDraft.get(
+      draftKey(created.advertiser, created.draftRef),
+    );
+
+    if (
+      named &&
+      named.onchainCampaignId !== created.onchainCampaignId &&
+      (await confirmation()) !== null &&
+      (await dependencies.campaigns.unlinkOnchain(
+        named.id,
+        {
+          onchainCampaignId: named.onchainCampaignId!,
+          contractAddress: dependencies.chain.contractAddress,
+        },
+        dependencies.now(),
+      ))
+    ) {
+      relinked.push(named.id);
     }
 
     const drafts = await dependencies.campaigns.listUnlinkedDrafts(
       dependencies.chain.chainId,
       created.advertiser,
     );
-
-    if (drafts.length === 0) {
-      continue;
-    }
-
     const draft = drafts.find(
       (candidate) => draftRefFor(candidate.id) === created.draftRef,
     );
+    const pinned = draft ? await confirmation() : null;
 
-    if (!draft) {
+    if (!draft || pinned === null) {
       continue;
     }
 
@@ -679,6 +838,7 @@ export async function autoLinkCreatedCampaigns(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       created.onchainCampaignId,
+      { blockHash: pinned },
     );
 
     if (!onchain || !matchesDraft(draft, onchain)) {

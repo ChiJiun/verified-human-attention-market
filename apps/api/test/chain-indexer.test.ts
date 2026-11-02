@@ -9,6 +9,7 @@ import {
 } from "../src/chain/abi.js";
 import { deriveCampaignState } from "../src/chain/campaign-state.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import { JsonRpcClient } from "../src/chain/rpc.js";
 import { addressWord, logs, word } from "./support/fake-chain.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 
@@ -157,5 +158,30 @@ describe("deriveCampaignState", () => {
 describe("indexer (in-memory repository)", () => {
   defineIndexerContract({
     repository: () => new InMemoryChainEventRepository(),
+  });
+});
+
+describe("JsonRpcClient", () => {
+  it("reads eth_call at latest, a block number, or a block hash (EIP-1898)", async () => {
+    const blocks: unknown[] = [];
+    const client = new JsonRpcClient("http://rpc.test", (async (
+      _url: unknown,
+      init?: RequestInit,
+    ) => {
+      blocks.push(JSON.parse(String(init?.body)).params[1]);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: "0x" }));
+    }) as typeof fetch);
+    const contract = "0x" + "c0".repeat(20);
+    const hash = word(0xb10c);
+
+    await client.call(contract, "0x");
+    await client.call(contract, "0x", 16n);
+    await client.call(contract, "0x", { blockHash: hash });
+
+    expect(blocks).toEqual([
+      "latest",
+      "0x10",
+      { blockHash: hash, requireCanonical: true },
+    ]);
   });
 });

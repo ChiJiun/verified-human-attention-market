@@ -4,6 +4,7 @@ import { EVENT_TOPICS, FUNCTION_SELECTORS } from "../../src/chain/abi.js";
 import {
   RpcError,
   type BlockHeader,
+  type BlockRef,
   type ChainRpc,
   type RawLog,
   type TransactionReceipt,
@@ -64,6 +65,21 @@ export const logs = {
   }),
 };
 
+interface CampaignStruct {
+  advertiser: string;
+  fundedBudget?: bigint;
+  /** Unix seconds; non-zero once closed. */
+  closedAt?: number;
+  rewardPerCompletion: bigint;
+  maxCompletions: number;
+  startTime: number;
+  endTime: number;
+  /** Block that wrote this version (default: always there). */
+  since?: bigint;
+  /** The version before `since`. */
+  previous?: CampaignStruct;
+}
+
 interface FakeBlock {
   number: bigint;
   hash: string;
@@ -92,20 +108,11 @@ export class FakeChain implements ChainRpc {
   signer: string | null = null;
   /** On-chain `claimedWallet(id, wallet)`, keyed `${id}:${lowercase wallet}`. */
   readonly claimedWallets = new Set<string>();
-  /** On-chain `campaigns(id)` storage returned by eth_call. */
-  readonly campaignStructs = new Map<
-    string,
-    {
-      advertiser: string;
-      fundedBudget?: bigint;
-      /** Unix seconds; non-zero once closed. */
-      closedAt?: number;
-      rewardPerCompletion: bigint;
-      maxCompletions: number;
-      startTime: number;
-      endTime: number;
-    }
-  >();
+  /**
+   * On-chain `campaigns(id)` storage returned by eth_call. With `since`, an
+   * eth_call at an earlier block sees `previous` (or no campaign).
+   */
+  readonly campaignStructs = new Map<string, CampaignStruct>();
 
   constructor(
     readonly contract: string,
@@ -275,10 +282,22 @@ export class FakeChain implements ChainRpc {
     return null;
   }
 
-  async call(to: string, data: string, block?: bigint): Promise<string> {
+  /**
+   * EIP-1898: a node fails for a block hash it does not have (here: one of
+   * another fork) instead of answering from its own chain.
+   */
+  private numberOf(blockHash: string): bigint {
+    const block = this.blocks.find((candidate) => candidate.hash === blockHash);
+    if (!block) throw new RpcError(`header not found: ${blockHash}`);
+    return block.number;
+  }
+
+  async call(to: string, data: string, at?: BlockRef): Promise<string> {
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
     }
+
+    const block = typeof at === "object" ? this.numberOf(at.blockHash) : at;
 
     if (
       to === this.contract &&
@@ -314,7 +333,15 @@ export class FakeChain implements ChainRpc {
     }
 
     const id = BigInt(`0x${data.slice(10)}`).toString();
-    const struct = this.campaignStructs.get(id);
+    let struct = this.campaignStructs.get(id);
+
+    while (
+      struct?.since !== undefined &&
+      block !== undefined &&
+      struct.since > block
+    ) {
+      struct = struct.previous;
+    }
 
     if (!struct) {
       return `0x${"0".repeat(640)}`;

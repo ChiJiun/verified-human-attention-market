@@ -133,6 +133,8 @@ export function describeError(error: unknown): string {
     ALREADY_LINKED: "This draft is already linked to an on-chain campaign.",
     ONCHAIN_CAMPAIGN_ALREADY_LINKED:
       "That on-chain campaign is already linked to another draft.",
+    LINK_NOT_CANONICAL:
+      "This draft's on-chain link no longer matches the chain and is being reconciled. Check again in a few minutes.",
     AUTH_NOT_CONFIGURED: "Sign-in is disabled on this API (SIWE_DOMAIN).",
     NONCE_INVALID_OR_USED: "Sign-in expired. Please try again.",
     MESSAGE_NOT_VALID_NOW:

@@ -111,6 +111,8 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   TX_PENDING: { retryable: true },
   NOT_CREATED_YET: { retryable: true },
   TX_UNCONFIRMED: { retryable: true },
+  // The worker relinks the draft or halts the deployment (issue #76).
+  LINK_NOT_CANONICAL: { retryable: true },
   CHAIN_HALTED: { retryable: true },
   DAILY_LIMIT_REACHED: { retryable: true },
   RATE_LIMITED: { retryable: true },

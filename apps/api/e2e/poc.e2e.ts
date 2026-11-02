@@ -115,6 +115,7 @@ describeE2e("POC economic loop on a local chain", () => {
   let managerAddress: Address;
   let usdcAddress: Address;
   let app: ReturnType<typeof buildApp>;
+  let index: () => Promise<void>;
   let reconcile: () => Promise<void>;
   let checkSettlement: () => Promise<ReconciliationReport>;
 
@@ -280,9 +281,8 @@ describeE2e("POC economic loop on a local chain", () => {
         chain: scope,
       });
 
-    // What the indexer worker does on every pass.
-    reconcile = async () => {
-      await testClient.mine({ blocks: CONFIRMATIONS + 1 });
+    // The indexer step of a worker pass: links are read at its block.
+    index = async () => {
       await indexOnce(rpc, eventRepository, {
         chainId: anvil.id,
         contractAddress: scope.contractAddress,
@@ -290,6 +290,12 @@ describeE2e("POC economic loop on a local chain", () => {
         confirmations: CONFIRMATIONS,
         maxBlockRange: 1_000n,
       });
+    };
+
+    // What the indexer worker does on every pass.
+    reconcile = async () => {
+      await testClient.mine({ blocks: CONFIRMATIONS + 1 });
+      await index();
       await autoLinkCreatedCampaigns({
         campaigns: campaignRepository,
         events: eventRepository,
@@ -480,6 +486,7 @@ describeE2e("POC economic loop on a local chain", () => {
     expect((await receipt(decoyHash)).status).toBe("success");
 
     // Mined but not yet final: still reconciling, never linked early.
+    await index();
     expect((await linkByDraft()).json()).toMatchObject({
       status: "reconciling",
       code: "NOT_CREATED_YET",
@@ -496,7 +503,15 @@ describeE2e("POC economic loop on a local chain", () => {
     ).toMatchObject({ error: { code: "DRAFT_ALREADY_CREATED" } });
     await testClient.mine({ blocks: CONFIRMATIONS });
 
-    // Linking needs no hash: the contract knows this draft's campaign.
+    // Final, but not yet in the indexer's confirmed range (issue #76).
+    expect((await linkByHash(lostHash!)).json()).toMatchObject({
+      status: "reconciling",
+      code: "TX_UNCONFIRMED",
+    });
+    await index();
+
+    // Linking needs no hash: the contract knows this draft's campaign. The
+    // read is pinned to the indexed block's hash (EIP-1898).
     const linked = await linkByDraft();
     expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({ status: "pending_onchain" });

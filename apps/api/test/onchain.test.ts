@@ -14,6 +14,7 @@ import {
   InMemoryChainEventRepository,
   type DeploymentLock,
 } from "../src/chain/events-repository.js";
+import type { BlockRef } from "../src/chain/rpc.js";
 import {
   indexOnce,
   ReorgBeyondConfirmationsError,
@@ -139,12 +140,13 @@ async function setup(options: { chainConfigured?: boolean } = {}) {
       ...params,
     };
     const ref = draftRefFor(draft);
-    chain.campaignStructs.set(String(onchainId), struct);
     const block = chain.mine(
       1,
       [logs.created(onchainId, struct.advertiser, ref)],
       address,
     );
+    // eth_call at an earlier block sees no campaign with this id.
+    chain.campaignStructs.set(String(onchainId), { ...struct, since: block });
     const txHash = chain.lastTxHash;
     if (address === CONTRACT) {
       chain.campaignIdByDraft.set(`${struct.advertiser.toLowerCase()}:${ref}`, {
@@ -298,7 +300,8 @@ describe("POST /v1/campaigns/:id/publish", () => {
   });
 
   it("refuses while this draft's creation is mined but not yet final (#78)", async () => {
-    const { app, chain, createDraft, createOnchain, link } = await setup();
+    const { app, chain, createDraft, createOnchain, index, link } =
+      await setup();
     const id = await createDraft();
     const publish = () =>
       app.inject({ method: "POST", url: `/v1/campaigns/${id}/publish` });
@@ -323,8 +326,9 @@ describe("POST /v1/campaigns/:id/publish", () => {
       error: { code: "DRAFT_ALREADY_CREATED", retryable: false },
     });
 
-    // Once final it links, and the intent stays refused.
+    // Once final and indexed it links, and the intent stays refused.
     chain.mine(CONFIRMATIONS);
+    await index();
     expect((await link(id, txHash)).statusCode).toBe(200);
     expect((await publish()).json()).toMatchObject({
       error: { code: "CAMPAIGN_ALREADY_PUBLISHED" },
@@ -364,9 +368,11 @@ describe("POST /v1/campaigns/:id/publish", () => {
 
 describe("POST /v1/campaigns/:id/onchain", () => {
   it("links a verified creation transaction idempotently", async () => {
-    const { createDraft, createOnchain, link } = await setup();
+    const { createDraft, createOnchain, index, link } = await setup();
     const id = await createDraft();
     const txHash = createOnchain(1, id);
+    // Links are read at the indexer's confirmed block (issue #76).
+    await index();
 
     const first = await link(id, txHash);
     const retry = await link(id, txHash);
@@ -386,7 +392,7 @@ describe("POST /v1/campaigns/:id/onchain", () => {
   });
 
   it("links by draft reference when no transaction hash is known", async () => {
-    const { createDraft, createOnchain, app } = await setup();
+    const { createDraft, createOnchain, index, app } = await setup();
     const id = await createDraft();
     const linkByDraft = () =>
       app.inject({
@@ -404,6 +410,7 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     });
 
     const txHash = createOnchain(4, id);
+    await index();
     const linked = await linkByDraft();
     expect(linked.statusCode).toBe(200);
     expect(linked.json()).toMatchObject({
@@ -423,9 +430,10 @@ describe("POST /v1/campaigns/:id/onchain", () => {
   });
 
   it("does not link a receipt from a stale fork", async () => {
-    const { chain, createDraft, createOnchain, link } = await setup();
+    const { chain, createDraft, createOnchain, index, link } = await setup();
     const id = await createDraft();
     const txHash = createOnchain(1, id);
+    await index();
     // A load-balanced RPC answers with a receipt from another fork.
     const receiptOf = chain.getTransactionReceipt.bind(chain);
     chain.getTransactionReceipt = async (hash: string) => {
@@ -487,10 +495,12 @@ describe("POST /v1/campaigns/:id/onchain", () => {
     ["different completions", { maxCompletions: 9 }, "PARAMETERS_MISMATCH"],
     ["different window", { endTime: END + 60 }, "PARAMETERS_MISMATCH"],
   ])("rejects on-chain evidence with %s", async (_label, params, code) => {
-    const { createDraft, createOnchain, link } = await setup();
+    const { createDraft, createOnchain, index, link } = await setup();
     const id = await createDraft();
+    const txHash = createOnchain(1, id, params);
+    await index();
 
-    const response = await link(id, createOnchain(1, id, params));
+    const response = await link(id, txHash);
 
     expect(response.statusCode).toBe(422);
     expect(response.json()).toMatchObject({ error: { code } });
@@ -513,12 +523,13 @@ describe("POST /v1/campaigns/:id/onchain", () => {
   });
 
   it("never links one on-chain campaign to two drafts", async () => {
-    const { createDraft, createOnchain, link } = await setup();
+    const { createDraft, createOnchain, index, link } = await setup();
     const first = await createDraft("a");
     const second = await createDraft("b", {
       contentUrl: "https://example.com/b",
     });
     const txHash = createOnchain(1, first);
+    await index();
 
     expect((await link(first, txHash)).statusCode).toBe(200);
     // The event names the first draft, so the second can never claim it.
@@ -528,54 +539,52 @@ describe("POST /v1/campaigns/:id/onchain", () => {
   });
 });
 
-describe("reorg beyond the confirmation depth after activation (ADR-0011)", () => {
-  /** What the indexer worker runs every pass (src/chain/worker-pass.ts). */
-  function workerPass(
-    fixture: Awaited<ReturnType<typeof setup>>,
-    maxBlockRange = 100n,
-  ) {
-    return runWorkerPass({
-      rpc: fixture.chain,
-      events: fixture.events,
-      campaigns: fixture.campaigns,
-      config: {
-        chainId: 84532,
-        contractAddress: CONTRACT,
-        deployBlock: 1n,
-        confirmations: CONFIRMATIONS,
-        maxBlockRange,
-      },
-      usdcAddress: USDC_ADDRESS,
-      now: () => new Date(),
-    });
-  }
-
-  /** The worker detects the deep reorg and records the halt. */
-  async function workerDetectsReorg(
-    fixture: Awaited<ReturnType<typeof setup>>,
-  ) {
-    const detected = await workerPass(fixture).catch((error: unknown) => error);
-    expect(detected).toBeInstanceOf(ReorgBeyondConfirmationsError);
-    expect(
-      await recordHaltWithRetry(
-        fixture.events,
-        fixture.scope,
-        (detected as ReorgBeyondConfirmationsError).blockNumber,
-        { now: () => new Date(), stopping: () => false, onFailure: () => {} },
-      ),
-    ).toBe(true);
-  }
-
-  function recovery(fixture: Awaited<ReturnType<typeof setup>>) {
-    return {
-      campaigns: fixture.campaigns,
-      events: fixture.events,
-      rpc: fixture.chain,
-      chain: fixture.scope,
+/** What the indexer worker runs every pass (src/chain/worker-pass.ts). */
+function workerPass(
+  fixture: Awaited<ReturnType<typeof setup>>,
+  maxBlockRange = 100n,
+) {
+  return runWorkerPass({
+    rpc: fixture.chain,
+    events: fixture.events,
+    campaigns: fixture.campaigns,
+    config: {
+      chainId: 84532,
+      contractAddress: CONTRACT,
+      deployBlock: 1n,
       confirmations: CONFIRMATIONS,
-    };
-  }
+      maxBlockRange,
+    },
+    usdcAddress: USDC_ADDRESS,
+    now: () => new Date(),
+  });
+}
 
+/** The worker detects the deep reorg and records the halt. */
+async function workerDetectsReorg(fixture: Awaited<ReturnType<typeof setup>>) {
+  const detected = await workerPass(fixture).catch((error: unknown) => error);
+  expect(detected).toBeInstanceOf(ReorgBeyondConfirmationsError);
+  expect(
+    await recordHaltWithRetry(
+      fixture.events,
+      fixture.scope,
+      (detected as ReorgBeyondConfirmationsError).blockNumber,
+      { now: () => new Date(), stopping: () => false, onFailure: () => {} },
+    ),
+  ).toBe(true);
+}
+
+function recovery(fixture: Awaited<ReturnType<typeof setup>>) {
+  return {
+    campaigns: fixture.campaigns,
+    events: fixture.events,
+    rpc: fixture.chain,
+    chain: fixture.scope,
+    confirmations: CONFIRMATIONS,
+  };
+}
+
+describe("reorg beyond the confirmation depth after activation (ADR-0011)", () => {
   async function participantCodes(
     fixture: Awaited<ReturnType<typeof setup>>,
     campaignId: string,
@@ -612,9 +621,9 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       contentUrl: "https://example.com/b",
     });
     const beforeCreation = fixture.chain.head + 1n;
-    expect(
-      (await fixture.link(draftA, fixture.createOnchain(1, draftA))).statusCode,
-    ).toBe(200);
+    const txHash = fixture.createOnchain(1, draftA);
+    await fixture.index();
+    expect((await fixture.link(draftA, txHash)).statusCode).toBe(200);
     const fundingBlock = fixture.chain.head + 1n;
     fixture.chain.mine(1, [logs.funded(1, 10n * USDC)]);
     fixture.chain.mine(CONFIRMATIONS + 1);
@@ -1106,7 +1115,8 @@ describe("analytics across deployments (ADR-0011)", () => {
 
 describe("confirmation and reorgs (ADR-0011)", () => {
   it("links a creation only once it is buried under the confirmation depth", async () => {
-    const { app, chain, createDraft, createOnchain, link } = await setup();
+    const { app, chain, createDraft, createOnchain, index, link } =
+      await setup();
     const id = await createDraft();
     const txHash = createOnchain(1, id, {}, CONTRACT, false);
     const linkByDraft = () =>
@@ -1115,18 +1125,26 @@ describe("confirmation and reorgs (ADR-0011)", () => {
         url: `/v1/campaigns/${id}/onchain`,
         payload: {},
       });
+    const reconciling = async () => {
+      expect((await link(id, txHash)).json()).toMatchObject({
+        status: "reconciling",
+        code: "TX_UNCONFIRMED",
+      });
+      expect((await linkByDraft()).json()).toMatchObject({
+        status: "reconciling",
+        code: "NOT_CREATED_YET",
+      });
+    };
 
     // Mined but not final: reconciling, never a permanent link.
-    expect((await link(id, txHash)).json()).toMatchObject({
-      status: "reconciling",
-      code: "TX_UNCONFIRMED",
-    });
-    expect((await linkByDraft()).json()).toMatchObject({
-      status: "reconciling",
-      code: "NOT_CREATED_YET",
-    });
+    await index();
+    await reconciling();
 
+    // Final, but the indexer has not committed its block yet (issue #76).
     chain.mine(CONFIRMATIONS);
+    await reconciling();
+
+    await index();
     expect((await linkByDraft()).statusCode).toBe(200);
   });
 
@@ -1138,10 +1156,17 @@ describe("confirmation and reorgs (ADR-0011)", () => {
       contentUrl: "https://example.com/b",
     });
 
-    // A's creation gets id 1 and is linked once confirmed.
+    // A's creation gets id 1 and is linked before the indexer has seen it,
+    // as the API did before issue #76.
     const reorgFrom = chain.head + 1n;
-    const txA = createOnchain(1, draftA);
-    expect((await fixture.link(draftA, txA)).statusCode).toBe(200);
+    createOnchain(1, draftA);
+    await campaigns.linkOnchain(draftA, {
+      onchainCampaignId: "1",
+      contractAddress: CONTRACT,
+      publishTxHash: null,
+      status: "pending_onchain",
+      updatedAt: new Date(),
+    });
 
     // A reorg deeper than the confirmation depth removes it; on the new
     // fork draft B's creation takes id 1 and is funded.
@@ -1173,6 +1198,309 @@ describe("confirmation and reorgs (ADR-0011)", () => {
       status: "draft",
     });
     expect((await campaigns.getById(draftB))?.onchainCampaignId).toBe("1");
+  });
+});
+
+describe("links backed by the indexed block (issue #76)", () => {
+  const linkByDraft = (
+    fixture: Awaited<ReturnType<typeof setup>>,
+    campaignId: string,
+  ) =>
+    fixture.app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/onchain`,
+      payload: {},
+    });
+
+  it("never links from an RPC node on a stale fork (scenario 1)", async () => {
+    const fixture = await setup();
+    const { chain, campaigns, createDraft, createOnchain, index, reconcile } =
+      fixture;
+    const draftA = await createDraft("a");
+
+    // A load-balanced node is still on an old fork where A's creation got
+    // id 1; the canonical chain never created id 1.
+    const stale = new FakeChain(CONTRACT, Number(chain.head) + 1);
+    stale.reorg(stale.head + 1n);
+    const ref = draftRefFor(draftA);
+    stale.campaignStructs.set("1", {
+      advertiser: ADVERTISER,
+      rewardPerCompletion: USDC,
+      maxCompletions: 10,
+      startTime: START,
+      endTime: END,
+    });
+    stale.campaignIdByDraft.set(`${ADVERTISER.toLowerCase()}:${ref}`, {
+      id: 1,
+      block: stale.mine(1, [logs.created(1, ADVERTISER, ref)]),
+    });
+    stale.mine(CONFIRMATIONS);
+    chain.mine(CONFIRMATIONS + 1);
+    await index();
+
+    // The balancer sends the contract reads to the stale node.
+    const canonicalCall = chain.call.bind(chain);
+    let staleNode = true;
+    chain.call = (to: string, data: string, block?: BlockRef) =>
+      staleNode ? stale.call(to, data, block) : canonicalCall(to, data, block);
+
+    // The read is pinned to the indexed block's hash, which that node does
+    // not have: reconciling, never a link to id 1.
+    const refused = await linkByDraft(fixture, draftA);
+    expect(refused.statusCode).toBe(503);
+    expect(refused.json()).toMatchObject({
+      status: "reconciling",
+      code: "RPC_UNAVAILABLE",
+    });
+    expect((await campaigns.getById(draftA))?.onchainCampaignId).toBeNull();
+
+    // On the canonical chain A's creation gets id 2.
+    staleNode = false;
+    createOnchain(2, draftA);
+    await index();
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      onchainCampaignId: "2",
+    });
+    await reconcile();
+    expect(await campaigns.getById(draftA)).toMatchObject({
+      onchainCampaignId: "2",
+      status: "pending_onchain",
+    });
+  });
+
+  it("releases a link when the canonical creation gives the draft another id (scenario 1)", async () => {
+    const fixture = await setup();
+    const { campaigns, createDraft, createOnchain, index } = fixture;
+    const draftA = await createDraft("a");
+
+    // Left behind by a by-draft read from a stale node before issue #76:
+    // A is linked to id 1, which the canonical chain never created.
+    await campaigns.linkOnchain(draftA, {
+      onchainCampaignId: "1",
+      contractAddress: CONTRACT,
+      publishTxHash: null,
+      status: "pending_onchain",
+      updatedAt: new Date(),
+    });
+    createOnchain(2, draftA);
+    await index();
+
+    // While a halt is recorded, recovery may still relink it: reconciling.
+    const haltedAt = new Date();
+    await fixture.events.haltForReorg(fixture.scope, 1n, haltedAt);
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+    await fixture.events.markRecoveryApplied(fixture.scope, haltedAt);
+    expect(
+      await fixture.events.clearHalt(fixture.scope, {
+        recoveryAppliedAt: haltedAt,
+        indexedThrough: 0n,
+      }),
+    ).toBe(true);
+
+    // An existing link is answered from the chain, not the database.
+    const stale = await linkByDraft(fixture, draftA);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({
+      error: { code: "LINK_NOT_CANONICAL", retryable: true },
+    });
+
+    // One creation per advertiser and draft on a fork: id 1 is not A's.
+    expect(
+      await autoLinkCreatedCampaigns({ campaigns, ...fixture.chainDeps }),
+    ).toEqual({ linked: ["2"], ambiguous: [], relinked: [draftA] });
+    expect(await campaigns.getById(draftA)).toMatchObject({
+      onchainCampaignId: "2",
+      status: "pending_onchain",
+    });
+    expect((await linkByDraft(fixture, draftA)).statusCode).toBe(200);
+  });
+
+  it("does not link ahead of the indexer, so a reorg under a link is a recorded halt (scenario 2)", async () => {
+    const fixture = await setup();
+    const { chain, campaigns, events, scope, createDraft, createOnchain } =
+      fixture;
+    const draftA = await createDraft("a");
+    const reconciling = async (code: string, txHash: string) => {
+      expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+        status: "reconciling",
+        code,
+      });
+      expect((await fixture.link(draftA, txHash)).json()).toMatchObject({
+        status: "reconciling",
+      });
+    };
+
+    // The worker ran once and then lags while A's creation gets N deep.
+    chain.mine(CONFIRMATIONS + 1);
+    await workerPass(fixture);
+    const beforeCreation = chain.head + 1n;
+    await reconciling("NOT_CREATED_YET", createOnchain(1, draftA));
+
+    // A reorg deeper than N removes the creation while the worker lags. No
+    // other draft takes id 1. Nothing was linked, so nothing is stale: the
+    // resumed worker indexes the new fork and A is still an unlinked draft.
+    chain.reorg(beforeCreation);
+    chain.mine(CONFIRMATIONS + 1);
+    await workerPass(fixture);
+    expect(await events.getHalt(scope)).toBeNull();
+    expect(await campaigns.getById(draftA)).toMatchObject({
+      onchainCampaignId: null,
+      status: "draft",
+    });
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      code: "NOT_CREATED_YET",
+    });
+
+    // Created again and linked once indexed. A deeper reorg under that link
+    // rewrites the cursor block: the worker records a halt, the API stops
+    // confirming the link, and recovery releases it.
+    const beforeSecond = chain.head + 1n;
+    const txHash = createOnchain(1, draftA);
+    await fixture.index();
+    expect((await linkByDraft(fixture, draftA)).statusCode).toBe(200);
+    chain.reorg(beforeSecond);
+    chain.mine(CONFIRMATIONS + 1);
+    await workerDetectsReorg(fixture);
+    expect(await events.getHalt(scope)).not.toBeNull();
+    await reconciling("NOT_CREATED_YET", txHash);
+    expect((await planReorgRecovery(recovery(fixture))).release).toEqual([
+      {
+        campaignId: draftA,
+        onchainCampaignId: "1",
+        canonicalOnchainCampaignId: null,
+        reason: "creation_missing",
+      },
+    ]);
+  });
+
+  it.each([
+    ["A's creation under id 1", "1", "a"],
+    ["B's creation under A's id 2", "2", "b"],
+  ])(
+    "does not release a canonical link for another fork's row in the index: %s",
+    async (_label, onchainCampaignId, rowDraft) => {
+      const fixture = await setup();
+      const { campaigns, events, scope, createDraft, createOnchain } = fixture;
+      const drafts: Record<string, string> = {
+        a: await createDraft("a"),
+        // Same economics as A: only the draft reference tells them apart.
+        b: await createDraft("b", { contentUrl: "https://example.com/b" }),
+      };
+      createOnchain(2, drafts.a!);
+      await fixture.reconcile();
+      await campaigns.updateStatus(drafts.a!, "active", new Date());
+
+      // The index also holds a creation from another fork: index rows are
+      // not the contract.
+      const cursor = (await events.getCursor(scope))!;
+      await events.commitConfirmedRange(
+        scope,
+        {
+          from: cursor.latestConfirmedBlock,
+          to: cursor.latestConfirmedBlock,
+          toBlockHash: cursor.latestConfirmedBlockHash!,
+          expectedCursor: cursor.latestConfirmedBlock,
+        },
+        [
+          {
+            txHash: "0x" + "0f".repeat(32),
+            logIndex: 0,
+            blockNumber: cursor.latestConfirmedBlock,
+            blockHash: "0x" + "0f".repeat(32),
+            event: {
+              name: "CampaignCreated",
+              campaignId: onchainCampaignId,
+              advertiser: ADVERTISER.toLowerCase(),
+              draftRef: draftRefFor(drafts[rowDraft]!),
+            },
+          },
+        ],
+      );
+
+      // The contract maps A to 2 and B to nothing at the indexed block: no
+      // release, no relink, no status reset, on this pass or the next.
+      for (let pass = 0; pass < 2; pass += 1) {
+        expect(
+          await autoLinkCreatedCampaigns({ campaigns, ...fixture.chainDeps }),
+        ).toEqual({ linked: [], ambiguous: [], relinked: [] });
+      }
+      expect(await campaigns.getById(drafts.a!)).toMatchObject({
+        onchainCampaignId: "2",
+        status: "active",
+      });
+      expect(await campaigns.getById(drafts.b!)).toMatchObject({
+        onchainCampaignId: null,
+        status: "draft",
+      });
+    },
+  );
+
+  it("answers a link as reconciling while the index is rebuilt", async () => {
+    const fixture = await setup();
+    const { chain, events, scope, createDraft, createOnchain, index } = fixture;
+    const draftA = await createDraft("a");
+    const beforeCreation = chain.head + 1n;
+    createOnchain(1, draftA);
+    await index();
+    expect((await linkByDraft(fixture, draftA)).statusCode).toBe(200);
+
+    // `reorg:recover --apply` kept the link and dropped the index; the
+    // rebuild has reached a canonical block before the creation.
+    await events.resetIndex(scope);
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+    const partial = beforeCreation - 1n;
+    await events.commitConfirmedRange(
+      scope,
+      {
+        from: 1n,
+        to: partial,
+        toBlockHash: (await chain.getBlock(partial))!.hash,
+        expectedCursor: null,
+      },
+      [],
+    );
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      status: "reconciling",
+      code: "NOT_CREATED_YET",
+    });
+
+    // Caught up: the link verifies again.
+    await index();
+    expect((await linkByDraft(fixture, draftA)).statusCode).toBe(200);
+  });
+
+  it("reads the parameters at the indexed block, not at the latest one", async () => {
+    const fixture = await setup();
+    const { chain, createDraft, createOnchain, index, link } = fixture;
+    const draftA = await createDraft("a");
+    const txHash = createOnchain(1, draftA);
+    await index();
+
+    // The latest, not yet indexed block shows other parameters for id 1 (as
+    // after a reorg the index has not reached).
+    const indexedVersion = chain.campaignStructs.get("1")!;
+    chain.campaignStructs.set("1", {
+      ...indexedVersion,
+      maxCompletions: 9,
+      since: chain.mine(1),
+      previous: indexedVersion,
+    });
+
+    expect((await linkByDraft(fixture, draftA)).statusCode).toBe(200);
+    expect((await link(draftA, txHash)).statusCode).toBe(200);
+
+    // Once indexed, those parameters are what the link is checked against.
+    chain.mine(CONFIRMATIONS);
+    await index();
+    expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
+      error: { code: "LINK_NOT_CANONICAL" },
+    });
   });
 });
 

@@ -46,7 +46,8 @@ Worker (`INDEXER_METRICS_PORT`):
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
-| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
+| `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
+| `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -130,7 +131,14 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health. Raise `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
 sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
-claim issuance still reads the contract directly.
+claim issuance still reads the contract directly. Linking a new campaign
+(`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
+contract at the worker's latest confirmed block, so advertisers get
+`202 reconciling` until the worker has indexed their creation (issue #76).
+That read is pinned to the block's hash and needs its state: a full node
+keeps only about 128 recent blocks of state (some 4 minutes on Base), so once
+the worker is further behind, linking answers `503 RPC_UNAVAILABLE` until it
+catches up. Fix the worker first; an archive RPC removes this limit.
 
 At startup the worker checks the chain, the contract code and the contract
 version. An unreachable or failing RPC is retried with backoff up to 60 s
@@ -145,6 +153,25 @@ supervisor restarts it: its database session ended (restart, failover,
 network, `idle_session_timeout`) and the server released the lock with it.
 If it repeats, check that `DATABASE_URL` is a direct or session-mode
 connection ([Running the built API](#running-the-built-api)).
+
+### VhamIndexerInconsistentReads
+
+Five or more passes in a row ended in `inconsistent_read`: the worker reads a
+range, the range's block headers (linked by hash), the logs and the range end
+again, and refuses to commit when they disagree (issue #76). Usually the RPC
+is load-balanced over nodes on different forks or heights, or a node lags.
+Nothing past the failing range is committed and no halt is recorded, so the
+index, status sync and linking stay behind while participation continues
+(the API's live contract checks still apply). The log line
+`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`.
+
+1. Check the RPC provider: pin the worker (and the API) to one endpoint or a
+   provider with sticky sessions, or remove the lagging node.
+2. If the same block keeps failing on a single consistent endpoint, compare
+   that block's hash and its logs across two providers; a provider serving
+   another fork means a deep reorg may be under way (see
+   VhamReorgBeyondConfirmations).
+3. The alert clears on the next successful pass.
 
 ### VhamChainHalted
 

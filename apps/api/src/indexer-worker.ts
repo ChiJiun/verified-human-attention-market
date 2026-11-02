@@ -8,7 +8,10 @@ import {
   verifyChainConnection,
 } from "./chain/config.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
-import { ReorgBeyondConfirmationsError } from "./chain/indexer.js";
+import {
+  InconsistentChainReadError,
+  ReorgBeyondConfirmationsError,
+} from "./chain/indexer.js";
 import {
   ChainHaltedError,
   recordHaltWithRetry,
@@ -130,6 +133,12 @@ const gauges = {
     "vham_reconciliation_ambiguous_campaigns",
     "On-chain campaigns that need manual linking",
   ),
+  // Each such pass commits nothing past the failing range while the API
+  // keeps accepting participation, so a run of them must be visible.
+  inconsistentStreak: metrics.gauge(
+    "vham_indexer_inconsistent_read_streak",
+    "Consecutive passes that ended in an inconsistent chain read",
+  ),
 };
 const passes = metrics.counter(
   "vham_indexer_passes_total",
@@ -245,6 +254,7 @@ const lock = await retryWithBackoff(
 );
 
 let backoffMs = pollMs;
+let inconsistentStreak = 0;
 
 while (!stopping) {
   // The lock lives only as long as its database session. If that session
@@ -331,6 +341,8 @@ while (!stopping) {
     gauges.violations.set(statuses.accountingViolations.length);
     gauges.ambiguous.set(autoLinked.ambiguous.length);
     gauges.lastSuccess.set(Math.floor(Date.now() / 1000));
+    gauges.inconsistentStreak.set(0);
+    inconsistentStreak = 0;
     passes.inc({ result: "success" });
 
     if (statuses.accountingViolations.length > 0) {
@@ -390,7 +402,9 @@ while (!stopping) {
           ? "reorg_beyond_confirmations"
           : error instanceof ChainHaltedError
             ? "halted"
-            : "failure",
+            : error instanceof InconsistentChainReadError
+              ? "inconsistent_read"
+              : "failure",
     });
 
     if (error instanceof ChainHaltedError) {
@@ -436,11 +450,23 @@ while (!stopping) {
       break;
     }
 
+    // The RPC answered one range from different forks or nodes (or the chain
+    // moved while reading it). Nothing was written; transient unless it
+    // keeps happening, which VhamIndexerInconsistentReads reports.
+    if (error instanceof InconsistentChainReadError) {
+      inconsistentStreak += 1;
+      gauges.inconsistentStreak.set(inconsistentStreak);
+    }
+
     // IndexCursorMovedError lands here too: the index was reset under this
     // pass; nothing was written, and the next pass reads the halt again.
     log("warn", "indexer pass failed; retrying", {
       error: errorMessage(error),
       retryInMs: backoffMs,
+      ...(error instanceof InconsistentChainReadError && {
+        block: error.blockNumber.toString(),
+        inconsistentStreak,
+      }),
     });
     backoffMs = Math.min(backoffMs * 2, 60_000);
   }
