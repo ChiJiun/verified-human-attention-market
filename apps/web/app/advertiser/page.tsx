@@ -17,7 +17,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits, parseAbi, type Address, type Hash } from "viem";
 
 import { useAdvertiserSession } from "../../lib/advertiser-session";
-import { api, describeError } from "../../lib/api";
+import { api, ApiError, describeError } from "../../lib/api";
+import {
+  CHECK_AGAIN,
+  checkLink,
+  createAttemptMarker,
+  gaveUpMessage,
+  keepChecking,
+  retryCreateOffered,
+  type LinkCheck,
+} from "../../lib/campaign-creation";
 import {
   campaignLink,
   campaignPath,
@@ -27,15 +36,24 @@ import {
 import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
 import {
   describeChainError,
+  cardFlipsToDone,
   describeSimulationFailure,
   formatRemaining,
+  observeSettlementTx,
+  pollSettlementTx,
   readSettlement,
+  resolveSettlementTx,
   SETTLEMENT_CALLS,
+  SETTLEMENT_TX_MESSAGES,
+  settlementButton,
+  settlementEffectVisible,
   type ChainSettlement,
+  type FinalSettlementTxOutcome,
   type SettlementAction,
   type SettlementTarget,
 } from "../../lib/settlement";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
+import { isUserRejection, nothingWasSent } from "../../lib/wallet-errors";
 import { CampaignForm, type CampaignPayload } from "./CampaignForm";
 
 const erc20Abi = parseAbi([
@@ -94,7 +112,7 @@ type TxStatus =
   | { state: "pending"; label: string; hash: Hash }
   | { state: "reconciling"; label: string; hash: Hash | null }
   | { state: "done"; label: string; hash: Hash | null }
-  | { state: "failed"; label: string; message: string };
+  | { state: "failed"; label: string; message: string; hash?: Hash | null };
 
 const usdc = (atomic: string) =>
   `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
@@ -105,6 +123,19 @@ type ChainView =
   | { state: "failed"; message: string };
 
 const UNREAD: ChainView = { state: "unread" };
+
+/** The close or refund transaction this page sent last. */
+interface SentSettlement {
+  action: SettlementAction;
+  hash: Hash;
+}
+
+/** A close or refund whose receipt did not arrive while waiting (#86). */
+interface UnresolvedSettlement extends SentSettlement {
+  sentAtMs: number;
+  deployment: Deployment;
+  target: SettlementTarget;
+}
 
 function settlementTarget(analytics: Analytics): SettlementTarget | null {
   return analytics.onchainCampaignId === null
@@ -181,50 +212,8 @@ function SettlementNotes({
   );
 }
 
-/**
- * Per-draft marker that a createCampaign transaction may have been broadcast
- * (set right before the wallet is asked to send, cleared once the draft is
- * linked or the wallet refused). It survives a reload, so the page offers
- * "Check again" first instead of a second send that would only revert
- * (DraftAlreadyCreated) and cost gas.
- */
-const attemptKey = (campaignId: string) => `vham:create-attempt:${campaignId}`;
-function rememberAttempt(campaignId: string, at: number | null) {
-  try {
-    if (at === null) localStorage.removeItem(attemptKey(campaignId));
-    else localStorage.setItem(attemptKey(campaignId), String(at));
-  } catch {
-    // Storage may be unavailable (private mode); the flow still works.
-  }
-}
-function recallAttempt(campaignId: string): number | null {
-  try {
-    const raw = localStorage.getItem(attemptKey(campaignId));
-    return raw ? Number(raw) : null;
-  } catch {
-    return null;
-  }
-}
-/** After this long a pending creation is assumed dropped; Create is offered again. */
-const RETRY_CREATE_AFTER_MS = 10 * 60_000;
-
-/** EIP-1193 4001: the user rejected the request, so nothing was sent. */
-function isUserRejection(error: unknown): boolean {
-  for (
-    let current: unknown = error, depth = 0;
-    current && depth < 10;
-    current = (current as { cause?: unknown }).cause, depth += 1
-  ) {
-    const candidate = current as { code?: unknown; name?: unknown };
-    if (
-      candidate.code === 4001 ||
-      candidate.name === "UserRejectedRequestError"
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
+/** Per-draft "a creation may be pending" marker (lib/campaign-creation.ts). */
+const attempts = createAttemptMarker(() => window.localStorage);
 
 export default function AdvertiserPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -245,18 +234,36 @@ export default function AdvertiserPage() {
   const [awaitingEffect, setAwaitingEffect] = useState<SettlementAction | null>(
     null,
   );
+  /** A close or refund whose outcome is unknown; checked until it settles. */
+  const [unresolved, setUnresolved] = useState<UnresolvedSettlement | null>(
+    null,
+  );
+  /** Hash of the unresolved transaction that was probably never broadcast. */
+  const [maybeDropped, setMaybeDropped] = useState<Hash | null>(null);
+  /** Kept after a failed verdict, so the card turns done if the effect shows later. */
+  const [lastSettlement, setLastSettlement] = useState<SentSettlement | null>(
+    null,
+  );
   const chainReads = useRef(0);
+  /** Aborted on unmount: stops the linking loop. */
+  const lifetime = useRef<AbortController | null>(null);
   const auth = useAdvertiserSession(wallet, setError);
   const activeSession = auth.active;
 
   const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
 
   useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
     const link = campaignLink(window.location.search);
     if (link.kind === "campaign") {
       setCampaignId(link.id);
       // A creation may still be pending from before a reload.
-      setAwaitingLink(recallAttempt(link.id) !== null);
+      setAwaitingLink(attempts.recall(link.id) !== null);
     } else if (link.kind === "invalid") {
       setError(
         "This campaign link is not valid. Open the campaign from where you created it, or start a new one.",
@@ -266,7 +273,7 @@ export default function AdvertiserPage() {
 
   /** The draft is linked: no creation can be pending any more. */
   const linked = useCallback((id: string) => {
-    rememberAttempt(id, null);
+    attempts.clear(id);
     setAwaitingLink(false);
   }, []);
 
@@ -346,6 +353,117 @@ export default function AdvertiserPage() {
     void readChain();
   }, [readChain]);
 
+  /**
+   * Ends the wait for an unknown close or refund outcome. Only the card that
+   * still shows this transaction changes. A failed one offers the action
+   * again if the chain still allows it; a done one keeps it hidden until a
+   * chain read shows the effect (below).
+   */
+  const settleUnresolved = useCallback(
+    (pending: UnresolvedSettlement, outcome: FinalSettlementTxOutcome) => {
+      const { label, done } = SETTLEMENT_CALLS[pending.action];
+      setUnresolved((current) =>
+        current?.hash === pending.hash ? null : current,
+      );
+      setMaybeDropped(null);
+      setTx((current) =>
+        current.state !== "reconciling" || current.hash !== pending.hash
+          ? current
+          : outcome === "done"
+            ? { state: "done", label: done, hash: pending.hash }
+            : {
+                state: "failed",
+                label,
+                message: SETTLEMENT_TX_MESSAGES[outcome],
+                hash: pending.hash,
+              },
+      );
+      if (outcome !== "done") {
+        setAwaitingEffect((current) =>
+          current === pending.action ? null : current,
+        );
+      }
+    },
+    [],
+  );
+
+  // Once the chain (or the API's index of it) shows the status an action
+  // produces, the wait for it is over, whichever transaction caused it, and
+  // a card still showing this page's last transaction for it (waiting, or
+  // failed on a lagging backend's answer) turns done (#86).
+  const onchainStatus =
+    chainView.state === "read" ? chainView.onchain.reading.storedStatus : null;
+  useEffect(() => {
+    const visible = (action: SettlementAction) =>
+      [
+        onchainStatus,
+        analytics?.settlement?.pending.status,
+        analytics?.status,
+      ].some((status) => settlementEffectVisible(action, status));
+
+    if (awaitingEffect && visible(awaitingEffect)) setAwaitingEffect(null);
+    if (!lastSettlement || !visible(lastSettlement.action)) return;
+    const { hash, action } = lastSettlement;
+    setUnresolved((current) => (current?.hash === hash ? null : current));
+    setMaybeDropped((current) => (current === hash ? null : current));
+    setTx((current) =>
+      cardFlipsToDone(current, hash)
+        ? { state: "done", label: SETTLEMENT_CALLS[action].done, hash }
+        : current,
+    );
+  }, [awaitingEffect, onchainStatus, analytics, lastSettlement, tx]);
+
+  // While the card says "reconciling", check the transaction, the sender's
+  // nonce, the receipt and the campaign, so a late or replaced transaction
+  // resolves without a reload. Nothing is ever sent from here.
+  useEffect(() => {
+    if (!unresolved || !wallet) return;
+    const pending = unresolved;
+    let txNonce: number | null = null;
+
+    return pollSettlementTx(
+      async () => {
+        const observation = await observeSettlementTx(
+          wallet,
+          pending.deployment.chainId,
+          pending.hash,
+          txNonce,
+        );
+        txNonce = observation.txNonce;
+        let storedStatus: string | null = null;
+        const read = ++chainReads.current;
+        try {
+          const settlement = await readSettlement(
+            wallet,
+            pending.deployment,
+            pending.target,
+          );
+          storedStatus = settlement.reading.storedStatus;
+          if (read === chainReads.current) {
+            setChainView({ state: "read", onchain: settlement });
+          }
+        } catch {
+          // Unknown for now; the next check reads again.
+        }
+        return resolveSettlementTx({
+          action: pending.action,
+          storedStatus,
+          observation,
+          elapsedMs: Date.now() - pending.sentAtMs,
+        });
+      },
+      (outcome) => {
+        if (outcome === "pending" || outcome === "dropped") {
+          // Not final: the "anyway" button comes and goes with it.
+          setMaybeDropped(outcome === "dropped" ? pending.hash : null);
+          return;
+        }
+        settleUnresolved(pending, outcome);
+        void refresh();
+      },
+    );
+  }, [unresolved, wallet, refresh, settleUnresolved]);
+
   async function run(action: () => Promise<void>) {
     setError(null);
     setBusy(true);
@@ -414,53 +532,115 @@ export default function AdvertiserPage() {
     });
 
   /**
-   * Links the draft to its on-chain campaign: by transaction hash when known,
-   * otherwise by draft reference (ADR-0011). Retries while the API is still
-   * reconciling. `attempts: 1` only checks.
+   * One link request: by transaction hash when known, otherwise by draft
+   * reference (ADR-0011). A reconciling answer, including a transient RPC
+   * outage (`503`), is "not linked yet", never a failure.
    */
-  async function link(id: CampaignId, hash: Hash | null, attempts = 24) {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const { status } = await api(campaignPath(id, "/onchain"), {
+  const checkOnchain = (
+    id: CampaignId,
+    hash: Hash | null,
+  ): Promise<LinkCheck> =>
+    checkLink(() =>
+      api(campaignPath(id, "/onchain"), {
         method: "POST",
         body: hash ? { txHash: hash } : {},
+      }),
+    );
+
+  /**
+   * Keeps checking for about two minutes while the API reconciles. When it
+   * gives up or the API refuses the link, the card says to press Check
+   * again; checking never sends a transaction (#78). `walletError` is the
+   * wallet's own report when it failed without saying whether it sent. Stops
+   * when the page is left.
+   */
+  async function linkUntilFinal(
+    id: CampaignId,
+    hash: Hash | null,
+    walletError?: string,
+  ) {
+    const signal = lifetime.current?.signal;
+    const reported = walletError
+      ? `Your wallet reported: ${walletError.replace(/\.?$/, ".")} `
+      : "";
+    setTx({ state: "reconciling", label: "Linking campaign", hash });
+    let last: LinkCheck;
+    try {
+      last = await keepChecking(() => checkOnchain(id, hash), {
+        attempts: 24,
+        delayMs: 5_000,
+        signal,
       });
-      if (status === 200) return true;
-      if (attempt + 1 < attempts) {
-        setTx({ state: "reconciling", label: "Linking campaign", hash });
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-      }
+    } catch (caught) {
+      if (signal?.aborted) return;
+      void auth.syncFromError(caught);
+      setTx({
+        state: "failed",
+        label: "Linking campaign",
+        message: `${reported}${describeError(caught)} ${CHECK_AGAIN}`,
+      });
+      return;
     }
-    return false;
+    if (last.kind === "linked") {
+      linked(id);
+      setTx({ state: "done", label: "Campaign created", hash });
+      await refresh();
+    } else {
+      setTx({
+        state: "failed",
+        label: "Linking campaign",
+        message: `${reported}${gaveUpMessage(last.code)}`,
+      });
+    }
   }
 
   /**
    * createCampaign carries the draft's reference, and the contract refuses a
    * second campaign for the same (advertiser, draft). So a retry, a second tab
-   * or a lost RPC response can never create two campaigns, and nothing has to
-   * be remembered in the browser (#13, ADR-0011).
+   * or a lost RPC response can never create two campaigns (#13, ADR-0011).
+   * The browser only remembers that a creation may be pending (`attempts`),
+   * so that it offers Check again before a send that would just revert
+   * (DraftAlreadyCreated) and cost gas.
    */
   const createOnchain = () =>
     run(async () => {
       if (!wallet || !activeSession || !campaignId) return;
       const label = "Create campaign on-chain";
 
-      // Already created (another tab, an earlier attempt, a lost response)?
-      if (await link(campaignId, null, 1)) {
+      // Already created and final (another tab, an earlier attempt, a lost
+      // response)?
+      if ((await checkOnchain(campaignId, null)).kind === "linked") {
         linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
         await refresh();
         return;
       }
 
-      const { data: intent } = await api<PublishIntent>(
-        campaignPath(campaignId, "/publish"),
-        { method: "POST" },
-      );
+      // The check above reads only the confirmed block. A creation that is
+      // mined but not final yet makes the API refuse the intent instead.
+      let intent: PublishIntent;
+      try {
+        ({ data: intent } = await api<PublishIntent>(
+          campaignPath(campaignId, "/publish"),
+          { method: "POST" },
+        ));
+      } catch (caught) {
+        if (
+          !(caught instanceof ApiError) ||
+          caught.code !== "DRAFT_ALREADY_CREATED"
+        ) {
+          throw caught;
+        }
+        attempts.begin(campaignId, Date.now());
+        setAwaitingLink(true);
+        await linkUntilFinal(campaignId, null);
+        return;
+      }
       const args = intent.steps[0]!.args;
 
       // From here on a transaction may exist even if this page never learns
       // its hash (reload, lost response): remember it before asking the wallet.
-      rememberAttempt(campaignId, Date.now());
+      const undoAttempt = attempts.begin(campaignId, Date.now());
       setAwaitingLink(true);
       let hash: Hash;
       try {
@@ -481,25 +661,16 @@ export default function AdvertiserPage() {
           }),
         );
       } catch (caught) {
+        // Rejected in the wallet, or the wallet is on another chain: nothing
+        // was sent now, but the marker of an earlier attempt (before "Create
+        // on-chain anyway") stays.
+        if (nothingWasSent(caught)) {
+          setAwaitingLink(undoAttempt() !== null);
+          throw new Error(describeChainError(caught), { cause: caught });
+        }
         // The transaction may have been broadcast before the error. Look for
-        // it by draft reference; pressing Create again is safe either way.
-        // Rejected in the wallet: nothing was sent.
-        if (isUserRejection(caught)) {
-          linked(campaignId);
-          throw caught;
-        }
-        if (await link(campaignId, null)) {
-          linked(campaignId);
-          setTx({ state: "done", label: "Campaign created", hash: null });
-          await refresh();
-          return;
-        }
-        setTx({
-          state: "failed",
-          label: "Linking campaign",
-          message:
-            "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
-        });
+        // it by draft reference, and say what the wallet reported.
+        await linkUntilFinal(campaignId, null, describeChainError(caught));
         return;
       }
 
@@ -507,36 +678,30 @@ export default function AdvertiserPage() {
       const mined = await waitForTx(wallet.publicClient, hash);
       if (mined.kind === "reverted") {
         // Usually DraftAlreadyCreated: another attempt created it first.
-        if (await link(campaignId, null, 1)) {
+        if ((await checkOnchain(campaignId, null)).kind === "linked") {
           linked(campaignId);
           setTx({ state: "done", label: "Campaign created", hash });
           await refresh();
           return;
         }
-        setTx({ state: "failed", label, message: "The transaction reverted." });
+        setTx({
+          state: "failed",
+          label,
+          message:
+            "The transaction reverted. If another attempt created this campaign first, Check again links it.",
+        });
         return;
       }
 
-      setTx({ state: "reconciling", label: "Linking campaign", hash });
-      if (await link(campaignId, hash)) {
-        linked(campaignId);
-        setTx({ state: "done", label: "Campaign created", hash });
-        await refresh();
-      } else {
-        setTx({
-          state: "failed",
-          label: "Linking campaign",
-          message:
-            "Not confirmed yet. If the transaction was sent it may still be mined. Press Check again; checking never sends a transaction.",
-        });
-      }
+      await linkUntilFinal(campaignId, hash);
     });
 
   /** Looks for the creation by draft reference; never sends anything. */
-  const checkLink = () =>
+  const checkAgain = () =>
     run(async () => {
       if (!activeSession || !campaignId) return;
-      if (await link(campaignId, null, 1)) {
+      const result = await checkOnchain(campaignId, null);
+      if (result.kind === "linked") {
         linked(campaignId);
         setTx({ state: "done", label: "Campaign created", hash: null });
         await refresh();
@@ -545,8 +710,7 @@ export default function AdvertiserPage() {
       setTx({
         state: "failed",
         label: "Linking campaign",
-        message:
-          "Still not confirmed. Check your wallet's activity and try again in a minute.",
+        message: gaveUpMessage(result.code),
       });
     });
 
@@ -699,7 +863,7 @@ export default function AdvertiserPage() {
     analytics: Analytics,
     target: SettlementTarget,
     action: SettlementAction,
-  ): Promise<Address> {
+  ): Promise<{ manager: Address; deployment: Deployment }> {
     const { data: chainInfo } = await api<{
       chainId: number;
       campaignManager: Address;
@@ -733,12 +897,12 @@ export default function AdvertiserPage() {
         "This is no longer available. The page has been updated.",
       );
     }
-    return chainInfo.campaignManager;
+    return { manager: chainInfo.campaignManager, deployment: configured };
   }
 
   async function sendSettlementOnce(
     wallet: Wallet,
-    manager: Address,
+    { manager, deployment }: { manager: Address; deployment: Deployment },
     target: SettlementTarget,
     action: SettlementAction,
   ) {
@@ -770,16 +934,29 @@ export default function AdvertiserPage() {
       );
     }
 
+    const sentAtMs = Date.now();
+    // A new send (e.g. "anyway") supersedes the earlier unresolved one.
+    setUnresolved((current) => (current?.action === action ? null : current));
+    setMaybeDropped(null);
+    setLastSettlement({ action, hash });
     setAwaitingEffect(action);
     setTx({ state: "pending", label, hash });
     const mined = await waitForTx(wallet.publicClient, hash);
     if (mined.kind === "pending") {
+      // Not a failure: checked until the receipt, the sender's nonce or the
+      // campaign's status settles it.
       setTx({ state: "reconciling", label, hash });
+      setUnresolved({ action, hash, sentAtMs, deployment, target });
       return;
     }
     if (mined.kind === "reverted") {
       setAwaitingEffect(null);
-      setTx({ state: "failed", label, message: "The transaction reverted." });
+      setTx({
+        state: "failed",
+        label,
+        message: "The transaction reverted.",
+        hash,
+      });
     } else {
       setTx({ state: "done", label: done, hash });
     }
@@ -791,13 +968,13 @@ export default function AdvertiserPage() {
       if (!wallet || !activeSession || !analytics) return;
       const target = settlementTarget(analytics);
       if (!target) return;
-      const manager = await prepareSettlement(
+      const prepared = await prepareSettlement(
         wallet,
         analytics,
         target,
         action,
       );
-      await sendSettlementOnce(wallet, manager, target, action);
+      await sendSettlementOnce(wallet, prepared, target, action);
     });
 
   const apiStatus = analytics?.settlement?.pending.status;
@@ -815,10 +992,18 @@ export default function AdvertiserPage() {
     apiStatus !== "settled"
       ? refundAvailability(onchain.reading)
       : null;
-  const closeOffered =
-    closeVerdict?.kind === "available" && !busy && awaitingEffect !== "close";
-  const refundOffered =
-    refundVerdict?.kind === "available" && !busy && awaitingEffect !== "refund";
+  const buttonState = {
+    awaitingEffect,
+    maybeDropped:
+      unresolved !== null && maybeDropped === unresolved.hash
+        ? unresolved.action
+        : null,
+    blocked: busy || wrongNetwork,
+  };
+  const closeButton = settlementButton("close", closeVerdict, buttonState);
+  const refundButton = settlementButton("refund", refundVerdict, buttonState);
+  const anywayTitle =
+    "Your wallet's network has not seen the earlier transaction. If it is mined after all, this one reverts and only costs gas.";
 
   return (
     <main className="container">
@@ -969,6 +1154,14 @@ export default function AdvertiserPage() {
               refund={refundVerdict}
             />
           )}
+          {buttonState.maybeDropped && (
+            <p className="note">
+              Your wallet&apos;s network has not seen the{" "}
+              {buttonState.maybeDropped} transaction for 10 minutes, so it was
+              probably never broadcast. Check your wallet&apos;s activity first;
+              this page keeps checking it.
+            </p>
+          )}
           <div className="actions">
             {analytics?.status === "draft" && !awaitingLink && (
               <button onClick={createOnchain} disabled={busy || wrongNetwork}>
@@ -977,23 +1170,22 @@ export default function AdvertiserPage() {
             )}
             {analytics?.status === "draft" && awaitingLink && (
               <>
-                <button onClick={checkLink} disabled={busy}>
+                <button onClick={checkAgain} disabled={busy}>
                   Check again
                 </button>
-                {(() => {
-                  const attemptAt = recallAttempt(campaignId);
-                  return attemptAt !== null &&
-                    Date.now() - attemptAt > RETRY_CREATE_AFTER_MS ? (
-                    <button
-                      className="secondary"
-                      onClick={createOnchain}
-                      disabled={busy || wrongNetwork}
-                      title="If the earlier transaction was mined after all, this one reverts (DraftAlreadyCreated) and only costs gas."
-                    >
-                      Create on-chain anyway
-                    </button>
-                  ) : null;
-                })()}
+                {retryCreateOffered(
+                  attempts.recall(campaignId),
+                  Date.now(),
+                ) && (
+                  <button
+                    className="secondary"
+                    onClick={createOnchain}
+                    disabled={busy || wrongNetwork}
+                    title="If the earlier transaction was mined after all, this one reverts (DraftAlreadyCreated) and only costs gas."
+                  >
+                    Create on-chain anyway
+                  </button>
+                )}
               </>
             )}
             {analytics?.status === "pending_onchain" &&
@@ -1003,19 +1195,36 @@ export default function AdvertiserPage() {
                   Approve &amp; fund
                 </button>
               )}
-            {closeOffered && (
+            {closeButton.kind !== "hidden" && (
               <button
                 className="secondary"
                 onClick={() => settle("close")}
-                disabled={wrongNetwork}
-                title="Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+                disabled={closeButton.disabled}
+                title={
+                  closeButton.kind === "send-anyway"
+                    ? anywayTitle
+                    : "Ends the campaign now. Claim authorizations already issued stay payable until they expire; no new ones are issued."
+                }
               >
-                Close campaign
+                {closeButton.kind === "send-anyway"
+                  ? "Close campaign anyway"
+                  : "Close campaign"}
               </button>
             )}
-            {refundOffered && (
-              <button onClick={() => settle("refund")} disabled={wrongNetwork}>
-                Refund unused budget
+            {refundButton.kind !== "hidden" && (
+              <button
+                className={
+                  refundButton.kind === "send-anyway" ? "secondary" : undefined
+                }
+                onClick={() => settle("refund")}
+                disabled={refundButton.disabled}
+                title={
+                  refundButton.kind === "send-anyway" ? anywayTitle : undefined
+                }
+              >
+                {refundButton.kind === "send-anyway"
+                  ? "Refund unused budget anyway"
+                  : "Refund unused budget"}
               </button>
             )}
             <button className="secondary" onClick={() => void refresh()}>
