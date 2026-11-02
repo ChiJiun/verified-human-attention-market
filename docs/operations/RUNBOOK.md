@@ -133,6 +133,10 @@ claim issuance still reads the contract directly. Linking a new campaign
 (`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
 contract at the worker's latest confirmed block, so advertisers get
 `202 reconciling` until the worker has indexed their creation (issue #76).
+That read is pinned to the block's hash and needs its state: a full node
+keeps only about 128 recent blocks of state (some 4 minutes on Base), so once
+the worker is further behind, linking answers `503 RPC_UNAVAILABLE` until it
+catches up. Fix the worker first; an archive RPC removes this limit.
 
 ### VhamReorgBeyondConfirmations
 
