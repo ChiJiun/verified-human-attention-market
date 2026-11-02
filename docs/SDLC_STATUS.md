@@ -113,9 +113,9 @@ Official references:
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
 - Base Sepolia run on 2026-10-14 (v1 contract, before ADR-0011) with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
 
-## M1 review stack (integrated 2026-11-02)
+## M1 review stack (merged 2026-11-03)
 
-The open PRs below were merged into one branch, `chore/integrate-m1-stack`, in the order their bases imply; the cross-PR conflicts are resolved there and CI (javascript with PostgreSQL, solidity, e2e) is green on it. The owner reviews and merges that branch instead of each PR.
+The PRs below reached `main` through #94, merged in the order their bases imply, with the conflicts between them resolved and CI (javascript with PostgreSQL, solidity, e2e) green. The stacked PRs were closed with a pointer to #94.
 
 | PR | Closes or refs |
 | --- | --- |
@@ -136,7 +136,6 @@ The open PRs below were merged into one branch, `chore/integrate-m1-stack`, in t
 
 Owner gates:
 
-- **Merge the integration branch**, then close the PRs above as merged through it.
 - **Contract cleanup decision (#80).** Decide before the ADR-0011 redeploy, because the redeploy is the next time `CampaignManager` changes on-chain.
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
@@ -145,11 +144,11 @@ Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27
 
 ## Next SDLC Actions
 
-1. Owner reviews and merges the integration branch, and answers #80.
+1. Owner answers #80.
 2. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow (`docs/deployment/BASE_SEPOLIA_RERUN.md`); then close M1 (#12, #13) and, if the swap test passes, #71.
 3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
 4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
 
 ---
 
-**Current gate:** The local economic loop is verified, including ADR-0011. The Base Sepolia flow was verified on the v1 contract and must be repeated on the ADR-0011 deployment, after the owner merges the integration branch. Real funds remain blocked by the production-readiness gate (#29).
+**Current gate:** The local economic loop is verified, including ADR-0011. The Base Sepolia flow was verified on the v1 contract and must be repeated on the ADR-0011 deployment. Real funds remain blocked by the production-readiness gate (#29).
