@@ -205,8 +205,3 @@ export function decodeCampaignManagerLog(log: {
       return null;
   }
 }
-
-/** campaignId of campaign-scoped events, or null for global events. */
-export function eventCampaignId(event: CampaignManagerEvent): string | null {
-  return "campaignId" in event ? event.campaignId : null;
-}

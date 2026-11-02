@@ -1,3 +1,5 @@
+import { getSupportedChain, SUPPORTED_CHAINS } from "@vham/shared/chains";
+
 import { FUNCTION_SELECTORS } from "./abi.js";
 import { EVM_ADDRESS } from "../http/validation.js";
 
@@ -7,11 +9,7 @@ import { EVM_ADDRESS } from "../http/validation.js";
  * silently pointing financial flows at the wrong deployment.
  */
 
-/** Mirrors packages/shared/src/chains.ts (official sources checked 2026-10-12). */
-const OFFICIAL_USDC: Readonly<Record<number, string>> = {
-  84532: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-};
-const SUPPORTED_CHAIN_IDS = new Set([84532, 31337]);
+const SUPPORTED_CHAIN_IDS = Object.keys(SUPPORTED_CHAINS).map(Number);
 
 export interface ChainConfig {
   chainId: number;
@@ -86,9 +84,9 @@ export function loadChainConfig(
 
   const chainId = Number(env.EVM_CHAIN_ID ?? "");
 
-  if (!SUPPORTED_CHAIN_IDS.has(chainId)) {
+  if (!SUPPORTED_CHAIN_IDS.includes(chainId)) {
     problems.push(
-      `EVM_CHAIN_ID must be one of ${[...SUPPORTED_CHAIN_IDS].join(", ")}`,
+      `EVM_CHAIN_ID must be one of ${SUPPORTED_CHAIN_IDS.join(", ")}`,
     );
   }
 
@@ -111,7 +109,7 @@ export function loadChainConfig(
     }
   }
 
-  const official = OFFICIAL_USDC[chainId];
+  const official = getSupportedChain(chainId)?.usdcAddress?.toLowerCase();
   if (official && usdcAddress && usdcAddress !== official) {
     problems.push(
       `USDC_ADDRESS does not match the official USDC on chain ${chainId}`,
