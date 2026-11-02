@@ -15,6 +15,10 @@
     "./chains": {
       "types": "./dist/chains.d.ts",
       "default": "./dist/chains.js"
+    },
+    "./deployment": {
+      "types": "./dist/deployment.d.ts",
+      "default": "./dist/deployment.js"
     }
   },
   "scripts": {

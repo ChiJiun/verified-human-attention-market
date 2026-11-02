@@ -17,7 +17,8 @@
     "retention:start": "node dist/retention-job.js",
     "reconcile": "tsx src/reconcile-job.ts",
     "reconcile:start": "node dist/reconcile-job.js",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "reorg:recover": "tsx src/reorg-recover.ts"
   },
   "dependencies": {
     "@vham/shared": "workspace:*",

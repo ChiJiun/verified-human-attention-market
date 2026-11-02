@@ -16,6 +16,7 @@ const otherKey = privateKeyToAccount(`0x${"5c".repeat(32)}`);
 const CONTRACT = `0x${"22".repeat(20)}` as const;
 const input = {
   campaignId: 7n,
+  draftRef: `0x${"d1".repeat(32)}` as const,
   claimant: `0x${"33".repeat(20)}` as const,
   amount: 1_000_000n,
   chainId: 84532,
@@ -86,6 +87,7 @@ function fakeSigningService(
       primaryType: "ClaimAuthorization",
       message: {
         campaignId: BigInt(typedData.message.campaignId!),
+        draftRef: typedData.message.draftRef as Hex,
         claimant: typedData.message.claimant as Hex,
         amount: BigInt(typedData.message.amount!),
         nonce: typedData.message.nonce as Hex,

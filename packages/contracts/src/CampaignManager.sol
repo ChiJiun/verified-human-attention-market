@@ -31,6 +31,9 @@ contract CampaignManager {
 
     struct ClaimAuthorization {
         uint256 campaignId;
+        /// @dev The draft the campaign was created for (ADR-0011). An id can be
+        /// reused by another draft after a deep reorg; the draft cannot.
+        bytes32 draftRef;
         address claimant;
         uint256 amount;
         bytes32 nonce;
@@ -70,8 +73,11 @@ contract CampaignManager {
     error RewardAboveLimit();
     error CompletionsAboveLimit();
     error BudgetAboveLimit();
+    error InvalidDraftRef();
+    error WrongDraft();
+    error DraftAlreadyCreated(uint256 campaignId);
 
-    event CampaignCreated(uint256 indexed campaignId, address indexed advertiser);
+    event CampaignCreated(uint256 indexed campaignId, address indexed advertiser, bytes32 indexed draftRef);
     event CampaignFunded(uint256 indexed campaignId, uint256 amount);
     event RewardClaimed(uint256 indexed campaignId, address indexed claimant, uint256 amount, bytes32 nonce);
     event CampaignClosed(uint256 indexed campaignId);
@@ -86,7 +92,7 @@ contract CampaignManager {
     uint64 public constant MAX_AUTHORIZATION_TTL = 15 minutes;
 
     bytes32 public constant CLAIM_AUTHORIZATION_TYPEHASH = keccak256(
-        "ClaimAuthorization(uint256 campaignId,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)"
+        "ClaimAuthorization(uint256 campaignId,bytes32 draftRef,address claimant,uint256 amount,bytes32 nonce,uint64 issuedAt,uint64 expiresAt)"
     );
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
@@ -112,6 +118,11 @@ contract CampaignManager {
     mapping(uint256 => Campaign) public campaigns;
     mapping(bytes32 => bool) public consumedNonces;
     mapping(uint256 => mapping(address => bool)) public claimedWallet;
+    /// @notice advertiser => off-chain draft reference => campaign id (ADR-0011).
+    /// Makes campaign creation idempotent per draft: a retried or concurrent
+    /// createCampaign for the same draft reverts instead of creating a second
+    /// campaign. Keyed by advertiser so nobody can occupy another's reference.
+    mapping(address => mapping(bytes32 => uint256)) public campaignIdByDraft;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -148,11 +159,16 @@ contract CampaignManager {
         emit SignerUpdated(address(0), authorizedSigner_);
     }
 
-    function createCampaign(uint96 rewardPerCompletion, uint32 maxCompletions, uint64 startTime, uint64 endTime)
-        external
-        whenNotPaused
-        returns (uint256 campaignId)
-    {
+    function createCampaign(
+        uint96 rewardPerCompletion,
+        uint32 maxCompletions,
+        uint64 startTime,
+        uint64 endTime,
+        bytes32 draftRef
+    ) external whenNotPaused returns (uint256 campaignId) {
+        if (draftRef == bytes32(0)) revert InvalidDraftRef();
+        uint256 existing = campaignIdByDraft[msg.sender][draftRef];
+        if (existing != 0) revert DraftAlreadyCreated(existing);
         if (rewardPerCompletion == 0) revert InvalidReward();
         if (maxCompletions == 0) revert InvalidCompletionLimit();
         if (rewardPerCompletion > maxRewardPerCompletion) revert RewardAboveLimit();
@@ -170,6 +186,7 @@ contract CampaignManager {
         }
 
         campaignId = ++campaignCount;
+        campaignIdByDraft[msg.sender][draftRef] = campaignId;
 
         campaigns[campaignId] = Campaign({
             advertiser: msg.sender,
@@ -184,13 +201,18 @@ contract CampaignManager {
             status: CampaignStatus.Draft
         });
 
-        emit CampaignCreated(campaignId, msg.sender);
+        emit CampaignCreated(campaignId, msg.sender, draftRef);
     }
 
-    function fundCampaign(uint256 campaignId, uint256 amount) external whenNotPaused {
+    /// @notice Funds the campaign created for `draftRef`. The reference is
+    /// checked in the same transaction as the transfer: after a deep reorg the
+    /// same id can belong to another draft of this advertiser with the same
+    /// budget, and a client that only carries the id would fund it (ADR-0011).
+    function fundCampaign(uint256 campaignId, uint256 amount, bytes32 draftRef) external whenNotPaused {
         Campaign storage campaign = _campaign(campaignId);
 
         if (msg.sender != campaign.advertiser) revert Unauthorized();
+        if (campaignIdByDraft[msg.sender][draftRef] != campaignId) revert WrongDraft();
         if (campaign.status != CampaignStatus.Draft) revert InvalidCampaignStatus();
         if (campaign.fundedBudget != 0) revert AlreadyFunded();
         if (block.timestamp >= campaign.endTime) revert CampaignAlreadyEnded();
@@ -215,6 +237,11 @@ contract CampaignManager {
             revert CampaignNotClaimable();
         }
         if (authorization.claimant != msg.sender) revert WrongClaimant();
+        // The signed draft must be the one this id was created for; after a
+        // deep reorg the same id may belong to another draft (ADR-0011).
+        if (campaignIdByDraft[campaign.advertiser][authorization.draftRef] != authorization.campaignId) {
+            revert WrongDraft();
+        }
         if (authorization.amount != campaign.rewardPerCompletion) {
             revert InvalidClaimAmount();
         }
@@ -360,6 +387,7 @@ contract CampaignManager {
             abi.encode(
                 CLAIM_AUTHORIZATION_TYPEHASH,
                 authorization.campaignId,
+                authorization.draftRef,
                 authorization.claimant,
                 authorization.amount,
                 authorization.nonce,

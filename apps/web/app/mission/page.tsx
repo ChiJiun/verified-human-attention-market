@@ -35,6 +35,8 @@ interface Mission {
 
 interface Authorization {
   campaignId: string;
+  /** The campaign's draft reference, checked by the contract (ADR-0011). */
+  draftRef: Hex;
   claimant: Address;
   amount: string;
   nonce: Hex;
@@ -239,6 +241,7 @@ export default function MissionPage() {
         args: [
           {
             campaignId: BigInt(auth.campaignId),
+            draftRef: auth.draftRef,
             claimant: auth.claimant,
             amount: BigInt(auth.amount),
             nonce: auth.nonce,

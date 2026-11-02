@@ -10,7 +10,10 @@ import {
   type WorldIdResult,
   type WorldIdVerifier,
 } from "../src/identity/world-id.js";
+import type { SignedClaim } from "../src/claims/signer.js";
+import type { SubmissionRecord } from "../src/submissions/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
+import { submitCompletion } from "../src/submissions/service.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const SECRET = "submission-test-secret-0123456789abcdef";
@@ -134,6 +137,8 @@ async function setup() {
   return {
     app,
     campaigns,
+    eligibility,
+    submissions,
     campaignId,
     verify,
     submit,
@@ -142,6 +147,144 @@ async function setup() {
     },
   };
 }
+
+/** What the claim service returns when it signs for `submission`. */
+function signedFor(submission: SubmissionRecord): SignedClaim {
+  return {
+    payload: {
+      campaignId: 1n,
+      draftRef: `0x${"11".repeat(32)}`,
+      claimant: submission.claimantAddress as `0x${string}`,
+      amount: 1000000n,
+      nonce: `0x${"22".repeat(32)}`,
+      issuedAt: 1n,
+      expiresAt: 901n,
+    },
+    signature: `0x${"33".repeat(65)}`,
+    chainId: 84532,
+    contractAddress: `0x${"44".repeat(20)}`,
+  };
+}
+
+describe("acceptance and authorization are one persisted result (ADR-0011)", () => {
+  it.each([
+    ["the campaign closed since the live check", 409, "CAMPAIGN_NOT_ACTIVE"],
+    ["the signing service is down", 503, "SIGNER_UNAVAILABLE"],
+    ["the campaign cap was reached meanwhile", 409, "CAMPAIGN_CAP_REACHED"],
+    ["the daily payout limit is reached", 503, "DAILY_LIMIT_REACHED"],
+  ])(
+    "records nothing when %s, and accepts the same request once signing works",
+    async (_reason, status, code) => {
+      const s = await setup();
+      const token = await s.verify("human-1", WALLET_A);
+      let refuse = true;
+      const authorizations: string[] = [];
+      const dependencies = {
+        campaigns: s.campaigns,
+        deployment: null,
+        chainHalted: async () => false,
+        liveCampaign: null,
+        eligibility: s.eligibility,
+        submissions: s.submissions,
+        now: () => new Date("2026-10-05T10:30:00.000Z"),
+        authorize: async (submission: SubmissionRecord) => {
+          authorizations.push(submission.id);
+          return refuse
+            ? { ok: false as const, status, code }
+            : {
+                ok: true as const,
+                created: true,
+                claim: signedFor(submission),
+              };
+        },
+      };
+      const input = {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_A,
+        idempotencyKey: "attempt-1",
+        answers: CORRECT,
+      };
+
+      // Correct answers, but no authorization can be issued: the acceptance
+      // is rolled back, the attempt is not consumed and the reason is given.
+      expect(await submitCompletion(dependencies, input)).toEqual({
+        ok: false,
+        status,
+        code,
+      });
+      expect(authorizations).toHaveLength(1);
+      expect(await s.submissions.findAcceptedByEligibility(token)).toBeNull();
+      expect(await s.submissions.countByEligibility(token)).toBe(0);
+      expect(
+        await s.submissions.findByIdempotencyKey(s.campaignId, "attempt-1"),
+      ).toBeNull();
+
+      // The same request succeeds once the authorization can be signed, and
+      // the signature is returned with the acceptance.
+      refuse = false;
+      const accepted = await submitCompletion(dependencies, input);
+      expect(accepted).toMatchObject({
+        ok: true,
+        created: true,
+        submission: { result: "accepted" },
+      });
+      if (!accepted.ok) return;
+      expect(accepted.claim?.payload.claimant).toBe(WALLET_A);
+      expect(authorizations).toEqual([
+        authorizations[0],
+        accepted.submission.id,
+      ]);
+
+      // A replay returns the stored acceptance without signing again.
+      expect(await submitCompletion(dependencies, input)).toMatchObject({
+        ok: true,
+        created: false,
+        claim: null,
+      });
+      expect(authorizations).toHaveLength(2);
+    },
+  );
+
+  it("never calls the signer for a rejected completion", async () => {
+    const s = await setup();
+    const token = await s.verify("human-2", WALLET_B);
+    let calls = 0;
+    const outcome = await submitCompletion(
+      {
+        campaigns: s.campaigns,
+        deployment: null,
+        chainHalted: async () => false,
+        liveCampaign: null,
+        eligibility: s.eligibility,
+        submissions: s.submissions,
+        now: () => new Date("2026-10-05T10:30:00.000Z"),
+        authorize: async () => {
+          calls += 1;
+          return {
+            ok: false as const,
+            status: 503,
+            code: "SIGNER_UNAVAILABLE",
+          };
+        },
+      },
+      {
+        campaignId: s.campaignId,
+        eligibilityToken: token,
+        claimantAddress: WALLET_B,
+        idempotencyKey: "wrong-1",
+        answers: WRONG,
+      },
+    );
+    expect(outcome).toMatchObject({
+      ok: true,
+      submission: { result: "rejected", rejectionCode: "COMPREHENSION_FAILED" },
+      claim: null,
+    });
+    expect(calls).toBe(0);
+    expect(await s.submissions.countByEligibility(token)).toBe(1);
+  });
+});
 
 describe("POST /v1/campaigns/:id/submissions", () => {
   it("records quality reason codes for advertisers but never shows them to participants (#25)", async () => {

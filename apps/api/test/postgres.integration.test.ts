@@ -1,3 +1,4 @@
+import { draftRefFor } from "../src/campaigns/onchain.js";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +38,9 @@ import {
 } from "../src/submissions/repository.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
+
+/** CampaignManager the integration tests link campaigns to. */
+const CONTRACT_ADDRESS = `0x${"2".repeat(40)}`;
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 
@@ -253,10 +257,43 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     }));
   });
 
+  it("keeps on-chain ids of different deployments apart (ADR-0011)", async () => {
+    // Ids restart at 1 on every CampaignManager deployment.
+    const oldContract = `0x${"a".repeat(40)}`;
+    const oldDraft = await createCampaign();
+    const newDraft = await createCampaign();
+    const link = (id: string, contractAddress: string) =>
+      repository.linkOnchain(id, {
+        onchainCampaignId: "1",
+        contractAddress,
+        publishTxHash: null,
+        status: "pending_onchain",
+        updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+      });
+
+    await link(oldDraft, oldContract);
+    await link(newDraft, CONTRACT_ADDRESS);
+
+    expect(
+      (await repository.findByOnchainId(84532, oldContract, "1"))?.id,
+    ).toBe(oldDraft);
+    expect(
+      (await repository.findByOnchainId(84532, CONTRACT_ADDRESS, "1"))?.id,
+    ).toBe(newDraft);
+    expect(
+      (await repository.listLinked(84532, CONTRACT_ADDRESS)).map((c) => c.id),
+    ).toEqual([newDraft]);
+    // The same deployment still allows one draft per on-chain id.
+    await expect(
+      link(await createCampaign(), CONTRACT_ADDRESS),
+    ).rejects.toThrow(/ONCHAIN_CAMPAIGN_ALREADY_LINKED/);
+  });
+
   it("persists one signed claim under concurrent retries", async () => {
     const campaignId = await createCampaign();
     await repository.linkOnchain(campaignId, {
       onchainCampaignId: "7",
+      contractAddress: CONTRACT_ADDRESS,
       publishTxHash: `0x${"a".repeat(64)}`,
       status: "active",
       updatedAt: new Date("2026-10-05T10:20:00.000Z"),
@@ -306,6 +343,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       sign: () =>
         signer.sign({
           campaignId: 7n,
+          draftRef: draftRefFor(campaignId),
           claimant: claimantAddress as `0x${string}`,
           amount: 1000000n,
           chainId: 84532,
@@ -348,6 +386,7 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     });
     await repository.linkOnchain(campaignId, {
       onchainCampaignId: "8",
+      contractAddress: CONTRACT_ADDRESS,
       publishTxHash: `0x${"b".repeat(64)}`,
       status: "active",
       updatedAt: new Date("2026-10-05T10:20:00.000Z"),
@@ -410,10 +449,11 @@ describeWithDatabase("PostgresCampaignRepository", () => {
         sign: () =>
           signer.sign({
             campaignId: 8n,
+            draftRef: draftRefFor(campaignId),
             claimant: target.claimantAddress as `0x${string}`,
             amount: 1000000n,
             chainId: 84532,
-            contractAddress: `0x${"2".repeat(40)}`,
+            contractAddress: CONTRACT_ADDRESS as `0x${string}`,
             issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
           }),
       });
@@ -441,6 +481,181 @@ describeWithDatabase("PostgresCampaignRepository", () => {
     expect(secondClaim.claim.payload.nonce).not.toBe(
       firstClaim.claim.payload.nonce,
     );
+  });
+
+  /** A verified participant of `campaignId`; `digit` must be unique per test. */
+  async function participantOf(campaignId: string, digit: string) {
+    const claimantAddress = `0x${digit.repeat(40)}`;
+    const { eligibility: record } = await new PostgresEligibilityRepository(
+      database.db,
+    ).recordIdempotent({
+      id: randomUUID(),
+      campaignId,
+      participantKey: digit.repeat(64),
+      claimantAddress,
+      provider: "world_id",
+      verifiedAt: new Date("2026-10-05T10:20:00.000Z"),
+      expiresAt: new Date("2026-10-05T11:15:00.000Z"),
+    });
+    const answers = [{ questionId: "q1", normalizedAnswer: "a", score: "1" }];
+    const accepted = {
+      campaignId,
+      eligibilityId: record.id,
+      missionId: await missionIdFor(campaignId),
+      idempotencyKey: randomUUID(),
+      requestHash: hashSubmissionRequest({
+        campaignId,
+        claimantAddress,
+        answers,
+      }),
+      claimantAddress,
+      result: "accepted" as const,
+      rejectionCode: null,
+      answers,
+      createdAt: new Date("2026-10-05T10:30:00.000Z"),
+    };
+    return { eligibilityId: record.id, claimantAddress, accepted };
+  }
+
+  it("stores an acceptance only together with its authorization (ADR-0011)", async () => {
+    const campaignId = await createCampaign();
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: "11",
+      contractAddress: CONTRACT_ADDRESS,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    const { eligibilityId, claimantAddress, accepted } = await participantOf(
+      campaignId,
+      "c",
+    );
+    const submissionRepository = new PostgresSubmissionRepository(database.db);
+    const claims = new PostgresClaimRepository(database.db);
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const now = new Date("2026-10-05T10:31:00.000Z");
+
+    // The authorization is refused (e.g. the campaign closed in between):
+    // the whole insert rolls back and the attempt is not consumed.
+    await expect(
+      submissionRepository.recordIdempotent({
+        ...accepted,
+        id: randomUUID(),
+        beforeCommit: async () => {
+          throw new Error("CAMPAIGN_NOT_ACTIVE");
+        },
+      }),
+    ).rejects.toThrow("CAMPAIGN_NOT_ACTIVE");
+    expect(
+      await submissionRepository.findByIdempotencyKey(
+        campaignId,
+        accepted.idempotencyKey,
+      ),
+    ).toBeNull();
+    expect(await submissionRepository.countByEligibility(eligibilityId)).toBe(
+      0,
+    );
+
+    // Signed inside the same transaction: the claim repository sees the
+    // uncommitted row and both are committed together.
+    let issued: Awaited<ReturnType<typeof claims.issueOnce>> | null = null;
+    const { submission } = await submissionRepository.recordIdempotent({
+      ...accepted,
+      id: randomUUID(),
+      beforeCommit: async (record, scope) => {
+        issued = await claims.within(scope).issueOnce({
+          campaignId,
+          submissionId: record.id,
+          now,
+          canIssue: true,
+          alreadyClaimed: false,
+          onchainPaidCompletions: 0,
+          sign: () =>
+            signer.sign({
+              campaignId: 11n,
+              draftRef: draftRefFor(campaignId),
+              claimant: claimantAddress as `0x${string}`,
+              amount: 1000000n,
+              chainId: 84532,
+              contractAddress: CONTRACT_ADDRESS as `0x${string}`,
+              issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
+            }),
+        });
+      },
+    });
+    expect(issued).not.toBeNull();
+    const [saved] = await database.db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.id, submission.id));
+    expect(saved).toMatchObject({
+      result: "accepted",
+      claimNonce: issued!.claim.payload.nonce,
+      claimOnchainCampaignId: "11",
+      claimContractAddress: CONTRACT_ADDRESS,
+    });
+    expect(await submissionRepository.countByEligibility(eligibilityId)).toBe(
+      1,
+    );
+  });
+
+  it("reissues an authorization signed for a previous on-chain id (ADR-0011)", async () => {
+    const campaignId = await createCampaign();
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: "12",
+      contractAddress: CONTRACT_ADDRESS,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    const { claimantAddress, accepted } = await participantOf(campaignId, "d");
+    const { submission } = await new PostgresSubmissionRepository(
+      database.db,
+    ).recordIdempotent({ ...accepted, id: randomUUID() });
+    const claims = new PostgresClaimRepository(database.db);
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const now = new Date("2026-10-05T10:31:00.000Z");
+    const issue = (onchainCampaignId: bigint) =>
+      claims.issueOnce({
+        campaignId,
+        submissionId: submission.id,
+        now,
+        canIssue: true,
+        alreadyClaimed: false,
+        onchainPaidCompletions: 0,
+        sign: () =>
+          signer.sign({
+            campaignId: onchainCampaignId,
+            draftRef: draftRefFor(campaignId),
+            claimant: claimantAddress as `0x${string}`,
+            amount: 1000000n,
+            chainId: 84532,
+            contractAddress: CONTRACT_ADDRESS as `0x${string}`,
+            issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
+          }),
+      });
+
+    const first = await issue(12n);
+    expect(first.created).toBe(true);
+    // Still bound to id 12: replayed, not re-signed.
+    expect(await issue(12n)).toMatchObject({ created: false });
+
+    // Recovery after a deep reorg relinks the draft to id 13.
+    await database.db
+      .update(campaigns)
+      .set({ onchainCampaignId: "13" })
+      .where(eq(campaigns.id, campaignId));
+
+    const reissued = await issue(13n);
+    expect(reissued.created).toBe(true);
+    expect(reissued.claim.payload.campaignId).toBe(13n);
+    expect(reissued.claim.payload.nonce).not.toBe(first.claim.payload.nonce);
+    const [saved] = await database.db
+      .select()
+      .from(submissions)
+      .where(eq(submissions.id, submission.id));
+    expect(saved?.claimOnchainCampaignId).toBe("13");
+    expect(saved?.claimNonce).toBe(reissued.claim.payload.nonce);
   });
 
   describe("chain indexer persistence", () => {

@@ -39,6 +39,7 @@ describe("campaignManagerAbi", () => {
         : [],
     ).toEqual([
       "campaignId",
+      "draftRef",
       "claimant",
       "amount",
       "nonce",

@@ -94,6 +94,8 @@ export function describeError(error: unknown): string {
     CAMPAIGN_CAP_REACHED:
       "All rewards for this campaign are currently allocated. Try again later.",
     CHAIN_UNAVAILABLE: "The chain is unreachable. Please retry shortly.",
+    CHAIN_HALTED:
+      "Paused while on-chain state is being recovered. Please try again later.",
     CAMPAIGN_NOT_APPROVED:
       "This campaign is awaiting moderation review and cannot be published or joined yet.",
     CAMPAIGN_TAKEN_DOWN: "This campaign was removed after review.",

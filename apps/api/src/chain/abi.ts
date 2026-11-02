@@ -40,7 +40,12 @@ const EVENT_NAMES = [
   "OwnershipTransferred",
 ] as const;
 
-const FUNCTION_NAMES = ["campaigns", "createCampaign", "fundCampaign"] as const;
+const FUNCTION_NAMES = [
+  "campaigns",
+  "campaignIdByDraft",
+  "createCampaign",
+  "fundCampaign",
+] as const;
 
 export const EVENT_TOPICS = Object.fromEntries(
   EVENT_NAMES.map((name) => [
@@ -57,7 +62,13 @@ export const FUNCTION_SELECTORS = Object.fromEntries(
 ) as Record<(typeof FUNCTION_NAMES)[number], `0x${string}`>;
 
 export type CampaignManagerEvent =
-  | { name: "CampaignCreated"; campaignId: string; advertiser: string }
+  | {
+      name: "CampaignCreated";
+      campaignId: string;
+      advertiser: string;
+      /** Off-chain draft reference (ADR-0011), lowercase 0x hex. */
+      draftRef: string;
+    }
   | { name: "CampaignFunded"; campaignId: string; amount: string }
   | {
       name: "RewardClaimed";
@@ -123,9 +134,14 @@ export function decodeCampaignManagerLog(log: {
 
   switch (topic0) {
     case EVENT_TOPICS.CampaignCreated: {
-      const advertiser = shape(2, 0) ? address(indexed[1]!) : null;
+      const advertiser = shape(3, 0) ? address(indexed[1]!) : null;
       return advertiser
-        ? { name: "CampaignCreated", campaignId: uint(indexed[0]!), advertiser }
+        ? {
+            name: "CampaignCreated",
+            campaignId: uint(indexed[0]!),
+            advertiser,
+            draftRef: indexed[2]!,
+          }
         : null;
     }
     case EVENT_TOPICS.CampaignFunded:

@@ -11,6 +11,9 @@ import { privateKeyToAccount } from "viem/accounts";
 export const CLAIM_TYPES = {
   ClaimAuthorization: [
     { name: "campaignId", type: "uint256" },
+    // The draft the campaign was created for (ADR-0011): an id can be reused
+    // by another draft after a deep reorg, the draft cannot.
+    { name: "draftRef", type: "bytes32" },
     { name: "claimant", type: "address" },
     { name: "amount", type: "uint256" },
     { name: "nonce", type: "bytes32" },
@@ -25,6 +28,7 @@ export const MAX_CLAIM_TTL_SECONDS = 900;
 
 export interface ClaimPayload {
   campaignId: bigint;
+  draftRef: Hex;
   claimant: Address;
   amount: bigint;
   nonce: Hex;
@@ -43,6 +47,7 @@ export interface ClaimSigner {
   readonly address: Address;
   sign(input: {
     campaignId: bigint;
+    draftRef: Hex;
     claimant: Address;
     amount: bigint;
     chainId: number;
@@ -61,12 +66,14 @@ export class SignerUnavailableError extends Error {
 
 function newPayload(input: {
   campaignId: bigint;
+  draftRef: Hex;
   claimant: Address;
   amount: bigint;
   issuedAt: bigint;
 }): ClaimPayload {
   return {
     campaignId: input.campaignId,
+    draftRef: input.draftRef,
     claimant: input.claimant,
     amount: input.amount,
     nonce: `0x${randomBytes(32).toString("hex")}`,
@@ -227,6 +234,7 @@ export function createRemoteClaimSigner(
         domain,
         message: {
           campaignId: payload.campaignId.toString(),
+          draftRef: payload.draftRef,
           claimant: payload.claimant,
           amount: payload.amount.toString(),
           nonce: payload.nonce,

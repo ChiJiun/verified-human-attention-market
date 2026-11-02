@@ -2,6 +2,8 @@ import { campaignManagerAbi } from "@vham/shared/contracts";
 import { encodeFunctionData, type Address } from "viem";
 
 import type { CampaignRepository } from "../campaigns/repository.js";
+import { draftRefFor, readCampaignIdByDraft } from "../campaigns/onchain.js";
+import { isRetiredDeployment } from "../campaigns/types.js";
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
@@ -34,6 +36,11 @@ export interface ClaimDependencies {
   now: () => Date;
   /** Global 24 h liability limit in token atomic units; null = none. */
   dailyPayoutLimitAtomic?: bigint | null;
+  /**
+   * True while the indexer worker has recorded a reorg deeper than the
+   * confirmation depth: no participation until recovery (ADR-0011).
+   */
+  chainHalted: () => Promise<boolean>;
 }
 
 export type ClaimOutcome =
@@ -48,7 +55,16 @@ const SIGNER_SELECTOR = encodeFunctionData({
 
 export async function authorizeClaim(
   dependencies: ClaimDependencies,
-  input: { campaignId: string; submissionId: string; eligibilityToken: string },
+  input: {
+    campaignId: string;
+    submissionId: string;
+    eligibilityToken: string;
+    /**
+     * The submission when the caller already holds it, e.g. the row it just
+     * inserted in a transaction that is not committed yet (ADR-0011).
+     */
+    submission?: Awaited<ReturnType<SubmissionRepository["getById"]>>;
+  },
 ): Promise<ClaimOutcome> {
   const { signer, chain } = dependencies;
   if (!signer || !chain) {
@@ -57,7 +73,9 @@ export async function authorizeClaim(
 
   const [campaign, submission, eligibility] = await Promise.all([
     dependencies.campaigns.getById(input.campaignId),
-    dependencies.submissions.getById(input.submissionId),
+    input.submission && input.submission.id === input.submissionId
+      ? input.submission
+      : dependencies.submissions.getById(input.submissionId),
     dependencies.eligibility.getById(input.eligibilityToken),
   ]);
 
@@ -79,11 +97,40 @@ export async function authorizeClaim(
   }
 
   const now = dependencies.now();
+
+  // A recorded deep reorg stops all signing, including replays (ADR-0011).
+  if (await dependencies.chainHalted()) {
+    return { ok: false, status: 503, code: "CHAIN_HALTED" };
+  }
+
+  // A campaign linked on an earlier deployment has an id that may exist on
+  // the current contract too: never sign for it there (ADR-0011).
   if (
     campaign.onchainCampaignId === null ||
-    campaign.chainId !== chain.chainId
+    isRetiredDeployment(campaign, {
+      chainId: chain.chainId,
+      contractAddress: chain.contractAddress,
+    })
   ) {
     return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+  }
+
+  // The link must still be this draft's canonical creation: the contract's
+  // campaignIdByDraft(advertiser, draftRef) has to name exactly this id. A
+  // link left behind by a reorg would otherwise sign against another
+  // campaign's budget (ADR-0011).
+  try {
+    const canonicalId = await readCampaignIdByDraft(
+      chain.rpc,
+      chain.contractAddress,
+      campaign.advertiserAddress,
+      draftRefFor(campaign.id),
+    );
+    if (canonicalId !== campaign.onchainCampaignId) {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
+  } catch {
+    return { ok: false, status: 503, code: "CHAIN_UNAVAILABLE" };
   }
 
   // A configured key must match the contract's current signer. RPC failures
@@ -173,6 +220,7 @@ export async function authorizeClaim(
       sign: () =>
         signer.sign({
           campaignId: BigInt(campaign.onchainCampaignId!),
+          draftRef: draftRefFor(campaign.id),
           claimant: submission.claimantAddress as Address,
           amount: BigInt(campaign.rewardAtomic),
           chainId: chain.chainId,
