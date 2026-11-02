@@ -16,7 +16,11 @@ import {
   registerApiClientRoutes,
   type RateLimitConfig,
 } from "./api-clients/routes.js";
-import { registerErrorModel } from "./errors/catalog.js";
+import {
+  frameworkErrors,
+  registerErrorHandlers,
+  registerErrorModel,
+} from "./errors/catalog.js";
 import {
   registerSessionCookieGuard,
   sessionAuthenticator,
@@ -141,10 +145,12 @@ export function buildApp(dependencies: AppDependencies = {}) {
         ? false
         : {
             redact: { paths: LOGGER_REDACT_PATHS, censor: "[redacted]" },
-            ...(dependencies.logStream
-              ? { stream: dependencies.logStream }
-              : {}),
+            ...(dependencies.logStream && {
+              level: "info",
+              stream: dependencies.logStream,
+            }),
           },
+    frameworkErrors,
     genReqId: generateRequestId,
     requestIdLogLabel: "requestId",
   });
@@ -216,6 +222,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
     return { head, lag };
   }
 
+  registerErrorHandlers(app);
   registerErrorModel(app);
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("x-content-type-options", "nosniff");
