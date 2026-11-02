@@ -4,10 +4,45 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /**
+     * The same request may succeed later without changes: the body said
+     * `retryable`, or it was a `{ status: "reconciling" }` answer.
+     */
+    readonly retryable = false,
   ) {
     super(`${status} ${code}`);
     this.name = "ApiError";
   }
+}
+
+/**
+ * The error for a non-2xx answer. A `{ status: "reconciling", code }` body
+ * (e.g. `503 RPC_UNAVAILABLE` while linking) is not a failure but "retry
+ * later" (API_SPEC), so it keeps its code and is retryable. A body without
+ * the catalog's `retryable` (a proxy error page) is judged by its status.
+ */
+export function apiErrorFrom(status: number, body: unknown): ApiError {
+  const fields = (typeof body === "object" && body !== null ? body : {}) as {
+    status?: unknown;
+    code?: unknown;
+    error?: { code?: unknown; retryable?: unknown } | null;
+  };
+
+  if (fields.status === "reconciling" && typeof fields.code === "string") {
+    return new ApiError(status, fields.code, true);
+  }
+
+  const error =
+    typeof fields.error === "object" && fields.error !== null
+      ? fields.error
+      : {};
+  return new ApiError(
+    status,
+    typeof error.code === "string" ? error.code : "UNKNOWN_ERROR",
+    typeof error.retryable === "boolean"
+      ? error.retryable
+      : status >= 500 || status === 429,
+  );
 }
 
 export type ApiPath =
@@ -45,15 +80,13 @@ export async function api<T>(
       ? { body: JSON.stringify(options.body) }
       : {}),
   });
-  const data = (await response.json().catch(() => ({}))) as T & {
-    error?: { code?: string };
-  };
+  const data: unknown = await response.json().catch(() => ({}));
 
   if (!response.ok && response.status !== 202) {
-    throw new ApiError(response.status, data.error?.code ?? "UNKNOWN_ERROR");
+    throw apiErrorFrom(response.status, data);
   }
 
-  return { status: response.status, data };
+  return { status: response.status, data: data as T };
 }
 
 /** Human-readable messages for the error codes the UI can hit. */
@@ -72,17 +105,48 @@ export function describeError(error: unknown): string {
     CAMPAIGN_START_PASSED:
       "The start time has passed; create a new campaign with a later start.",
     CHAIN_NOT_CONFIGURED: "The API has no chain configuration.",
+    IDEMPOTENCY_CONFLICT:
+      "This request was already used with different values. Reload the page and try again.",
+    INVALID_TX_HASH: "That is not a valid transaction hash.",
+    CAMPAIGN_NOT_FOUND: "This campaign does not exist on this API.",
+    // Creating and linking on-chain (ADR-0011).
+    CAMPAIGN_ALREADY_PUBLISHED:
+      "This campaign is already on-chain. Refresh the page.",
+    DRAFT_ALREADY_CREATED:
+      "This draft's campaign is already on-chain and waiting for confirmations, so nothing was sent. The page links it once it is final.",
+    TX_PENDING:
+      "The transaction is not mined yet. Do not send it again; checking never sends a transaction.",
+    TX_UNCONFIRMED:
+      "The campaign is created on-chain and waiting for confirmations. Do not send it again.",
+    NOT_CREATED_YET:
+      "No confirmed on-chain campaign for this draft yet. If you sent the transaction it may still be mined; do not send it again.",
+    RPC_UNAVAILABLE:
+      "The API cannot reach the chain right now. Please try again in a minute.",
+    TX_REVERTED: "The transaction reverted, so it created no campaign.",
+    NO_CAMPAIGN_CREATED_EVENT:
+      "That transaction did not create a campaign on this platform's contract.",
+    DRAFT_MISMATCH:
+      "That on-chain campaign was created for a different draft, so it was not linked here.",
     PARAMETERS_MISMATCH:
       "The on-chain campaign does not match this draft. Use the values shown.",
     ADVERTISER_MISMATCH: "The transaction was sent from a different wallet.",
     ALREADY_LINKED: "This draft is already linked to an on-chain campaign.",
+    ONCHAIN_CAMPAIGN_ALREADY_LINKED:
+      "That on-chain campaign is already linked to another draft.",
     LINK_NOT_CANONICAL:
       "This draft's on-chain link no longer matches the chain and is being reconciled. Check again in a few minutes.",
     AUTH_NOT_CONFIGURED: "Sign-in is disabled on this API (SIWE_DOMAIN).",
     NONCE_INVALID_OR_USED: "Sign-in expired. Please try again.",
+    MESSAGE_NOT_VALID_NOW:
+      "The sign-in message is expired or not valid yet. Check your computer's clock and try again.",
+    INVALID_SIGNATURE: "The sign-in signature is not valid. Please try again.",
     WRONG_DOMAIN:
       "Sign-in domain mismatch: set SIWE_DOMAIN to this site's host.",
-    WRONG_CHAIN: "Sign-in chain mismatch.",
+    // Sign-in and linking both answer this when the network differs.
+    WRONG_CHAIN:
+      "Network mismatch: this sign-in or campaign belongs to a different chain than the API serves.",
+    RATE_LIMITED: "Too many requests. Please wait a moment and try again.",
+    INTERNAL_ERROR: "The API hit an unexpected error. Please try again.",
     INVALID_ELIGIBILITY:
       "This verification belongs to another wallet or campaign. Verify again.",
     ELIGIBILITY_EXPIRED: "Your verification expired with the campaign.",

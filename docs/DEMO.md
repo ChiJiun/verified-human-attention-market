@@ -162,9 +162,24 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 
 合約被 owner 暫停時，頁面說明退款要等解除暫停；「Close campaign」不受暫停影響。兩個按鈕送出前都會重新讀鏈並模擬交易，被合約拒絕時直接顯示 custom error 名稱（例如 `RefundNotAvailable`），不會自動重送。
 
+關閉或退款的交易在等待時間（2 分鐘）內沒有收據時，卡片顯示「還在確認中」，該按鈕先隱藏；頁面每 10 秒查一次收據、錢包帳號的 nonce 與 campaign 狀態，不必重新整理（#86）：
+
+- 收據到了，或鏈上狀態已經是動作的結果（關閉後 `closed`、退款後 `settled`，例如錢包加速後由替代交易完成），卡片改成完成，按鈕依鏈上狀態更新。
+- 收據顯示 revert，或同一個 nonce 已被另一筆交易用掉（在錢包取消），且重新讀到的 campaign 沒有變化，卡片說明原因，按鈕在鏈上仍允許時重新出現。
+- 錢包的 RPC 可能由不同後端回答，所以要連續兩次檢查得到同一個結論才算數；之後鏈上若仍出現動作的結果，顯示失敗的卡片也會改成完成。
+- 交易只要曾經查到過（知道它的 nonce），在那個 nonce 被用掉之前就一直算「還在確認」，因為它隨時可能上鏈。從來沒查到過、超過 10 分鐘仍查不到的交易，視為可能根本沒送出：一般按鈕仍隱藏，改為提供另外的「Close campaign anyway」／「Refund unused budget anyway」並附警告。再按之前請先看錢包的活動紀錄；重送前仍會模擬，若原交易其實已上鏈，模擬會失敗而不送出，兩筆都還沒上鏈時第二筆只會 revert 並耗 gas。
+
+一個動作進行中時，其他按鈕（包含「Close campaign」與「Refund unused budget」）只會變成停用，不會消失，連點也不會點到滑進同一位置的「Refresh」。
+
 這兩個按鈕只對目前部署的合約（`GET /v1/chain`）上的 campaign 出現。ADR-0011 之前的舊合約上的 campaign，頁面沒有合約位址可用，仍要用 `cast send` 由廣告主錢包送 `closeCampaign(id)` 和 `refundUnusedBudget(id)`。
 
-交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
+交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。API 暫時連不到鏈（`503 RPC_UNAVAILABLE`）也算「還在對帳」，頁面約兩分鐘內會自己重試；放棄時卡片明確寫出原因並請你按「Check again」（只查詢，不會送交易）。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
+
+「可能有建立交易還沒確認」的幾種邊界（#78）：
+
+- 另一個分頁或瀏覽器的建立交易已上鏈但還沒達到確認深度時，`/publish` 以最新區塊判斷並回 `409 DRAFT_ALREADY_CREATED`，這個分頁不會再送；頁面改為等它確認後連結。交易還在 mempool、尚未上鏈時 API 看不到，這時只有合約擋得住（第二筆 revert，只耗 gas）。
+- 瀏覽器不能用 `localStorage`（例如私密模式）時，標記只存在這個分頁的記憶體裡：同一次瀏覽中「Check again」與 10 分鐘後的「Create on-chain anyway」照常出現，重新整理後就不記得了，頁面會直接提供「Create on-chain」（送出前仍會先查已確認的建立，`/publish` 再查最新區塊）。
+- 按「Create on-chain anyway」後在錢包拒絕簽署，這次沒有送出任何交易，先前那次嘗試的標記會保留，頁面繼續提供「Check again」。
 
 ### 完整網頁 demo：本機鏈 + 前端（#11 / #12）
 

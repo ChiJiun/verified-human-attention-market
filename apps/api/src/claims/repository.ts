@@ -33,7 +33,10 @@ export interface ClaimIssueInput {
   campaignId: string;
   now: Date;
   canIssue: boolean;
-  /** Live `claimedWallet(campaignId, claimant)`: this wallet was paid. */
+  /**
+   * Live `claimedWallet(campaignId, claimant)`: this wallet was paid, so no
+   * authorization is returned, not even the stored one (ALREADY_CLAIMED).
+   */
   alreadyClaimed: boolean;
   /** Live on-chain paid completions for the campaign. */
   onchainPaidCompletions: number;
@@ -41,7 +44,8 @@ export interface ClaimIssueInput {
    * Lowercase nonces of this campaign's RewardClaimed events that are
    * confirmed on-chain. Their authorizations are already counted in
    * `onchainPaidCompletions`, so they are not outstanding liability even
-   * while the signature is unexpired. Empty = count every unexpired
+   * while the signature is unexpired, and a submission whose stored nonce is
+   * among them was paid (ALREADY_CLAIMED). Empty = count every unexpired
    * authorization (safe, but a slot stays blocked until expiry).
    */
   redeemedNonces?: ReadonlySet<string>;
@@ -134,6 +138,23 @@ function restoreClaim(
   return claim;
 }
 
+/**
+ * The wallet was paid: live `claimedWallet`, or the stored authorization's
+ * nonce is a confirmed payout. Checked before a replay (#82): the contract
+ * would revert the stored authorization (NonceAlreadyUsed or
+ * WalletAlreadyClaimed), and a reissued one could never be paid either.
+ */
+function alreadyPaid(
+  input: Pick<ClaimIssueInput, "alreadyClaimed" | "redeemedNonces">,
+  storedNonce: string | null | undefined,
+): boolean {
+  return (
+    input.alreadyClaimed ||
+    (storedNonce != null &&
+      (input.redeemedNonces?.has(storedNonce.toLowerCase()) ?? false))
+  );
+}
+
 /** The stored signature was issued for the campaign's current link. */
 function isBoundTo(
   row: Pick<
@@ -192,14 +213,14 @@ export class PostgresClaimRepository implements ClaimRepository {
         throw new ClaimIssueError("SUBMISSION_NOT_ACCEPTED");
       }
 
-      const prior = restoreClaim(row, campaign, input.now);
-      if (prior) return { claim: prior, created: false };
-
-      // Reissue only if no earlier authorization was redeemed: the contract
-      // pays each wallet once, so a new nonce cannot cause a second payout.
-      if (input.alreadyClaimed) {
+      // Neither replayed nor reissued once paid: the contract pays each
+      // wallet once, so a new nonce cannot cause a second payout either.
+      if (alreadyPaid(input, row.claimNonce)) {
         throw new ClaimIssueError("ALREADY_CLAIMED");
       }
+
+      const prior = restoreClaim(row, campaign, input.now);
+      if (prior) return { claim: prior, created: false };
 
       if (!input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
@@ -347,23 +368,10 @@ export class InMemoryClaimRepository implements ClaimRepository {
         this.getSubmission(input.submissionId),
         this.getCampaign(input.campaignId),
       ]);
-      const unexpired = (claim: SignedClaim) =>
-        Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
-      // Signed for the link the campaign has now (see isBoundTo).
-      const bound = (claim: SignedClaim) =>
-        campaign?.onchainCampaignId == null ||
-        (claim.payload.campaignId === BigInt(campaign.onchainCampaignId) &&
-          (campaign.onchainContractAddress == null ||
-            claim.contractAddress.toLowerCase() ===
-              campaign.onchainContractAddress.toLowerCase()));
-      const existing = this.records.get(input.submissionId);
-      if (existing && unexpired(existing.claim) && bound(existing.claim)) {
-        return { claim: existing.claim, created: false };
+      // Same order of refusals as PostgresClaimRepository.
+      if (!campaign || campaign.onchainCampaignId == null) {
+        throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
-      if (input.alreadyClaimed) {
-        throw new ClaimIssueError("ALREADY_CLAIMED");
-      }
-
       if (
         !submission ||
         submission.campaignId !== input.campaignId ||
@@ -371,7 +379,25 @@ export class InMemoryClaimRepository implements ClaimRepository {
       ) {
         throw new ClaimIssueError("SUBMISSION_NOT_ACCEPTED");
       }
-      if (!campaign || !input.canIssue || campaign.status !== "active") {
+
+      const onchainCampaignId = BigInt(campaign.onchainCampaignId);
+      const contractAddress = campaign.onchainContractAddress?.toLowerCase();
+      const unexpired = (claim: SignedClaim) =>
+        Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
+      // Signed for the link the campaign has now (see isBoundTo).
+      const bound = (claim: SignedClaim) =>
+        claim.payload.campaignId === onchainCampaignId &&
+        (contractAddress == null ||
+          claim.contractAddress.toLowerCase() === contractAddress);
+      const existing = this.records.get(input.submissionId);
+      if (alreadyPaid(input, existing?.claim.payload.nonce)) {
+        throw new ClaimIssueError("ALREADY_CLAIMED");
+      }
+      if (existing && unexpired(existing.claim) && bound(existing.claim)) {
+        return { claim: existing.claim, created: false };
+      }
+
+      if (!input.canIssue || campaign.status !== "active") {
         throw new ClaimIssueError("CAMPAIGN_NOT_ACTIVE");
       }
       const redeemed = input.redeemedNonces ?? new Set<string>();

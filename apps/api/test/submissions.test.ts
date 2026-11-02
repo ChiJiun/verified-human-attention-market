@@ -15,7 +15,9 @@ import {
 } from "../src/claims/repository.js";
 import type { ClaimPreparation, ClaimTerms } from "../src/claims/service.js";
 import {
+  createClaimSigner,
   SignerUnavailableError,
+  type ClaimSigner,
   type SignedClaim,
 } from "../src/claims/signer.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
@@ -85,7 +87,10 @@ const WRONG = [
   { questionId: "q2", choiceId: "b" },
 ];
 
-async function setup(chain: AppDependencies["chain"] = null) {
+async function setup(
+  chain: AppDependencies["chain"] = null,
+  claimSigner: ClaimSigner | null = null,
+) {
   let now = new Date("2026-10-05T10:00:00.000Z");
   const campaigns = new StatusOverrideCampaignRepository();
   const eligibility = new InMemoryEligibilityRepository();
@@ -98,6 +103,7 @@ async function setup(chain: AppDependencies["chain"] = null) {
     worldIdVerifierOverride: new FakeWorldId(),
     participantKeySecret: SECRET,
     chain,
+    claimSigner,
     now: () => now,
   });
   apps.push(app);
@@ -148,6 +154,48 @@ async function setup(chain: AppDependencies["chain"] = null) {
       now = value;
     },
   };
+}
+
+/** `setup` with the campaign linked as on-chain id 1 on a funded FakeChain. */
+async function setupOnchain(claimSigner: ClaimSigner | null = null) {
+  const contractAddress = `0x${"c1".repeat(20)}`;
+  const rpc = new FakeChain(contractAddress);
+  rpc.signer = claimSigner?.address ?? null;
+  const s = await setup(
+    {
+      rpc,
+      chain: {
+        chainId: 84532,
+        contractAddress,
+        usdcAddress: `0x${"d1".repeat(20)}`,
+      },
+      events: new InMemoryChainEventRepository(),
+      now: () => new Date("2026-10-05T10:30:00.000Z"),
+    },
+    claimSigner,
+  );
+  const advertiser = campaignPayload.advertiser.toLowerCase();
+  const reward = BigInt(campaignPayload.rewardPerCompletion);
+  await s.campaigns.linkOnchain(s.campaignId, {
+    onchainCampaignId: "1",
+    contractAddress,
+    publishTxHash: null,
+    status: "active",
+    updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+  });
+  rpc.campaignIdByDraft.set(`${advertiser}:${draftRefFor(s.campaignId)}`, {
+    id: 1,
+    block: 0n,
+  });
+  rpc.campaignStructs.set("1", {
+    advertiser,
+    fundedBudget: reward * BigInt(campaignPayload.maxCompletions),
+    rewardPerCompletion: reward,
+    maxCompletions: campaignPayload.maxCompletions,
+    startTime: Date.parse(campaignPayload.startAt) / 1000,
+    endTime: Date.parse(campaignPayload.endAt) / 1000,
+  });
+  return { ...s, rpc };
 }
 
 function signedFor(claimant: string): SignedClaim {
@@ -441,39 +489,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
   });
 
   it("accepts with pending_authorization and no code when a chain is configured but no claim signer", async () => {
-    const contractAddress = `0x${"c1".repeat(20)}`;
-    const rpc = new FakeChain(contractAddress);
-    const { campaigns, campaignId, verify, submit } = await setup({
-      rpc,
-      chain: {
-        chainId: 84532,
-        contractAddress,
-        usdcAddress: `0x${"d1".repeat(20)}`,
-      },
-      events: new InMemoryChainEventRepository(),
-      now: () => new Date("2026-10-05T10:30:00.000Z"),
-    });
-    const advertiser = campaignPayload.advertiser.toLowerCase();
-    const reward = BigInt(campaignPayload.rewardPerCompletion);
-    await campaigns.linkOnchain(campaignId, {
-      onchainCampaignId: "1",
-      contractAddress,
-      publishTxHash: null,
-      status: "active",
-      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
-    });
-    rpc.campaignIdByDraft.set(`${advertiser}:${draftRefFor(campaignId)}`, {
-      id: 1,
-      block: 0n,
-    });
-    rpc.campaignStructs.set("1", {
-      advertiser,
-      fundedBudget: reward * BigInt(campaignPayload.maxCompletions),
-      rewardPerCompletion: reward,
-      maxCompletions: campaignPayload.maxCompletions,
-      startTime: Date.parse(campaignPayload.startAt) / 1000,
-      endTime: Date.parse(campaignPayload.endAt) / 1000,
-    });
+    const { verify, submit } = await setupOnchain();
 
     const response = await submit("chain-without-signer", {
       eligibilityToken: await verify("human-1", WALLET_A),
@@ -485,6 +501,46 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     const body = response.json<{ status: string; claim: unknown }>();
     expect(body.status).toBe("accepted");
     expect(body.claim).toEqual({ status: "pending_authorization", code: null });
+  });
+
+  it("replays a paid completion with claim status claimed, as the authorization route answers 409 ALREADY_CLAIMED (#82)", async () => {
+    const { app, campaignId, rpc, verify, submit, setNow } = await setupOnchain(
+      createClaimSigner(`0x${"11".repeat(32)}`),
+    );
+    const eligibilityToken = await verify("human-1", WALLET_A);
+    const body = { eligibilityToken, claimant: WALLET_A, answers: CORRECT };
+    const accepted = await submit("paid", body);
+    expect(accepted.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
+    });
+    const { submissionId } = accepted.json<{ submissionId: string }>();
+
+    rpc.claimedWallets.add(`1:${WALLET_A}`);
+    // Before and after the authorization signed at acceptance expires.
+    for (const at of ["2026-10-05T10:30:00.000Z", "2026-10-05T10:46:00.000Z"]) {
+      setNow(new Date(at));
+      const replay = await submit("paid", body);
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toEqual({
+        submissionId,
+        campaignId,
+        claimant: WALLET_A,
+        status: "accepted",
+        rejectionCode: null,
+        claim: { status: "claimed", code: "ALREADY_CLAIMED" },
+      });
+
+      const authorization = await app.inject({
+        method: "POST",
+        url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
+        payload: { eligibilityToken },
+      });
+      expect(authorization.statusCode).toBe(409);
+      expect(authorization.json()).toMatchObject({
+        error: { code: "ALREADY_CLAIMED" },
+      });
+    }
   });
 
   it("replays the original outcome for the same idempotency key", async () => {

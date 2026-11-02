@@ -491,6 +491,16 @@ describeE2e("POC economic loop on a local chain", () => {
       status: "reconciling",
       code: "NOT_CREATED_YET",
     });
+    // The latest block already shows it, so no tab gets another intent (#78).
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/v1/campaigns/${campaignId}/publish`,
+          headers: auth,
+        })
+      ).json(),
+    ).toMatchObject({ error: { code: "DRAFT_ALREADY_CREATED" } });
     await testClient.mine({ blocks: CONFIRMATIONS });
 
     // Final, but not yet in the indexer's confirmed range (issue #76).
@@ -729,6 +739,17 @@ describeE2e("POC economic loop on a local chain", () => {
         args: claimArgs,
       }),
     ).rejects.toThrow();
+    // The API no longer hands out the redeemed, still unexpired
+    // authorization, so the page shows "already paid" (#82).
+    const paidAgain = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
+      payload: { eligibilityToken },
+    });
+    expect(paidAgain.statusCode).toBe(409);
+    expect(paidAgain.json()).toMatchObject({
+      error: { code: "ALREADY_CLAIMED" },
+    });
 
     // 7. Indexer reconciliation matches the chain.
     await reconcile();

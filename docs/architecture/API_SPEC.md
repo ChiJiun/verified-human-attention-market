@@ -210,7 +210,9 @@ Returns the on-chain transaction intent for a `draft` (no state change): `create
 }
 ```
 
-Errors: `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_ALREADY_PUBLISHED` (not a `draft` or already linked), `409 CAMPAIGN_START_PASSED` (the contract would reject it), `503 CHAIN_NOT_CONFIGURED`. Moderation-gated.
+Before answering, the API reads `campaignIdByDraft(advertiser, draftRef)` at the **latest** block. Linking reads the confirmed block, so a creation that is mined but not yet final is invisible to it; the intent is refused instead, so a second tab or browser cannot send a `createCampaign` that only reverts (`DraftAlreadyCreated`) and costs gas (#78). A creation still in the mempool is not visible here either; the contract refuses it on-chain.
+
+Errors: `404 CAMPAIGN_NOT_FOUND`, `409 CAMPAIGN_ALREADY_PUBLISHED` (not a `draft` or already linked), `409 CAMPAIGN_START_PASSED` (the contract would reject it), `409 DRAFT_ALREADY_CREATED` (this draft's campaign exists at the latest block: link it with `POST /onchain`, which succeeds once it is final), `503 RPC_UNAVAILABLE` (the chain could not be read; retryable), `503 CHAIN_NOT_CONFIGURED`. Moderation-gated.
 
 ## POST /v1/campaigns/:id/onchain
 
@@ -236,7 +238,7 @@ The cost is availability: linking waits for the worker (up to one poll interval 
 
 An already linked draft is answered from the chain, not from the database, by hash or without: at the indexed block, `campaignIdByDraft` must still name the linked id and `campaigns(id)` must carry the draft's parameters (`200`). Otherwise the link is stale: `409 LINK_NOT_CANONICAL`, retryable, because the worker relinks the draft (below) or halts the deployment. While no indexed block can be checked (index empty or being rebuilt, or its block no longer canonical) the answer is `202 TX_UNCONFIRMED`.
 
-Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the indexed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics at the same block and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it stores no transaction hash, only a per-draft "a creation may be pending" marker that makes it offer *Check again* first after a reload, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation.
+Without a hash (`{}`), the API reads `campaignIdByDraft(advertiser, draftRef)` at the indexed block: `0` means not created yet or not final (`202 reconciling`), otherwise it checks the on-chain economics at the same block and links with `publishTxHash: null`. This is how the web app recovers from a lost RPC response or a second tab: it stores no transaction hash, only a per-draft "a creation may be pending" marker that makes it offer *Check again* first after a reload, and pressing Create again is always safe because the contract refuses a second campaign for the same draft. A hash reported after linking by draft is accepted when it is the same creation. The web app retries every `reconciling` answer, the `503 RPC_UNAVAILABLE` one included, and every retryable error such as `409 LINK_NOT_CANONICAL`, for about two minutes, then asks the advertiser to press *Check again*; checking never sends a transaction.
 
 If nothing is reported at all (e.g. the browser closed after broadcast), the indexer worker links a confirmed `CampaignCreated` to the unlinked draft whose `draftRef` it carries, after checking the economics. Creations that name no known draft are ignored; one whose economics contradict its draft is logged for manual resolution. A confirmed creation also releases stale links (the campaign returns to `draft`) before the named draft is linked: a link of its id to a **different** draft (left behind by a reorg deeper than the confirmation depth), and a link of the draft it names to a **different** id (the contract allows one creation per advertiser and draft on a fork, so that id is not this draft's; e.g. a link made before issue #76 from a node on another fork). Status sync never applies such a creation's events to the wrong draft, and the claim service checks `campaignIdByDraft` live before signing.
 
@@ -386,7 +388,7 @@ Accepted response:
 }
 ```
 
-The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer **or without a chain configuration** (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed.
+The acceptance and its authorization are one persisted result (ADR-0011): the signature is issued inside the transaction that records the completion. If it cannot be issued, nothing is recorded, the attempt is not consumed and the request fails with the reason: `409 CAMPAIGN_NOT_ACTIVE` (closed or no longer payable since the live check), `409 CAMPAIGN_CAP_REACHED`, `409 ALREADY_CLAIMED`, `503 SIGNER_UNAVAILABLE`, `503 SIGNER_MISMATCH`, `503 DAILY_LIMIT_REACHED`, `503 CHAIN_UNAVAILABLE` or `503 CHAIN_HALTED`; the same request can be retried. Only an API without a configured signer **or without a chain configuration** (local development) accepts with `claim` = `{ "status": "pending_authorization", "code": null }`. A replay of an accepted submission returns its stored authorization (reissued if it expired), or `pending_authorization` with the reason when it expired after the campaign closed. Once the wallet was paid, a replay returns `claim` = `{ "status": "claimed", "code": "ALREADY_CLAIMED" }` and no authorization, before and after the stored one expires, matching the `409 ALREADY_CLAIMED` of the authorization endpoint (#82). `claimed` is read from `claimedWallet` at the latest block and is not final: if a shallow reorg undoes the payout, a later replay or authorization request returns the stored authorization again (or a reissued one after expiry).
 
 # Claims
 
@@ -404,9 +406,12 @@ The response contains the exact EIP-712 `ClaimAuthorization` fields
 are decimal strings. A retry before expiry returns the same signed payload;
 concurrent requests cannot issue a second authorization. After expiry, an
 unredeemed authorization is reissued with a new nonce while the campaign is
-still active and under its cap; once the wallet has been paid the endpoint
-returns `409 ALREADY_CLAIMED`. Status `201` for a newly signed authorization,
-`200` for a replay. Other errors: `400 INVALID_ELIGIBILITY_TOKEN`, `403
+still active and under its cap. Once the wallet has been paid (live
+`claimedWallet`, or the stored nonce is a confirmed `RewardClaimed`) the
+endpoint returns `409 ALREADY_CLAIMED` before and after expiry, never the
+redeemed authorization, which the contract would revert (#82). Status `201`
+for a newly signed authorization, `200` for a replay. Other errors:
+`400 INVALID_ELIGIBILITY_TOKEN`, `403
 INVALID_ELIGIBILITY` (token not bound to this campaign and claimant), `404
 SUBMISSION_NOT_FOUND`, `409 SUBMISSION_NOT_ACCEPTED`, `409 CAMPAIGN_CAP_REACHED`
 (paid + outstanding authorizations reached `maxCompletions`), `409

@@ -387,15 +387,77 @@ describe("EIP-712 claim authorization", () => {
     );
   });
 
-  it("never reissues once the wallet was paid on-chain", async () => {
+  it("answers 409 ALREADY_CLAIMED, never the stored authorization, once the wallet was paid (#82)", async () => {
     const f = fixture();
-    await authorizeClaim(f.dependencies, f.input);
-    f.chainState.claimed = true;
-    f.chainState.paidCompletions = 1;
-    f.setNow(new Date("2026-10-12T01:26:00.000Z"));
+    const campaignId = "11111111-1111-4111-8111-111111111111";
+    const submissionId = "22222222-2222-4222-8222-222222222222";
+    const eligibilityToken = "33333333-3333-4333-8333-333333333333";
+    f.setCampaign({ ...campaign, id: campaignId });
+    f.setSubmission({
+      ...submission!,
+      id: submissionId,
+      campaignId,
+      eligibilityId: eligibilityToken,
+    });
+    f.setEligibility({ ...eligibility!, id: eligibilityToken, campaignId });
+    let signCalls = 0;
+    const app = Fastify();
+    await registerClaimRoutes(app, {
+      ...f.dependencies,
+      signer: {
+        address: signer.address,
+        sign: (request: Parameters<typeof signer.sign>[0]) => {
+          signCalls += 1;
+          return signer.sign(request);
+        },
+      },
+    });
+    try {
+      const request = () =>
+        app.inject({
+          method: "POST",
+          url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
+          payload: { eligibilityToken },
+        });
+      expect((await request()).statusCode).toBe(201);
 
+      // The participant redeemed it. Before it expires a replay would be
+      // reverted with NonceAlreadyUsed, after it a reissue with
+      // WalletAlreadyClaimed: neither is returned.
+      f.chainState.claimed = true;
+      f.chainState.paidCompletions = 1;
+      for (const at of [NOW, new Date("2026-10-12T01:26:00.000Z")]) {
+        f.setNow(at);
+        const again = await request();
+        expect(again.statusCode).toBe(409);
+        expect(again.json()).toMatchObject({
+          error: { code: "ALREADY_CLAIMED", retryable: false },
+        });
+        expect(again.body).not.toContain("signature");
+      }
+      expect(signCalls).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("answers ALREADY_CLAIMED once the stored nonce is a confirmed payout (#82)", async () => {
+    const f = fixture();
+    const first = await authorizeClaim(f.dependencies, f.input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Observed only: it could still be reorged out, so the replay stands.
+    f.indexClaim(first.claim.payload.nonce, "observed");
+    expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
+      ok: true,
+      created: false,
+    });
+
+    f.indexClaim(first.claim.payload.nonce, "confirmed");
     expect(await authorizeClaim(f.dependencies, f.input)).toMatchObject({
       ok: false,
+      status: 409,
       code: "ALREADY_CLAIMED",
     });
   });
