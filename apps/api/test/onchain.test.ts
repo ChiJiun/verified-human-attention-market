@@ -8,7 +8,12 @@ import {
   syncCampaignStatuses,
 } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
-import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import { ChainConfigError, RpcUnavailableError } from "../src/chain/config.js";
+import {
+  IndexCursorMovedError,
+  InMemoryChainEventRepository,
+  type DeploymentLock,
+} from "../src/chain/events-repository.js";
 import type { BlockRef } from "../src/chain/rpc.js";
 import {
   indexOnce,
@@ -17,10 +22,14 @@ import {
 import {
   applyReorgRecovery,
   planReorgRecovery,
+  runReorgRecovery,
 } from "../src/chain/reorg-recovery.js";
 import {
+  ChainHaltedError,
   recordHaltWithRetry,
+  retryWithBackoff,
   runWorkerPass,
+  sleepUntilAborted,
 } from "../src/chain/worker-pass.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
@@ -531,7 +540,10 @@ describe("POST /v1/campaigns/:id/onchain", () => {
 });
 
 /** What the indexer worker runs every pass (src/chain/worker-pass.ts). */
-function workerPass(fixture: Awaited<ReturnType<typeof setup>>) {
+function workerPass(
+  fixture: Awaited<ReturnType<typeof setup>>,
+  maxBlockRange = 100n,
+) {
   return runWorkerPass({
     rpc: fixture.chain,
     events: fixture.events,
@@ -541,7 +553,7 @@ function workerPass(fixture: Awaited<ReturnType<typeof setup>>) {
       contractAddress: CONTRACT,
       deployBlock: 1n,
       confirmations: CONFIRMATIONS,
-      maxBlockRange: 100n,
+      maxBlockRange,
     },
     usdcAddress: USDC_ADDRESS,
     now: () => new Date(),
@@ -769,6 +781,223 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     ).toBe(true);
     expect(failures).toEqual([1, 2]);
     expect((await fixture.events.getHalt(fixture.scope))?.block).toBe(42n);
+  });
+
+  it("retries only transient failures, and stops when the worker stops", async () => {
+    const delays: number[] = [];
+    const options = {
+      retryable: (error: unknown) => error instanceof RpcUnavailableError,
+      onFailure: (_attempt: number, _error: unknown, retryInMs: number) =>
+        delays.push(retryInMs),
+      sleep: async () => {},
+    };
+    let calls = 0;
+    const flaky = async () => {
+      calls += 1;
+      if (calls < 4) throw new RpcUnavailableError("RPC eth_chainId failed");
+      return "verified";
+    };
+
+    expect(
+      await retryWithBackoff(flaky, { ...options, stopping: () => false }),
+    ).toBe("verified");
+    expect(delays).toEqual([1_000, 2_000, 4_000]);
+
+    await expect(
+      retryWithBackoff(
+        async () => {
+          throw new ChainConfigError(["RPC chain id 1 does not match"]);
+        },
+        { ...options, stopping: () => false },
+      ),
+    ).rejects.toThrow(/does not match/);
+    expect(
+      await retryWithBackoff(flaky, { ...options, stopping: () => true }),
+    ).toBeNull();
+  });
+
+  it("does nothing while a halt has no recovery applied (#77)", async () => {
+    const { fixture } = await activeCampaign();
+    const { chain, events, scope } = fixture;
+    chain.mine(4);
+    const cursor = await events.getCursor(scope);
+    await events.haltForReorg(scope, cursor!.latestConfirmedBlock, new Date());
+    const getLogsCalls = chain.getLogsCalls;
+
+    await expect(workerPass(fixture)).rejects.toBeInstanceOf(ChainHaltedError);
+    expect(chain.getLogsCalls).toBe(getLogsCalls);
+    expect(await events.getCursor(scope)).toEqual(cursor);
+  });
+
+  it("refuses --apply while an indexer worker holds the deployment (#77)", async () => {
+    const { fixture, draftA } = await activeCampaign();
+    const { campaigns, events, scope } = fixture;
+    const cursor = await events.getCursor(scope);
+    const command = { ...recovery(fixture), now: () => new Date() };
+    const worker = await events.lockDeployment(scope);
+
+    expect(await runReorgRecovery(command, { apply: false })).toMatchObject({
+      mode: "dry-run",
+      halted: null,
+      deploymentLocked: true,
+    });
+    // The dry run only looked; the worker still holds the deployment.
+    expect(await worker!.isHeld()).toBe(true);
+    expect(await runReorgRecovery(command, { apply: true })).toMatchObject({
+      mode: "refused",
+    });
+    // Nothing changed: no halt, the index and the link are intact.
+    expect(await events.getHalt(scope)).toBeNull();
+    expect(await events.getCursor(scope)).toEqual(cursor);
+    expect((await campaigns.getById(draftA))?.onchainCampaignId).toBe("1");
+
+    // Once the worker stopped, --apply runs and releases the deployment.
+    await worker!.release();
+    expect(await runReorgRecovery(command, { apply: true })).toMatchObject({
+      mode: "apply",
+      halted: null,
+      released: [],
+    });
+    expect((await events.getHalt(scope))?.recoveryAppliedAt).toBeInstanceOf(
+      Date,
+    );
+    expect(await events.getCursor(scope)).toBeNull();
+    const restarted = await events.lockDeployment(scope);
+    expect(restarted).not.toBeNull();
+    await restarted!.release();
+  });
+
+  it("refuses --apply when its lock was lost while it planned (#77)", async () => {
+    const { fixture, draftA } = await activeCampaign();
+    const { campaigns, chain, events, scope } = fixture;
+    const cursor = await events.getCursor(scope);
+
+    // The session drops while the plan reads the chain; a worker starts.
+    let worker = null as DeploymentLock | null;
+    const head = chain.blockNumber.bind(chain);
+    chain.blockNumber = async () => {
+      if (!worker) {
+        events.dropDeploymentLocks();
+        worker = await events.lockDeployment(scope);
+      }
+      return head();
+    };
+
+    expect(
+      await runReorgRecovery(
+        { ...recovery(fixture), now: () => new Date() },
+        { apply: true },
+      ),
+    ).toMatchObject({ mode: "refused" });
+    expect(await worker!.isHeld()).toBe(true);
+    expect(await events.getHalt(scope)).toBeNull();
+    expect(await events.getCursor(scope)).toEqual(cursor);
+    expect((await campaigns.getById(draftA))?.onchainCampaignId).toBe("1");
+  });
+
+  it("cuts a backoff sleep short when the worker stops", async () => {
+    const stopped = new AbortController();
+    const sleep = sleepUntilAborted(stopped.signal);
+    const started = Date.now();
+    const sleeping = sleep(60_000);
+    stopped.abort();
+    await sleeping;
+    await sleep(60_000);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it.each([
+    ["during a confirmed batch of a normal pass", false, "batch"],
+    ["during a confirmed batch of the rebuild", true, "batch"],
+    ["after the rebuild indexed, before it verifies", true, "verify"],
+    ["between the verification and the clear", true, "clear"],
+  ] as const)(
+    "never clears the halt over an incomplete index when recovery is applied %s (#77)",
+    async (_label, rebuilding, moment) => {
+      const { fixture } = await activeCampaign();
+      const { chain, events, scope } = fixture;
+      chain.mine(8);
+      const apply = async () =>
+        applyReorgRecovery(
+          { ...recovery(fixture), now: () => new Date() },
+          await planReorgRecovery(recovery(fixture)),
+        );
+      if (rebuilding) await apply();
+
+      // The deployment lock keeps the CLI away from a running worker; this
+      // is the order the stores must enforce should that lock be lost.
+      let applied = false;
+      const recoverOnce = async () => {
+        if (applied) return;
+        applied = true;
+        await apply();
+      };
+      if (moment === "batch") {
+        const readLogs = chain.getLogs.bind(chain);
+        let calls = 0;
+        chain.getLogs = async (query) => {
+          calls += 1;
+          if (calls === 2) await recoverOnce();
+          return readLogs(query);
+        };
+      } else if (moment === "verify") {
+        const listCreations = events.listConfirmedCreations.bind(events);
+        events.listConfirmedCreations = async (target) => {
+          await recoverOnce();
+          return listCreations(target);
+        };
+      } else {
+        const clear = events.clearHalt.bind(events);
+        events.clearHalt = async (target, recoveryAppliedAt) => {
+          await recoverOnce();
+          return clear(target, recoveryAppliedAt);
+        };
+      }
+
+      const racing = await workerPass(fixture, 2n).catch(
+        (error: unknown) => error,
+      );
+      expect(applied).toBe(true);
+      expect(await events.getHalt(scope)).not.toBeNull();
+      if (moment === "batch") {
+        expect(racing).toBeInstanceOf(IndexCursorMovedError);
+      } else {
+        expect(racing).toMatchObject({ recovery: { cleared: false } });
+      }
+
+      // The next pass rebuilds from the deploy block; only then it clears.
+      expect(await workerPass(fixture, 2n)).toMatchObject({
+        recovery: { cleared: true },
+      });
+      expect(await events.getHalt(scope)).toBeNull();
+      expect((await events.getCursor(scope))?.latestConfirmedBlock).toBe(
+        chain.head - BigInt(CONFIRMATIONS),
+      );
+      expect(
+        (await events.listCampaignEvents(scope, "1")).map(
+          (stored) => stored.event.name,
+        ),
+      ).toEqual(["CampaignCreated", "CampaignFunded"]);
+    },
+  );
+
+  it("keeps the halt while a link's indexed state disagrees with the contract (#77)", async () => {
+    const { fixture } = await activeCampaign();
+    const { chain, events, scope } = fixture;
+    await applyReorgRecovery(
+      { ...recovery(fixture), now: () => new Date() },
+      await planReorgRecovery(recovery(fixture)),
+    );
+    // The contract reports funding the rebuilt index does not hold.
+    chain.campaignStructs.get("1")!.fundedBudget = 11n * USDC;
+
+    expect(await workerPass(fixture)).toMatchObject({
+      recovery: {
+        cleared: false,
+        reason: expect.stringMatching(/index disagrees with the contract/),
+      },
+    });
+    expect(await events.getHalt(scope)).not.toBeNull();
   });
 
   it("refuses a completion once the campaign is closed on-chain, before the indexer sees it", async () => {
@@ -1057,12 +1286,19 @@ describe("links backed by the indexed block (issue #76)", () => {
     await index();
 
     // While a halt is recorded, recovery may still relink it: reconciling.
-    await fixture.events.haltForReorg(fixture.scope, 1n, new Date());
+    const haltedAt = new Date();
+    await fixture.events.haltForReorg(fixture.scope, 1n, haltedAt);
     expect((await linkByDraft(fixture, draftA)).json()).toMatchObject({
       status: "reconciling",
       code: "NOT_CREATED_YET",
     });
-    await fixture.events.clearHalt(fixture.scope);
+    await fixture.events.markRecoveryApplied(fixture.scope, haltedAt);
+    expect(
+      await fixture.events.clearHalt(fixture.scope, {
+        recoveryAppliedAt: haltedAt,
+        indexedThrough: 0n,
+      }),
+    ).toBe(true);
 
     // An existing link is answered from the chain, not the database.
     const stale = await linkByDraft(fixture, draftA);
@@ -1158,6 +1394,7 @@ describe("links backed by the indexed block (issue #76)", () => {
         from: cursor.latestConfirmedBlock,
         to: cursor.latestConfirmedBlock,
         toBlockHash: cursor.latestConfirmedBlockHash!,
+        expectedCursor: cursor.latestConfirmedBlock,
       },
       [
         {
@@ -1211,6 +1448,7 @@ describe("links backed by the indexed block (issue #76)", () => {
         from: 1n,
         to: partial,
         toBlockHash: (await chain.getBlock(partial))!.hash,
+        expectedCursor: null,
       },
       [],
     );

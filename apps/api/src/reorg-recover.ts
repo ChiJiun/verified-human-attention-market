@@ -4,20 +4,20 @@ import {
   parseConfirmations,
   verifyChainConnection,
 } from "./chain/config.js";
+import type { ChainHalt } from "./chain/events-repository.js";
 import { PostgresChainEventRepository } from "./chain/events-repository.postgres.js";
-import {
-  applyReorgRecovery,
-  planReorgRecovery,
-} from "./chain/reorg-recovery.js";
+import { runReorgRecovery } from "./chain/reorg-recovery.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
 
 /**
  * Recovery after a reorg deeper than the confirmation depth (ADR-0011):
- *   pnpm --filter @vham/api reorg:recover            # dry run: print the plan
- *   pnpm --filter @vham/api reorg:recover -- --apply # release links, reset index
- * Stop the indexer worker first; restart it after --apply. The halt stays
- * until the worker has rebuilt the index and verified every link.
+ *   pnpm --filter @vham/api reorg:recover:start            # dry run: print the plan
+ *   pnpm --filter @vham/api reorg:recover:start -- --apply # release links, reset index
+ * (`reorg:recover` runs the same from source with tsx, a dev dependency.)
+ * Stop the indexer worker first: --apply refuses while a worker holds the
+ * deployment. Restart the worker after --apply; the halt stays until it has
+ * rebuilt the index and verified every link.
  */
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -32,59 +32,68 @@ await verifyChainConnection(chainConfig);
 const apply = process.argv.includes("--apply");
 const database = createDatabase(databaseUrl);
 
-try {
-  const chain = {
-    chainId: chainConfig.chainId,
-    contractAddress: chainConfig.campaignManagerAddress,
-  };
-  const dependencies = {
-    campaigns: new PostgresCampaignRepository(database.db),
-    events: new PostgresChainEventRepository(database.db),
-    rpc: new JsonRpcClient(chainConfig.rpcUrl),
-    chain,
-    confirmations: parseConfirmations(process.env.INDEXER_CONFIRMATIONS),
-  };
-  const halt = await dependencies.events.getHalt(chain);
-  const plan = await planReorgRecovery(dependencies);
+const haltJson = (halt: ChainHalt | null) =>
+  halt
+    ? {
+        block: halt.block.toString(),
+        at: halt.at.toISOString(),
+        recoveryAppliedAt: halt.recoveryAppliedAt?.toISOString() ?? null,
+      }
+    : null;
 
-  console.log(
-    JSON.stringify(
-      {
-        halted: halt
-          ? { block: halt.block.toString(), at: halt.at.toISOString() }
-          : null,
-        plan,
-        mode: apply ? "apply" : "dry-run",
+try {
+  const run = await runReorgRecovery(
+    {
+      campaigns: new PostgresCampaignRepository(database.db),
+      events: new PostgresChainEventRepository(database.db),
+      rpc: new JsonRpcClient(chainConfig.rpcUrl),
+      chain: {
+        chainId: chainConfig.chainId,
+        contractAddress: chainConfig.campaignManagerAddress,
       },
-      null,
-      2,
-    ),
+      confirmations: parseConfirmations(process.env.INDEXER_CONFIRMATIONS),
+      now: () => new Date(),
+    },
+    { apply },
   );
 
-  if (apply) {
-    // Recovering without a recorded halt (operator-initiated): record one so
-    // the API refuses participation while the index is rebuilt.
-    if (!halt) {
-      await dependencies.events.haltForReorg(
-        chain,
-        BigInt(plan.confirmedBlock),
-        new Date(),
+  switch (run.mode) {
+    case "refused":
+      console.error(JSON.stringify({ mode: "refused", reason: run.reason }));
+      process.exitCode = 1;
+      break;
+    case "dry-run":
+      console.log(
+        JSON.stringify(
+          {
+            mode: run.mode,
+            halted: haltJson(run.halted),
+            plan: run.plan,
+            ...(run.deploymentLocked && {
+              warning:
+                "An indexer worker (or another --apply) holds this deployment; --apply would refuse until it stops.",
+            }),
+          },
+          null,
+          2,
+        ),
       );
-    }
-    const result = await applyReorgRecovery(
-      { ...dependencies, now: () => new Date() },
-      plan,
-    );
-    console.log(
-      JSON.stringify(
-        {
-          ...result,
-          next: "Restart the indexer worker. It rebuilds the index from the deploy block and clears the halt only after every link verifies; participation stays halted until then.",
-        },
-        null,
-        2,
-      ),
-    );
+      break;
+    case "apply":
+      console.log(
+        JSON.stringify(
+          {
+            mode: run.mode,
+            halted: haltJson(run.halted),
+            plan: run.plan,
+            released: run.released,
+            next: "Restart the indexer worker. It rebuilds the index from the deploy block and clears the halt only after the index has caught up and every link verifies; participation stays halted until then.",
+          },
+          null,
+          2,
+        ),
+      );
+      break;
   }
 } finally {
   await database.close();

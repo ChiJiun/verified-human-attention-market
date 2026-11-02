@@ -22,6 +22,7 @@ import {
   missions,
   submissions,
 } from "../src/db/schema.js";
+import { IndexCursorMovedError } from "../src/chain/events-repository.js";
 import { PostgresChainEventRepository } from "../src/chain/events-repository.postgres.js";
 import {
   hashMissionDefinition,
@@ -865,6 +866,104 @@ describeWithDatabase("PostgresCampaignRepository", () => {
   describe("chain indexer persistence", () => {
     defineIndexerContract({
       repository: () => new PostgresChainEventRepository(database.db),
+    });
+
+    const freshScope = () => ({
+      chainId: 31337,
+      contractAddress: `0x${randomBytes(20).toString("hex")}`,
+    });
+
+    /** Until some session waits for a lock this test holds. */
+    async function untilALockIsAwaited() {
+      for (let attempt = 0; attempt < 250; attempt += 1) {
+        const [row] = await database.db.execute<{ waiting: number }>(
+          sql`SELECT count(*)::int AS waiting FROM pg_locks WHERE NOT granted`,
+        );
+        if ((row?.waiting ?? 0) > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error("no session ever waited for a lock");
+    }
+
+    it("makes an index write wait for a concurrent reset, then refuses it (#77)", async () => {
+      const repository = new PostgresChainEventRepository(database.db);
+      const scope = freshScope();
+      await repository.commitConfirmedRange(
+        scope,
+        { from: 1n, to: 10n, toBlockHash: "0x0a", expectedCursor: null },
+        [],
+      );
+
+      // A reset on its own connection: it holds the index lock and has
+      // deleted the cursor, but has not committed yet.
+      let resetHolding!: () => void;
+      let commitReset!: () => void;
+      const holding = new Promise<void>((resolve) => {
+        resetHolding = resolve;
+      });
+      const reset = database.client.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtext(${`vham:index:${scope.chainId}:${scope.contractAddress}`}::text))`;
+        await tx`DELETE FROM reconciliation_state
+                 WHERE chain_id = ${scope.chainId}
+                   AND contract_address = ${scope.contractAddress}`;
+        resetHolding();
+        await new Promise<void>((resolve) => {
+          commitReset = resolve;
+        });
+      });
+      await holding;
+
+      // A pass that read cursor 10 before the reset commits its next batch.
+      // Without the index lock it would read the still-committed cursor,
+      // pass the check, wait only at the cursor upsert, and write cursor 12
+      // over an empty index once the reset commits.
+      const outcome = repository
+        .commitConfirmedRange(
+          scope,
+          { from: 11n, to: 12n, toBlockHash: "0x0c", expectedCursor: 10n },
+          [],
+        )
+        .then(
+          () => "committed",
+          (error: unknown) => error,
+        );
+      await untilALockIsAwaited();
+      commitReset();
+      await reset;
+
+      expect(await outcome).toBeInstanceOf(IndexCursorMovedError);
+      expect(await repository.getCursor(scope)).toBeNull();
+    });
+
+    it("notices when the session holding a deployment lock ends (#77)", async () => {
+      const repository = new PostgresChainEventRepository(database.db);
+      const scope = freshScope();
+      const lock = await repository.lockDeployment(scope);
+      expect(lock).not.toBeNull();
+      expect(await lock!.isHeld()).toBe(true);
+      expect(await repository.isDeploymentLocked(scope)).toBe(true);
+
+      // End the holder's session, as a failover or idle_session_timeout would.
+      const holders = await database.db.execute<{ pid: number }>(
+        sql`SELECT pid FROM pg_locks
+            WHERE locktype = 'advisory' AND granted AND objsubid = 2`,
+      );
+      expect(holders).toHaveLength(1);
+      const [ended] = await database.db.execute<{ ended: boolean }>(
+        sql`SELECT pg_terminate_backend(${holders[0]!.pid}::int, 5000) AS ended`,
+      );
+      expect(ended?.ended).toBe(true);
+
+      expect(await lock!.isHeld()).toBe(false);
+      expect(await repository.isDeploymentLocked(scope)).toBe(false);
+      await lock!.release();
+
+      // Another worker can take it; the pool still works.
+      const next = await repository.lockDeployment(scope);
+      expect(next).not.toBeNull();
+      expect(await next!.isHeld()).toBe(true);
+      await next!.release();
+      expect(await repository.isDeploymentLocked(scope)).toBe(false);
     });
   });
 

@@ -2,7 +2,10 @@ import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
+import {
+  InMemoryChainEventRepository,
+  type ChainScope,
+} from "../src/chain/events-repository.js";
 import type { ChainRpc } from "../src/chain/rpc.js";
 import {
   generateRequestId,
@@ -261,9 +264,102 @@ describe("readiness with a chain", () => {
       status: "ok",
       checks: { process: "ok", database: "ok", chain: "ok" },
       indexerLagBlocks: null,
+      chainHalted: false,
     });
     expect(metrics.value("vham_chain_head_block")).toBe(120);
     expect(metrics.value("vham_rpc_up")).toBe(1);
+    expect(metrics.value("vham_chain_halted")).toBe(0);
+  });
+
+  it("reports a deep-reorg halt without failing readiness (#77)", async () => {
+    const metrics = new MetricsRegistry();
+    const deps = chainDeps({ blockNumber: async () => 120n });
+    const app = buildApp({ metrics, chain: deps });
+    closers.push(app);
+    await deps.events.haltForReorg(deps.chain, 100n, new Date());
+
+    // Participants get 503 CHAIN_HALTED per route; the instance still serves.
+    const response = await app.inject({ method: "GET", url: "/health/ready" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: "ok",
+      checks: { process: "ok", database: "ok", chain: "ok" },
+      indexerLagBlocks: null,
+      chainHalted: true,
+    });
+    expect(metrics.value("vham_chain_halted")).toBe(1);
+  });
+
+  it("fails closed when the halt cannot be read, from the first scrape on (#77)", async () => {
+    class UnreadableHalts extends InMemoryChainEventRepository {
+      unreadable = true;
+      override async getHalt(scope: ChainScope) {
+        if (this.unreadable) throw new Error("database unavailable");
+        return super.getHalt(scope);
+      }
+    }
+    const events = new UnreadableHalts();
+    const metrics = new MetricsRegistry();
+    const app = buildApp({
+      metrics,
+      chain: chainDeps({ blockNumber: async () => 120n }, events),
+    });
+    closers.push(app);
+
+    // An instance started during a database outage: 1, not a missing series.
+    const scrape = await app.inject({ method: "GET", url: "/metrics" });
+    expect(scrape.body).toContain("\nvham_chain_halted 1\n");
+
+    const ready = await app.inject({ method: "GET", url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toEqual({
+      status: "error",
+      checks: { process: "ok", database: "error", chain: "ok" },
+      indexerLagBlocks: null,
+    });
+
+    events.unreadable = false;
+    await app.inject({ method: "GET", url: "/metrics" });
+    expect(metrics.value("vham_chain_halted")).toBe(0);
+  });
+
+  it("exports vham_chain_halted on every scrape while halted, RPC down or not (#77)", async () => {
+    const metrics = new MetricsRegistry();
+    let rpcDown = false;
+    const deps = chainDeps({
+      blockNumber: async () => {
+        if (rpcDown) throw new Error("rpc down");
+        return 120n;
+      },
+    });
+    const app = buildApp({ metrics, chain: deps });
+    closers.push(app);
+    const scrape = async () =>
+      (await app.inject({ method: "GET", url: "/metrics" })).body;
+
+    expect(await scrape()).toContain("\nvham_chain_halted 0\n");
+
+    await deps.events.haltForReorg(deps.chain, 100n, new Date());
+    rpcDown = true;
+    // A gauge, not a counter increase: every scrape of the halt sees 1.
+    expect(await scrape()).toContain("\nvham_chain_halted 1\n");
+    expect(await scrape()).toContain("\nvham_chain_halted 1\n");
+    expect(metrics.value("vham_rpc_up")).toBe(0);
+
+    // Only the worker's verified recovery clears it.
+    const applied = new Date();
+    await deps.events.markRecoveryApplied(deps.chain, applied);
+    expect(await scrape()).toContain("\nvham_chain_halted 1\n");
+    await deps.events.commitConfirmedRange(
+      deps.chain,
+      { from: 1n, to: 110n, toBlockHash: "0x01", expectedCursor: null },
+      [],
+    );
+    await deps.events.clearHalt(deps.chain, {
+      recoveryAppliedAt: applied,
+      indexedThrough: 110n,
+    });
+    expect(await scrape()).toContain("\nvham_chain_halted 0\n");
   });
 
   it("returns 503 when the RPC is down", async () => {
@@ -285,6 +381,7 @@ describe("readiness with a chain", () => {
     expect(response.json()).toEqual({
       status: "error",
       checks: { process: "ok", database: "ok", chain: "error" },
+      chainHalted: false,
     });
     expect(response.body).not.toContain("secret");
     expect(metrics.value("vham_rpc_up")).toBe(0);

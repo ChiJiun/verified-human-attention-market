@@ -115,6 +115,9 @@ export async function indexOnce(
     cursor?.latestConfirmedBlock ?? config.deployBlock - 1n;
   // Hash of the last committed block, which the next batch must extend.
   let committedHash = cursor?.latestConfirmedBlockHash ?? null;
+  // Every write names the cursor it extends, so a write that would land on
+  // an index reset during this pass is refused instead of leaving a gap.
+  let storedCursor = cursor?.latestConfirmedBlock ?? null;
 
   if (cursor?.latestConfirmedBlockHash) {
     const block = await rpc.getBlock(cursor.latestConfirmedBlock);
@@ -191,7 +194,7 @@ export async function indexOnce(
     const { events, skipped } = decode(logs, scope.contractAddress);
     await repository.commitConfirmedRange(
       scope,
-      { from, to, toBlockHash: toBlock.hash },
+      { from, to, toBlockHash: toBlock.hash, expectedCursor: storedCursor },
       events,
     );
 
@@ -199,6 +202,7 @@ export async function indexOnce(
     skippedLogs += skipped;
     confirmedThrough = to;
     committedHash = toBlock.hash;
+    storedCursor = to;
   }
 
   const tailFrom =
@@ -215,7 +219,7 @@ export async function indexOnce(
     const { events, skipped } = decode(logs, scope.contractAddress);
     await repository.replaceObservedTail(
       scope,
-      { from: tailFrom, to: head },
+      { from: tailFrom, to: head, expectedCursor: storedCursor },
       events,
     );
     observedEvents = events.length;

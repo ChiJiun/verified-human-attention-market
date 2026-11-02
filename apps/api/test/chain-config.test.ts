@@ -5,6 +5,7 @@ import {
   ChainConfigError,
   loadChainConfig,
   parseConfirmations,
+  RpcUnavailableError,
   verifyChainConnection,
 } from "../src/chain/config.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
@@ -176,13 +177,38 @@ describe("verifyChainConnection", () => {
       );
       await expect(result).rejects.toThrow(/provider problem/);
       await expect(result).rejects.not.toThrow(/before ADR-0011/);
+      await expect(result).rejects.toBeInstanceOf(RpcUnavailableError);
+    },
+  );
+
+  it.each([
+    [
+      "an unreachable RPC",
+      async () => {
+        throw new TypeError("fetch failed");
+      },
+    ],
+    [
+      "HTTP 503 on the chain id",
+      async () => new Response("unavailable", { status: 503 }),
+    ],
+  ])(
+    "reports %s as RpcUnavailableError, which the worker retries (#77)",
+    async (_label, fetchImpl) => {
+      await expect(
+        verifyChainConnection(config, fetchImpl as unknown as typeof fetch),
+      ).rejects.toBeInstanceOf(RpcUnavailableError);
     },
   );
 
   it("fails when the RPC is a different chain", async () => {
-    await expect(
-      verifyChainConnection(config, rpcStub({ eth_chainId: "0x2105" })),
-    ).rejects.toThrow(/does not match/);
+    const result = verifyChainConnection(
+      config,
+      rpcStub({ eth_chainId: "0x2105" }),
+    );
+    await expect(result).rejects.toThrow(/does not match/);
+    // A misconfiguration is not retried.
+    await expect(result).rejects.not.toBeInstanceOf(RpcUnavailableError);
   });
 
   it("fails when a contract has no code", async () => {

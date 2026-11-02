@@ -54,6 +54,18 @@ export class ChainConfigError extends Error {
   }
 }
 
+/**
+ * The startup check could not reach the RPC or the provider failed, so the
+ * configuration is unverified rather than wrong. The indexer worker retries
+ * it with backoff; a wrong chain, missing code or an old contract does not.
+ */
+export class RpcUnavailableError extends ChainConfigError {
+  constructor(problem: string) {
+    super([problem]);
+    this.name = "RpcUnavailableError";
+  }
+}
+
 const KEYS = [
   "EVM_RPC_URL",
   "USDC_ADDRESS",
@@ -140,23 +152,33 @@ async function rpc(
   method: string,
   params: unknown[],
 ): Promise<unknown> {
-  const response = await fetchImpl(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (!response.ok) {
-    throw new ChainConfigError([
-      `RPC ${method} returned HTTP ${response.status}`,
-    ]);
+  let response: Response;
+  try {
+    response = await fetchImpl(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    throw new RpcUnavailableError(
+      `RPC ${method} failed (${error instanceof Error ? error.message : "network error"})`,
+    );
   }
 
-  const body = (await response.json()) as { result?: unknown; error?: unknown };
+  if (!response.ok) {
+    throw new RpcUnavailableError(
+      `RPC ${method} returned HTTP ${response.status}`,
+    );
+  }
 
-  if (body.error !== undefined || body.result === undefined) {
-    throw new ChainConfigError([`RPC ${method} returned an error`]);
+  const body = (await response.json().catch(() => null)) as {
+    result?: unknown;
+    error?: unknown;
+  } | null;
+
+  if (!body || body.error !== undefined || body.result === undefined) {
+    throw new RpcUnavailableError(`RPC ${method} returned an error`);
   }
 
   return body.result;
@@ -212,9 +234,9 @@ async function probeCampaignIdByDraft(
   config: ChainConfig,
 ): Promise<"supported" | "unsupported"> {
   const unavailable = (detail: string) =>
-    new ChainConfigError([
+    new RpcUnavailableError(
       `Could not verify CAMPAIGN_MANAGER_ADDRESS: RPC eth_call ${detail}. This is a provider problem, not a contract version problem; retry or use another RPC.`,
-    ]);
+    );
 
   let response: Response;
   try {
