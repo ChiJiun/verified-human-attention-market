@@ -705,13 +705,13 @@ export async function syncCampaignStatuses(dependencies: {
  * the economics. Events without a matching draft are ignored; `ambiguous`
  * stays for events whose economics contradict their draft.
  *
- * A confirmed creation is canonical. If its id is linked to a different
- * draft (a link to a creation that a reorg removed), that link is released
- * (`relinked`) so the draft the event names can be linked instead. So is a
- * link of the draft the event names to any other id, once the contract's
- * mapping at the indexed block names the event's id: one creation per
- * advertiser and draft on a fork, so the other id is not this draft's
- * (issue #76).
+ * A confirmed creation that the contract confirms at the indexed block is
+ * canonical. If its id is linked to a different draft (a link to a creation
+ * that a reorg removed), that link is released (`relinked`) so the draft the
+ * event names can be linked instead. So is a link of the draft the event
+ * names to any other id: one creation per advertiser and draft on a fork, so
+ * the other id is not this draft's (issue #76). The economics are read at
+ * the same block.
  */
 export async function autoLinkCreatedCampaigns(
   dependencies: OnchainDependencies & { events: ChainEventRepository },
@@ -736,6 +736,30 @@ export async function autoLinkCreatedCampaigns(
     ]),
   );
 
+  // Index rows alone are not proof: they could hold creations of one draft,
+  // or of one id, from two forks. Every release and link below acts only
+  // when the contract at the indexed block maps the event's draft to the
+  // event's id (issue #76). Returns that block's hash, or null.
+  let indexed: { number: bigint; hash: string } | null | undefined;
+  const confirmedAt = async (
+    created: (typeof createdEvents)[number],
+  ): Promise<string | null> => {
+    if (indexed === undefined) {
+      indexed = await indexedBlock(dependencies);
+    }
+    if (indexed === null) {
+      return null;
+    }
+    const mapped = await readCampaignIdByDraft(
+      dependencies.rpc,
+      dependencies.chain.contractAddress,
+      created.advertiser,
+      created.draftRef,
+      { blockHash: indexed.hash },
+    );
+    return mapped === created.onchainCampaignId ? indexed.hash : null;
+  };
+
   for (const created of createdEvents) {
     const existing = await dependencies.campaigns.findByOnchainId(
       dependencies.chain.chainId,
@@ -743,78 +767,70 @@ export async function autoLinkCreatedCampaigns(
       created.onchainCampaignId,
     );
 
-    if (existing) {
-      if (
-        draftRefFor(existing.id) === created.draftRef &&
-        existing.advertiserAddress === created.advertiser
-      ) {
-        continue;
-      }
-
-      // Orphaned: the canonical creation for this id belongs to another
-      // draft. Release the stale link; that draft may create again.
-      if (
-        await dependencies.campaigns.unlinkOnchain(
-          existing.id,
-          {
-            onchainCampaignId: created.onchainCampaignId,
-            contractAddress: dependencies.chain.contractAddress,
-          },
-          dependencies.now(),
-        )
-      ) {
-        relinked.push(existing.id);
-      }
+    if (
+      existing &&
+      draftRefFor(existing.id) === created.draftRef &&
+      existing.advertiserAddress === created.advertiser
+    ) {
+      continue;
     }
 
-    // Stale: the draft the event names is linked to another id. Index rows
-    // alone are not proof (they could hold creations of one draft from two
-    // forks), so the contract at the indexed block must name this id too.
+    let confirmed: string | null | undefined;
+    const confirmation = async () => {
+      if (confirmed === undefined) {
+        confirmed = await confirmedAt(created);
+      }
+      return confirmed;
+    };
+
+    // Orphaned: the canonical creation for this id belongs to another
+    // draft. Release the stale link; that draft may create again.
+    if (
+      existing &&
+      (await confirmation()) !== null &&
+      (await dependencies.campaigns.unlinkOnchain(
+        existing.id,
+        {
+          onchainCampaignId: created.onchainCampaignId,
+          contractAddress: dependencies.chain.contractAddress,
+        },
+        dependencies.now(),
+      ))
+    ) {
+      relinked.push(existing.id);
+    }
+
+    // Stale: the draft the event names is linked to another id.
     const named = linkedByDraft.get(
       draftKey(created.advertiser, created.draftRef),
     );
 
-    if (named && named.onchainCampaignId !== created.onchainCampaignId) {
-      const indexed = await indexedBlock(dependencies);
-      const canonical =
-        indexed &&
-        (await readCampaignIdByDraft(
-          dependencies.rpc,
-          dependencies.chain.contractAddress,
-          named.advertiserAddress,
-          created.draftRef,
-          { blockHash: indexed.hash },
-        ));
-
-      if (
-        canonical === created.onchainCampaignId &&
-        (await dependencies.campaigns.unlinkOnchain(
-          named.id,
-          {
-            onchainCampaignId: named.onchainCampaignId!,
-            contractAddress: dependencies.chain.contractAddress,
-          },
-          dependencies.now(),
-        ))
-      ) {
-        relinked.push(named.id);
-      }
+    if (
+      named &&
+      named.onchainCampaignId !== created.onchainCampaignId &&
+      (await confirmation()) !== null &&
+      (await dependencies.campaigns.unlinkOnchain(
+        named.id,
+        {
+          onchainCampaignId: named.onchainCampaignId!,
+          contractAddress: dependencies.chain.contractAddress,
+        },
+        dependencies.now(),
+      ))
+    ) {
+      relinked.push(named.id);
     }
 
     const drafts = await dependencies.campaigns.listUnlinkedDrafts(
       dependencies.chain.chainId,
       created.advertiser,
     );
-
-    if (drafts.length === 0) {
-      continue;
-    }
-
     const draft = drafts.find(
       (candidate) => draftRefFor(candidate.id) === created.draftRef,
     );
+    const pinned = draft ? await confirmation() : null;
 
-    if (!draft) {
+    if (!draft || pinned === null) {
       continue;
     }
 
@@ -822,6 +838,7 @@ export async function autoLinkCreatedCampaigns(
       dependencies.rpc,
       dependencies.chain.contractAddress,
       created.onchainCampaignId,
+      { blockHash: pinned },
     );
 
     if (!onchain || !matchesDraft(draft, onchain)) {

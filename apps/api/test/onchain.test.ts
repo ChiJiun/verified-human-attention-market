@@ -1376,54 +1376,67 @@ describe("links backed by the indexed block (issue #76)", () => {
     ]);
   });
 
-  it("does not release a canonical link for another fork's creation in the index", async () => {
-    const fixture = await setup();
-    const { campaigns, events, scope, createDraft, createOnchain, reconcile } =
-      fixture;
-    const draftA = await createDraft("a");
-    createOnchain(2, draftA);
-    await reconcile();
-    await campaigns.updateStatus(draftA, "active", new Date());
+  it.each([
+    ["A's creation under id 1", "1", "a"],
+    ["B's creation under A's id 2", "2", "b"],
+  ])(
+    "does not release a canonical link for another fork's row in the index: %s",
+    async (_label, onchainCampaignId, rowDraft) => {
+      const fixture = await setup();
+      const { campaigns, events, scope, createDraft, createOnchain } = fixture;
+      const drafts: Record<string, string> = {
+        a: await createDraft("a"),
+        // Same economics as A: only the draft reference tells them apart.
+        b: await createDraft("b", { contentUrl: "https://example.com/b" }),
+      };
+      createOnchain(2, drafts.a!);
+      await fixture.reconcile();
+      await campaigns.updateStatus(drafts.a!, "active", new Date());
 
-    // The index also holds a creation of A as id 1 from another fork: index
-    // rows are not the contract.
-    const cursor = (await events.getCursor(scope))!;
-    await events.commitConfirmedRange(
-      scope,
-      {
-        from: cursor.latestConfirmedBlock,
-        to: cursor.latestConfirmedBlock,
-        toBlockHash: cursor.latestConfirmedBlockHash!,
-        expectedCursor: cursor.latestConfirmedBlock,
-      },
-      [
+      // The index also holds a creation from another fork: index rows are
+      // not the contract.
+      const cursor = (await events.getCursor(scope))!;
+      await events.commitConfirmedRange(
+        scope,
         {
-          txHash: "0x" + "0f".repeat(32),
-          logIndex: 0,
-          blockNumber: cursor.latestConfirmedBlock,
-          blockHash: "0x" + "0f".repeat(32),
-          event: {
-            name: "CampaignCreated",
-            campaignId: "1",
-            advertiser: ADVERTISER.toLowerCase(),
-            draftRef: draftRefFor(draftA),
-          },
+          from: cursor.latestConfirmedBlock,
+          to: cursor.latestConfirmedBlock,
+          toBlockHash: cursor.latestConfirmedBlockHash!,
+          expectedCursor: cursor.latestConfirmedBlock,
         },
-      ],
-    );
+        [
+          {
+            txHash: "0x" + "0f".repeat(32),
+            logIndex: 0,
+            blockNumber: cursor.latestConfirmedBlock,
+            blockHash: "0x" + "0f".repeat(32),
+            event: {
+              name: "CampaignCreated",
+              campaignId: onchainCampaignId,
+              advertiser: ADVERTISER.toLowerCase(),
+              draftRef: draftRefFor(drafts[rowDraft]!),
+            },
+          },
+        ],
+      );
 
-    // The contract maps A to 2 at the indexed block: no release, no relink,
-    // no status reset, on this pass or the next.
-    for (let pass = 0; pass < 2; pass += 1) {
-      expect(
-        await autoLinkCreatedCampaigns({ campaigns, ...fixture.chainDeps }),
-      ).toEqual({ linked: [], ambiguous: [], relinked: [] });
-    }
-    expect(await campaigns.getById(draftA)).toMatchObject({
-      onchainCampaignId: "2",
-      status: "active",
-    });
-  });
+      // The contract maps A to 2 and B to nothing at the indexed block: no
+      // release, no relink, no status reset, on this pass or the next.
+      for (let pass = 0; pass < 2; pass += 1) {
+        expect(
+          await autoLinkCreatedCampaigns({ campaigns, ...fixture.chainDeps }),
+        ).toEqual({ linked: [], ambiguous: [], relinked: [] });
+      }
+      expect(await campaigns.getById(drafts.a!)).toMatchObject({
+        onchainCampaignId: "2",
+        status: "active",
+      });
+      expect(await campaigns.getById(drafts.b!)).toMatchObject({
+        onchainCampaignId: null,
+        status: "draft",
+      });
+    },
+  );
 
   it("answers a link as reconciling while the index is rebuilt", async () => {
     const fixture = await setup();
