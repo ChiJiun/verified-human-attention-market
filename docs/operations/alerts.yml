@@ -71,9 +71,9 @@ groups:
           summary: No successful indexer pass in 5 minutes
           runbook: docs/operations/RUNBOOK.md#vhamindexerstalled
 
-      # The RPC keeps answering one range from different forks or nodes. The
-      # worker commits nothing past it and does not halt, so participation
-      # continues on a stale index (#76).
+      # The RPC keeps answering one range from different forks or nodes, or
+      # leaving events out of it. The worker commits nothing past it and does
+      # not halt, so participation continues on a stale index (#76, #102).
       - alert: VhamIndexerInconsistentReads
         expr: vham_indexer_inconsistent_read_streak >= 5
         labels:

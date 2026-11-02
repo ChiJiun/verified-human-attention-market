@@ -227,7 +227,7 @@
 - idempotency；
 - never treat timeout as definitive failure without reconciliation。
 
-**Implemented (#16, #17, ADR-0011):** events are confirmed only `INDEXER_CONFIRMATIONS` deep; the unconfirmed tail is re-read every pass and reorged events are orphaned; logs read across a reorg are never committed; a reorg deeper than the confirmation depth halts the deployment (`indexer_halts`) so no participation or signing continues on stale links, and `reorg:recover` re-verifies every link against the contract before the index is rebuilt; drafts link by `draftRef` so a lost RPC response never leads to a second creation; the API reads the contract live before accepting a completion or signing. Residual: recovery is manual and the API is unavailable to participants during a halt.
+**Implemented (#16, #17, ADR-0011):** events are confirmed only `INDEXER_CONFIRMATIONS` deep; the unconfirmed tail is re-read every pass and reorged events are orphaned; logs read across a reorg are never committed, nor a range whose `eth_getLogs` answer left events out (each block whose `logsBloom` may hold one is re-read by hash, #102); a reorg deeper than the confirmation depth halts the deployment (`indexer_halts`) so no participation or signing continues on stale links, and `reorg:recover` re-verifies every link against the contract before the index is rebuilt; drafts link by `draftRef` so a lost RPC response never leads to a second creation; the API reads the contract live before accepting a completion or signing. Residual: recovery is manual and the API is unavailable to participants during a halt.
 
 ## T-014 Admin Abuse
 

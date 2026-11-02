@@ -48,6 +48,7 @@ Worker (`INDEXER_METRICS_PORT`):
 | `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
 | `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
 | `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
+| `vham_indexer_block_log_queries_total`                                               | `eth_getLogs` requests by block hash made by successful passes: one per committed block whose `logsBloom` may hold an event (#102). See [request cost](#indexer-request-cost). |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
@@ -66,6 +67,30 @@ Claim transaction failures happen in the participant's wallet, not the API;
 they surface as authorizations that expire unredeemed (reissued on retry), i.e.
 `submissions.accepted` in advertiser analytics growing faster than
 `settlement.confirmed.paidCompletions`.
+
+### Indexer request cost
+
+For each confirmed batch of N blocks (`INDEXER_MAX_BLOCK_RANGE` during a
+backfill, a few once caught up) the worker makes:
+
+- one `eth_getLogs` for the range;
+- N + 1 `eth_getBlockByNumber`: every header, to link them by hash, and the
+  range end a second time (issue #76);
+- one `eth_getLogs` by block hash (EIP-234) for each block whose header
+  `logsBloom` may hold a CampaignManager event, i.e. the blocks with events
+  plus bloom false positives, never more than N (issue #102). The bloom test
+  itself is local, and up to 8 of these requests run at once.
+
+Each pass adds `eth_blockNumber`, the cursor block's header and one
+`eth_getLogs` for the unconfirmed tail. How often a bloom says "may hold"
+depends on how full the chain's blooms are. Measured on 2026-11-03 for an
+unrelated address and nine event topics: Base Sepolia, 60 recent blocks,
+median 2.3 % of the 2048 bits set and no block flagged, so the extra requests
+are about one per block with campaign events; Base mainnet, 40 blocks, median
+72 % set and 26 of 40 flagged, so close to one extra request per block (a
+batch then costs up to 2N + 2 requests). Compare
+`vham_indexer_block_log_queries_total` with the growth of
+`vham_indexer_confirmed_block` for the actual rate.
 
 ## Alerts and responses
 
@@ -129,7 +154,8 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 ### VhamIndexerLag / VhamIndexerStalled
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
-RPC health. Raise `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
+RPC health ([request cost](#indexer-request-cost)). Raise
+`INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
 sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
 claim issuance still reads the contract directly. Linking a new campaign
 (`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
@@ -158,15 +184,22 @@ connection ([Running the built API](#running-the-built-api)).
 
 Five or more passes in a row ended in `inconsistent_read`: the worker reads a
 range, the range's block headers (linked by hash), the logs and the range end
-again, and refuses to commit when they disagree (issue #76). Usually the RPC
-is load-balanced over nodes on different forks or heights, or a node lags.
+again, and refuses to commit when they disagree (issue #76). It also re-reads
+by hash every block whose `logsBloom` may hold an event and refuses a range
+whose `eth_getLogs` answer left one out or holds one the block does not
+(issue #102). Usually the RPC is load-balanced over nodes on different forks
+or heights, a node lags, or the provider's log index lags behind its blocks.
 Nothing past the failing range is committed and no halt is recorded, so the
 index, status sync and linking stay behind while participation continues
 (the API's live contract checks still apply). The log line
-`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`.
+`indexer pass failed; retrying` names the `block` and the `inconsistentStreak`,
+and a `reason` when the logs disagreed, e.g. `eth_getLogs for blocks A-B
+omitted 1 event(s) of this block that eth_getLogs by its hash returns`.
 
 1. Check the RPC provider: pin the worker (and the API) to one endpoint or a
-   provider with sticky sessions, or remove the lagging node.
+   provider with sticky sessions, or remove the lagging node. A `reason` that
+   names omitted events while the headers link points at a lagging node or
+   log index.
 2. If the same block keeps failing on a single consistent endpoint, compare
    that block's hash and its logs across two providers; a provider serving
    another fork means a deep reorg may be under way (see
