@@ -23,8 +23,9 @@ export async function registerSubmissionRoutes(
   dependencies: SubmissionServiceDependencies & {
     /**
      * Returns the authorization of an accepted completion on a replay (the
-     * one signed at acceptance, reissued if it expired). New acceptances are
-     * signed inside their own transaction (ADR-0011). null = no signer.
+     * one signed at acceptance, reissued if it expired), or ALREADY_CLAIMED
+     * once the wallet was paid. New acceptances are signed inside their own
+     * transaction (ADR-0011). null = no signer.
      */
     issueAuthorization:
       | ((input: {
@@ -114,17 +115,21 @@ export async function registerSubmissionRoutes(
             "Critical path failed",
           );
         }
-        claim = authorization?.ok
-          ? {
-              status: "authorized",
-              authorization: serializeClaim(authorization.claim),
-            }
-          : {
-              status: "pending_authorization",
-              // Why it could not be signed now (it can be requested again).
-              code:
-                authorization && !authorization.ok ? authorization.code : null,
-            };
+        const refusal =
+          authorization && !authorization.ok ? authorization.code : null;
+        if (authorization?.ok) {
+          claim = {
+            status: "authorized",
+            authorization: serializeClaim(authorization.claim),
+          };
+        } else if (refusal === "ALREADY_CLAIMED") {
+          // Final: the wallet was paid, and the authorization route answers
+          // 409 with the same code (#82).
+          claim = { status: "claimed", code: refusal };
+        } else {
+          // Why it could not be signed now (it can be requested again).
+          claim = { status: "pending_authorization", code: refusal };
+        }
       }
 
       return reply.status(outcome.created ? 201 : 200).send({

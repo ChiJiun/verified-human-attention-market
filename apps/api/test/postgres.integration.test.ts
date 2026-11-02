@@ -38,6 +38,7 @@ import {
   PostgresSubmissionRepository,
 } from "../src/submissions/repository.js";
 import { defineCampaignLinkContract } from "./support/campaign-link-contract.js";
+import { defineClaimRepositoryContract } from "./support/claim-contract.js";
 import { FakeChain } from "./support/fake-chain.js";
 import { defineIndexerContract } from "./support/indexer-contract.js";
 import { definePersistenceContract } from "./support/persistence-contract.js";
@@ -661,6 +662,42 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       .where(eq(submissions.id, submission.id));
     expect(saved?.claimOnchainCampaignId).toBe("13");
     expect(saved?.claimNonce).toBe(reissued.claim.payload.nonce);
+  });
+
+  describe("claim issuance", () => {
+    const claims = new PostgresClaimRepository(database.db);
+    // Ids no other test of this database links on CONTRACT_ADDRESS.
+    let nextOnchainId = 100;
+
+    defineClaimRepositoryContract(() => ({
+      claims,
+      linkedCampaign: async () => {
+        const campaignId = await createCampaign();
+        const onchainCampaignId = String(nextOnchainId++);
+        await repository.linkOnchain(campaignId, {
+          onchainCampaignId,
+          contractAddress: CONTRACT_ADDRESS,
+          publishTxHash: null,
+          status: "active",
+          updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+        });
+        return {
+          campaignId,
+          onchainCampaignId,
+          contractAddress: CONTRACT_ADDRESS as `0x${string}`,
+        };
+      },
+      acceptedSubmission: async (campaignId) => {
+        const { claimantAddress, accepted } = await participantOf(campaignId);
+        const { submission } = await new PostgresSubmissionRepository(
+          database.db,
+        ).recordIdempotent({ ...accepted, id: randomUUID() });
+        return {
+          submissionId: submission.id,
+          claimant: claimantAddress as `0x${string}`,
+        };
+      },
+    }));
   });
 
   const acceptConcurrently = async ({

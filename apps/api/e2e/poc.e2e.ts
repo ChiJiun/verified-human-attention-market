@@ -714,6 +714,17 @@ describeE2e("POC economic loop on a local chain", () => {
         args: claimArgs,
       }),
     ).rejects.toThrow();
+    // The API no longer hands out the redeemed, still unexpired
+    // authorization, so the page shows "already paid" (#82).
+    const paidAgain = await app.inject({
+      method: "POST",
+      url: `/v1/campaigns/${campaignId}/submissions/${submissionId}/authorization`,
+      payload: { eligibilityToken },
+    });
+    expect(paidAgain.statusCode).toBe(409);
+    expect(paidAgain.json()).toMatchObject({
+      error: { code: "ALREADY_CLAIMED" },
+    });
 
     // 7. Indexer reconciliation matches the chain.
     await reconcile();

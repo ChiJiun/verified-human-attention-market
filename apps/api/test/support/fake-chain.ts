@@ -90,6 +90,8 @@ export class FakeChain implements ChainRpc {
    */
   readonly campaignIdByDraft = new Map<string, { id: number; block: bigint }>();
   signer: string | null = null;
+  /** On-chain `claimedWallet(id, wallet)`, keyed `${id}:${lowercase wallet}`. */
+  readonly claimedWallets = new Set<string>();
   /** On-chain `campaigns(id)` storage returned by eth_call. */
   readonly campaignStructs = new Map<
     string,
@@ -299,7 +301,9 @@ export class FakeChain implements ChainRpc {
     }
 
     if (to === this.contract && data.startsWith(CLAIMED_WALLET_SELECTOR)) {
-      return word(0);
+      const id = BigInt(`0x${data.slice(10, 10 + 64)}`).toString();
+      const wallet = `0x${data.slice(10 + 64 + 24, 10 + 128)}`;
+      return word(this.claimedWallets.has(`${id}:${wallet}`) ? 1 : 0);
     }
 
     if (

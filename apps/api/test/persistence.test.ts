@@ -1,8 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
+import type { Address } from "viem";
 import { describe, expect, it } from "vitest";
 
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
+import { InMemoryClaimRepository } from "../src/claims/repository.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import {
   deriveParticipantKey,
@@ -14,12 +16,58 @@ import {
 } from "../src/submissions/repository.js";
 import { defineCampaignLinkContract } from "./support/campaign-link-contract.js";
 import {
+  defineClaimRepositoryContract,
+  type ClaimHarness,
+} from "./support/claim-contract.js";
+import {
   definePersistenceContract,
   type PersistenceHarness,
 } from "./support/persistence-contract.js";
 
 describe("in-memory campaign repository", () => {
   defineCampaignLinkContract(() => new InMemoryCampaignRepository());
+});
+
+describe("in-memory claim repository", () => {
+  const contractAddress: Address = `0x${"2".repeat(40)}`;
+  const submissions = new Map<string, { campaignId: string; result: string }>();
+  const campaigns = new Map<
+    string,
+    {
+      status: string;
+      maxCompletions: number;
+      onchainCampaignId: string;
+      onchainContractAddress: string;
+    }
+  >();
+  let nextOnchainId = 1;
+  const harness: ClaimHarness = {
+    claims: new InMemoryClaimRepository(
+      async (id) => submissions.get(id) ?? null,
+      async (id) => campaigns.get(id) ?? null,
+    ),
+    linkedCampaign: async () => {
+      const campaignId = randomUUID();
+      const onchainCampaignId = String(nextOnchainId++);
+      campaigns.set(campaignId, {
+        status: "active",
+        maxCompletions: 10,
+        onchainCampaignId,
+        onchainContractAddress: contractAddress,
+      });
+      return { campaignId, onchainCampaignId, contractAddress };
+    },
+    acceptedSubmission: async (campaignId) => {
+      const submissionId = randomUUID();
+      submissions.set(submissionId, { campaignId, result: "accepted" });
+      return {
+        submissionId,
+        claimant: `0x${randomBytes(20).toString("hex")}`,
+      };
+    },
+  };
+
+  defineClaimRepositoryContract(() => harness);
 });
 
 describe("in-memory eligibility + submission repositories", () => {
