@@ -25,6 +25,7 @@ import {
   type SubmissionId,
 } from "../../lib/campaign-link";
 import {
+  assertClaimChain,
   claimCall,
   isAlreadyPaid,
   simulateClaim,
@@ -279,6 +280,8 @@ export default function MissionPage() {
       ) {
         return;
       }
+      // The simulation and the transaction go to the wallet's chain now.
+      await assertClaimChain(wallet.walletClient, chain);
       // Re-requesting after expiry returns a fresh authorization; once the
       // wallet was paid the API answers ALREADY_CLAIMED instead.
       const { data: auth } = await api<Authorization>(
