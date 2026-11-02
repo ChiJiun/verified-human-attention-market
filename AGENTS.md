@@ -500,6 +500,11 @@ Current contract tests cover:
 - cancel of an unfunded draft, no cancel once funded, no funding after end;
 - signer rotation revokes old signatures; typehash pinned against the backend;
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
+- claim authorization edges: wrong amount, not yet valid, over-long lifetime, inverted window, issued before the campaign start, issued after the end of a campaign that was never closed;
+- signature encoding: wrong length, high-s twin of a valid signature, invalid `v`, `v` of 0 or 1 accepted as 27 or 28;
+- funding: wrong amount, funding twice;
+- guards no public sequence reaches, tested on forced state through `CampaignManagerUnreachableStateHarness`: `AlreadyFunded` in `fundCampaign` and `InsufficientCampaignBudget` in `claim` (`docs/testing/TEST_PLAN.md` explains why, and issue #80 asks whether to keep them);
+- campaign window: fuzzed duration bounds (one second below, at and above the minimum and maximum), start in the past, start on the current second, end before start;
 - deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.
