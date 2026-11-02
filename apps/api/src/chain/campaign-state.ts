@@ -19,7 +19,7 @@ export interface OnchainCampaignState {
 
 /**
  * Pure fold over canonical CampaignManager events (chain order). The chain is
- * authoritative for settlement (AGENTS.md §12); the database only caches.
+ * authoritative for settlement (AGENTS.md §11); the database only caches.
  */
 export function deriveCampaignState(
   events: CampaignManagerEvent[],

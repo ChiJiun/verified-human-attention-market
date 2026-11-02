@@ -39,4 +39,4 @@ Until these are filled in, the project owner is all roles.
 Write a postmortem within 5 business days using
 [POSTMORTEM_TEMPLATE.md](./POSTMORTEM_TEMPLATE.md), blameless, with
 action items as issues. For every money or authorization bug, add a
-regression test before or with the fix (AGENTS.md §15).
+regression test before or with the fix (AGENTS.md §14).

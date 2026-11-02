@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-10-21
+> Last reviewed: 2026-11-02
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -99,64 +99,57 @@ Official references:
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
 | Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69) |
 | End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
-| World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12). Last reviewed 2026-10-21. Issue #74 (legacy 3.0 proofs) is open with its fix in PR #79, and the 2026-10-14 proof may have been a 3.0 proof |
+| World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12). Only World ID 4.0 proofs are accepted (#74, PR #79); the 2026-10-14 proof may have been a 3.0 proof, so the re-run repeats it |
 | Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
 | Operations runbook / alerts | ✅ docs/operations/RUNBOOK.md, docs/operations/alerts.yml |
-
-## Remaining Gate Before Implementation
-
-- [x] First buyer / use case selected.
-- [x] Base selected as POC/MVP default.
-- [x] POC gas UX selected.
-- [x] Claim authorization trust model selected.
-- [x] POC campaign economics selected.
-- [x] Confirm exact current testnet addresses and external SDK/package versions immediately before testnet integration/deployment (re-checked 2026-10-13, `docs/deployment/TESTNET.md`; IDKit 4.4.0, ADR-0007).
 
 ## Implementation Evidence
 
 - Monorepo scaffold verified with `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm build`, and `pnpm format:check`.
 - `CampaignManager` implements campaign creation/funding, EIP-712 claims, close/refund, replay protection, completion caps, pause, signer rotation, and single-token settlement.
 - Claim authorization now includes `issuedAt` + `expiresAt`; refunds wait until the issuance deadline plus maximum authorization TTL, eliminating the off-chain authorization/refund race in the original design.
-- Foundry baseline currently passes 13 unit/fuzz tests plus 3 stateful invariants.
+- Foundry: 59 unit/fuzz tests plus 3 stateful invariants, every `CampaignManager` revert covered (#73).
 - Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
 - Base Sepolia run on 2026-10-14 (v1 contract, before ADR-0011) with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
 
-## M1 review stack (2026-10-21)
+## M1 review stack (integrated 2026-11-02)
 
-Nothing below is merged. Every PR is open and in review, and CI was green on each at the time of writing. The owner decides the merge order and merges.
+The open PRs below were merged into one branch, `chore/integrate-m1-stack`, in the order their bases imply; the cross-PR conflicts are resolved there and CI (javascript with PostgreSQL, solidity, e2e) is green on it. The owner reviews and merges that branch instead of each PR.
 
-| PR | Base | Closes or refs |
-| --- | --- | --- |
-| #62 | `main` | Idempotent campaign creation, ADR-0011, Base Sepolia run record (#13) |
-| #88 | #62 | Pool starvation and row-lock deadlock when signing acceptances (defects in #62) |
-| #90 | #62 | Fixes #89, acceptance-time authorizations missing from the alert series |
-| #68 | #62 | Docs reconciled with the code |
-| #79 | #68 | Fixes #74, World ID 4.0 proofs only |
-| #81 | #68 | Closes #73, untested `CampaignManager` reverts |
-| #83 | #68 | Refs #13 and #12, Base Sepolia re-run runbook |
-| #84 | #68 | Closes #69, close and refund buttons |
-| #85 | #79 | Refs #71, wallet-bound World ID signal |
-| #87 | #84 | Closes #72, cookie sessions, CSRF checks, nonce CSP |
-| #93 | #68 | This status update (`docs/SDLC_STATUS.md`, `AGENTS.md`) |
-| #92 | `main` | Fixes #91, generic 500 body; the same handler is needed on #62's branch after both merge |
+| PR | Closes or refs |
+| --- | --- |
+| #62 | Idempotent campaign creation, ADR-0011, Base Sepolia run record (#13) |
+| #88 | Pool starvation and row-lock deadlock when signing acceptances (defects in #62) |
+| #90 | Fixes #89, acceptance-time authorizations in the alert series (wired into #88's signing path) |
+| #68 | Docs reconciled with the code |
+| #79 | Fixes #74, World ID 4.0 proofs only |
+| #81 | Closes #73, untested `CampaignManager` reverts |
+| #83 | Refs #13 and #12, Base Sepolia re-run runbook |
+| #84 | Closes #69, close and refund buttons |
+| #85 | Refs #71, wallet-bound World ID signal |
+| #87 | Closes #72, cookie sessions, CSRF checks, nonce CSP |
+| #92 | Fixes #91, generic 500 body |
+| #93 | The 2026-10-21 status update |
+| #61, #66 | Proposed ADR-0010 and the x402 design review (#28); documents only, no decision |
+| #63 | Short README entry point |
 
 Owner gates:
 
-- **Merge order.** The bases imply #62 with #88 and #90 first, then #68, then #79, #81, #83 and #84, then #85 and #87 once retargeted. #93 targets #68's branch: retarget it to `main` after #68 merges, or it lands in #68's branch only. #92 is independent.
+- **Merge the integration branch**, then close the PRs above as merged through it.
 - **Contract cleanup decision (#80).** Decide before the ADR-0011 redeploy, because the redeploy is the next time `CampaignManager` changes on-chain.
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
-- **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes, on PR #85's branch.
+- **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has the x402 design review, PR #66). #80 awaits the owner's decision above.
+Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30. #80 awaits the owner's decision above.
 
 ## Next SDLC Actions
 
-1. Owner reviews and merges the stack above in order, and answers #80.
-2. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow (runbook in PR #83); then close M1 (#12, #13) and, if the swap test passes, #71.
+1. Owner reviews and merges the integration branch, and answers #80.
+2. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow (`docs/deployment/BASE_SEPOLIA_RERUN.md`); then close M1 (#12, #13) and, if the swap test passes, #71.
 3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
 4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
 
 ---
 
-**Current gate:** The local economic loop is verified, including ADR-0011. The Base Sepolia flow was verified on the v1 contract and must be repeated on the ADR-0011 deployment, after the owner merges the review stack. Real funds remain blocked by the production-readiness gate (#29).
+**Current gate:** The local economic loop is verified, including ADR-0011. The Base Sepolia flow was verified on the v1 contract and must be repeated on the ADR-0011 deployment, after the owner merges the integration branch. Real funds remain blocked by the production-readiness gate (#29).

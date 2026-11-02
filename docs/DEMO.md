@@ -95,7 +95,7 @@ CI 的 `e2e` job 每次 push 都會跑同一個 demo，設定見 `.github/workfl
 
 ## 其他指令
 
-### 全部檢查（commit 前，對應 AGENTS.md §9 / §10）
+### 全部檢查（commit 前，對應 AGENTS.md §8 / §9）
 
 ```bash
 pnpm install

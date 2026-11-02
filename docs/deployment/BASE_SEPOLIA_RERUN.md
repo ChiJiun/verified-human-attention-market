@@ -84,7 +84,7 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
 
 ## Check the facts and the old contract
 
-1. Re-check the external facts (AGENTS.md §19). Open each source and compare. If a value differs, stop and update [TESTNET.md](TESTNET.md) first.
+1. Re-check the external facts (AGENTS.md §18). Open each source and compare. If a value differs, stop and update [TESTNET.md](TESTNET.md) first.
 
    | Fact                  | Value on 2026-10-20                                                                                                                                                              | Source                                                                                                                         |
    | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |

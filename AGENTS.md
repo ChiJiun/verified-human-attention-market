@@ -51,111 +51,49 @@ The long-term product may become **Verified Human Attention as an API**, but the
 
 ---
 
-## 3. Current SDLC state
+## 3. Current state
 
-Current phase:
+`docs/SDLC_STATUS.md` is the single status page (phases, ADR status, review gates); GitHub issues and CI are authoritative over both files. Implementation and testing are active, and the only deployment is the Base Sepolia testnet with no real funds. Do **not** restart planning from zero.
 
-```text
-Planning         ✅ Complete
-Requirements     ✅ Baseline complete
-System Design    ✅ Baseline complete
-Implementation  🟡 Active
-Testing          🟡 Active
-Deployment       ⬜ Not started
-Operations       ⬜ Not started
-```
+On 2026-11-02 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87, #88, #90, #92, #93) was merged into one integration branch, `chore/integrate-m1-stack`, with green CI; the cross-PR conflicts are resolved there. Next, in dependency order:
 
-The implementation is already underway. Do **not** restart planning from zero.
+1. **Owner gates before the redeploy**: merge the integration branch, and decide issue #80 (`CampaignManager` cleanup), because the redeploy is the next on-chain change.
+2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` takes a `draftRef`, so the 2026-10-14 contract is incompatible. Follow the migration steps in `docs/deployment/TESTNET.md` and the runbook `docs/deployment/BASE_SEPOLIA_RERUN.md`, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13). #71 closes only after the #13 swap test passes as ADR-0007 describes.
+3. **ADR-0010 (proposed only)**: passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
 
-Completed implementation milestones include:
-
-- monorepo scaffold;
-- Next.js web app scaffold;
-- Fastify API scaffold;
-- PostgreSQL + Drizzle schema/migrations;
-- campaign API baseline;
-- API idempotency baseline;
-- `CampaignManager` Solidity contract;
-- EIP-712 claim verification on-chain;
-- unit/fuzz/stateful invariant contract tests;
-- JavaScript/TypeScript CI;
-- Foundry CI;
-- PostgreSQL service in CI.
-
-Check `docs/SDLC_STATUS.md` and GitHub Issues for the latest state.
-
----
-
-## 4. Current implementation order
-
-Status as of 2026-10-21 (verify against GitHub, which is authoritative):
-
-Done on `main`:
-
-- #8 eligibility/submission persistence (one accepted completion per human, enforced in the DB)
-- #18 on-chain exposure limits (ADR-0006)
-- #15 mission model + deterministic engagement verifier
-- #9 World ID eligibility, backend side (ADR-0007)
-- `POST /v1/campaigns/:id/submissions` (eligibility + verifier + persistence, 2-attempt cap)
-- #19 deployment script, canonical ABI export with CI drift check, fail-fast chain config, runtime ABI from `@vham/shared` in API and web (closed 2026-10-15; the ADR-0011 redeploy is tracked under #13)
-- #17 reorg-safe chain indexer; #16 verified on-chain linking + status sync; #20 analytics
-- #10 EIP-712 claim authorization: live on-chain checks, cap = paid + unexpired outstanding, reissue of expired unredeemed authorizations
-- #37 Sign-In with Ethereum; advertiser-only endpoints
-- #13 (local part): `e2e` CI job runs the full economic loop on anvil, see `docs/DEMO.md`
-- #11 advertiser web flow; #12 participant flow with simulated World ID on anvil
-- M2: #21 observability, #22 privacy/retention, #24 moderation, #23 signer custody + payout limits (ADR-0008)
-- M3 baseline: #26 API keys/rate limits/error model, #25 campaign-scoped quality signals (ADR-0009)
-- #29 (partial): reconciliation, backup/restore drill, incident process — external security review and named on-call still open
-
-In review, not merged (2026-10-21). The stack is #62 at the root (`main`), with #88 and #90 targeting its branch; #68 on #62; #79, #81, #83 and #84 on #68; #85 on #79; #87 on #84; #93 (this update) on #68; and #92 on `main`. They close or ref #74, #73, #13/#12, #69, #71, #72, #89 and #91. The owner decides the merge order and merges: #62 with #88 and #90, then #68, then the PRs on #68, then #85 and #87 once retargeted. #93 is retargeted to `main` after #68 merges. Open issues with no PR yet: #70, #75, #76, #77, #78, #82, #86, and the epics #27, #29 and #30 (#28 has PR #66). Details are in `docs/SDLC_STATUS.md`.
-
-Next, in dependency order:
-
-1. **Owner gates before the redeploy**: review and merge the stack, and decide issue #80 (`CampaignManager` cleanup), because the redeploy is the next on-chain change.
-2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` now takes a `draftRef`, so the 2026-10-14 contract is incompatible. The old record is already archived; follow the migration steps in TESTNET.md and the runbook in PR #83, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13; #19 was closed on 2026-10-15) after the owner's review; #13's RPC-timeout criterion is covered by the e2e job (lost response, concurrent resend, same-parameter campaign for another draft). Issue #71 closes only after the #13 swap test passes as written in ADR-0007 on PR #85's branch. Close/refund buttons are in PR #84 (open).
-3. **ADR-0010 (proposed, PR #61)** — passive accrual with World ID at login and withdrawal. Needs owner decisions and the #22 privacy review before any code.
+Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
 `@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 `@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
-Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
-
 ---
 
-## 5. Accepted architecture decisions
+## 4. Accepted architecture decisions
 
-The following ADRs are already accepted unless a new ADR explicitly changes them.
+These ADRs are accepted unless a new ADR changes them. The files under `docs/adr/` are the decisions; the rules below are what code must not break.
 
-### ADR-0001 — MVP chain
+| ADR | Rule |
+| --- | --- |
+| [0001](docs/adr/0001-mvp-chain-base.md) | Base, single chain first. Re-check official chain and token addresses right before deploying. |
+| [0002](docs/adr/0002-first-use-case-sponsored-content.md) | First mission: sponsored content + short comprehension check, a baseline engagement test, not proof of deep attention. |
+| [0003](docs/adr/0003-poc-gas-ux.md) | Participants pay testnet gas in the POC; sponsorship must be revisited before real money (#70). |
+| [0004](docs/adr/0004-claim-authorization-eip712.md) | The off-chain verifier issues an EIP-712 `ClaimAuthorization`, which the contract verifies. |
+| [0005](docs/adr/0005-poc-campaign-economics.md) | POC-only values: 1 test USDC per completion, max 10 completions, max 10 test USDC, 0% fee, 15 min–24 h duration. |
+| [0006](docs/adr/0006-onchain-exposure-limits.md) | The three exposure limits are immutable `CampaignManager` constructor parameters. |
+| [0007](docs/adr/0007-world-id-integration.md) | One World ID action per campaign, backend verification of 4.0 proofs only, HMAC participant keys, wallet-bound signal, RP-signed requests. |
+| [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | Signer custody (KMS behind a signing service in production), role separation, 24 h payout limit. |
+| [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | Campaign-scoped quality flags only; no cross-campaign reputation without a new ADR. |
+| [0011](docs/adr/0011-idempotent-campaign-creation.md) | Idempotent creation per draft (`draftRef`); deployments kept apart in the database; a reorg beyond the confirmation depth halts the deployment; acceptance and its authorization are one persisted result. |
 
-- **Base** is the working POC/MVP chain.
-- Single-chain first.
-- Re-check official chain/testnet addresses immediately before deployment.
+[ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md) is **proposed only** and is not a decision.
 
-### ADR-0002 — First mission
-
-First mission:
-
-> Sponsored content + short comprehension check
-
-This is a baseline engagement test, not a claim that comprehension questions prove deep attention.
-
-### ADR-0003 — POC gas UX
-
-- User pays testnet gas in the first POC.
-- Sponsored gas / paymaster must be reconsidered before real-money MVP.
-
-### ADR-0004 — Claim authorization
-
-- Off-chain verifier issues **EIP-712 typed-data authorization**.
-- Contract verifies the authorization.
-- Claim fields are:
+The signed claim fields (ADR-0004, ADR-0011):
 
 ```text
 ClaimAuthorization {
   campaignId
-  draftRef      // ADR-0011
+  draftRef
   claimant
   amount
   nonce
@@ -164,32 +102,9 @@ ClaimAuthorization {
 }
 ```
 
-### ADR-0005 — POC economics
-
-POC-only values:
-
-```text
-1 test USDC per valid completion
-max 10 completions
-max 10 test USDC funding
-0% protocol fee
-15 min–24 h campaign duration
-```
-
-These are test parameters, not final pricing.
-
-### ADR-0006 to ADR-0011 (accepted later; read the files)
-
-- **ADR-0006** — the three exposure limits are immutable constructor parameters of `CampaignManager`.
-- **ADR-0007** — World ID: one action per campaign, backend v4 verification, HMAC participant keys, IDKit 4.4.0 with RP-signed requests.
-- **ADR-0008** — signer custody (KMS behind a signing service in production), role separation, 24 h payout limit.
-- **ADR-0009** — campaign-scoped quality flags only; no cross-campaign reputation without a new ADR.
-- **ADR-0011** — idempotent on-chain creation per draft (`draftRef`): `createCampaign`, `fundCampaign` and `ClaimAuthorization` all carry it; deployments are kept apart in the database; a reorg beyond the confirmation depth halts the deployment until recovery; acceptance and claim authorization are one persisted result.
-- ADR-0010 (passive accrual) is **proposed only** (PR #61) and is not a decision.
-
 ---
 
-## 6. Non-negotiable MVP constraints
+## 5. Non-negotiable MVP constraints
 
 Do not add these to the critical path without explicit product/architecture review:
 
@@ -214,7 +129,7 @@ Current intent:
 
 ---
 
-## 7. Repository structure
+## 6. Repository structure
 
 ```text
 .
@@ -222,18 +137,23 @@ Current intent:
 ├─ README.zh-TW.md
 ├─ AGENTS.md
 ├─ docs/
-│  ├─ SDLC_STATUS.md
+│  ├─ SDLC_STATUS.md   # status page
+│  ├─ DEMO.md          # local and testnet run
 │  ├─ adr/
 │  ├─ architecture/
+│  ├─ deployment/      # TESTNET.md, BASE_SEPOLIA_RERUN.md
+│  ├─ operations/      # runbook, alerts, readiness, incidents
+│  ├─ privacy/
 │  ├─ product/
 │  ├─ testing/
 │  └─ threat-model/
 ├─ apps/
 │  ├─ web/          # Next.js frontend
-│  └─ api/          # Fastify + PostgreSQL/Drizzle API
+│  └─ api/          # Fastify + PostgreSQL/Drizzle API, indexer worker
 ├─ packages/
-│  ├─ contracts/    # Solidity + Foundry
-│  └─ shared/       # shared TypeScript schemas/types
+│  ├─ contracts/    # Solidity + Foundry, deployment records, ABI export
+│  └─ shared/       # browser-safe types, chain list, canonical ABI
+├─ scripts/db/      # backup/restore drill
 └─ .github/
    └─ workflows/
 ```
@@ -242,7 +162,7 @@ Package manifests and lockfiles are authoritative for exact dependency versions.
 
 ---
 
-## 8. Local environment
+## 7. Local environment
 
 Repository location on the current Windows machine:
 
@@ -265,7 +185,7 @@ Do not install or upgrade major dependencies casually. If an upgrade changes arc
 
 ---
 
-## 9. Required JavaScript/TypeScript checks
+## 8. Required JavaScript/TypeScript checks
 
 Before committing JavaScript/TypeScript changes, run:
 
@@ -284,7 +204,7 @@ If database integration was changed, ensure the CI PostgreSQL integration test a
 
 ---
 
-## 10. Required Solidity checks
+## 9. Required Solidity checks
 
 On Windows/WSL:
 
@@ -301,7 +221,7 @@ The CI pipeline also runs Foundry checks.
 
 ---
 
-## 11. Smart-contract safety rules
+## 10. Smart-contract safety rules
 
 `CampaignManager` is the financial core. Treat changes as security-sensitive.
 
@@ -366,7 +286,7 @@ No proxy upgradeability in the POC.
 
 ---
 
-## 12. Financial/API coding rules
+## 11. Financial/API coding rules
 
 ### Never use floating point for money
 
@@ -424,7 +344,7 @@ If a transaction was broadcast and the RPC times out, reconcile by transaction h
 
 ---
 
-## 13. World ID / privacy rules
+## 12. World ID / privacy rules
 
 World ID integration is implemented (ADR-0007) but has not yet been exercised against a real World App / Developer Portal app.
 
@@ -451,7 +371,7 @@ A verified human can still farm rewards or submit low-quality work.
 
 ---
 
-## 14. Database and persistence rules
+## 13. Database and persistence rules
 
 Current database stack:
 
@@ -481,7 +401,7 @@ Avoid storing free-form or unnecessary sensitive user data in the POC.
 
 ---
 
-## 15. Current testing posture
+## 14. Current testing posture
 
 Current contract tests cover:
 
@@ -511,7 +431,7 @@ For every bug involving money or authorization, add a regression test before or 
 
 ---
 
-## 16. Architecture-change rule
+## 15. Architecture-change rule
 
 If a change materially affects any of these:
 
@@ -532,7 +452,7 @@ Do not silently change architecture only in code.
 
 ---
 
-## 17. Git/GitHub workflow
+## 16. Git/GitHub workflow
 
 Before editing:
 
@@ -568,7 +488,7 @@ Do not claim an issue is complete merely because code exists locally.
 
 ---
 
-## 18. Secret-handling rule
+## 17. Secret-handling rule
 
 Never commit:
 
@@ -585,7 +505,7 @@ Use environment variables.
 
 ---
 
-## 19. External-integration freshness rule
+## 18. External-integration freshness rule
 
 External Web3 infrastructure changes quickly.
 
@@ -607,7 +527,7 @@ Document the date/source when an external integration choice materially affects 
 
 ---
 
-## 20. What a new session should do next
+## 19. What a new session should do next
 
 A new session should **not** ask the user to restate the entire project.
 
@@ -622,11 +542,11 @@ Use this workflow:
 7. Verify CI.
 8. Update SDLC status / close issue only when acceptance criteria are met.
 
-At this handoff, the expected next task is the owner-gated ADR-0011 redeploy and Base Sepolia re-run for #12/#13 (see §4), after the owner reviews and merges the open PR stack, unless GitHub state shows that work has already advanced. Do not merge those PRs.
+At this handoff, the expected next task is the owner-gated ADR-0011 redeploy and Base Sepolia re-run for #12/#13 (see §3), after the owner reviews and merges the integration branch, unless GitHub state shows that work has already advanced. Do not merge it yourself.
 
 ---
 
-## 21. Handoff prompt for a new ChatGPT session
+## 20. Handoff prompt for a new ChatGPT session
 
 The user can paste this:
 

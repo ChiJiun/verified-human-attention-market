@@ -47,7 +47,7 @@ one is built, a new ADR must decide:
 ### 3. Path to payout effects
 
 If flags should one day reduce or withhold payouts, that is a change to the
-claim trust model and requires its own ADR (AGENTS.md §16), a participant
+claim trust model and requires its own ADR (AGENTS.md §15), a participant
 -facing explanation, and a dispute path (#24).
 
 ## Consequences
