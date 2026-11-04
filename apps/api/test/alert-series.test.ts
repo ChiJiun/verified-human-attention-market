@@ -14,7 +14,8 @@ import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 
 /**
  * Drops YAML comments: a `#` at the start of a line or after whitespace,
- * outside quotes. A `#` inside a quoted label value stays.
+ * outside quotes. A `#` inside a quoted label value stays, also after an
+ * escaped quote (`\"`) in a double-quoted string.
  */
 function withoutComments(text: string) {
   return text
@@ -24,7 +25,8 @@ function withoutComments(text: string) {
       for (let index = 0; index < line.length; index += 1) {
         const char = line[index]!;
         if (quote) {
-          if (char === quote) quote = null;
+          if (quote === '"' && char === "\\") index += 1;
+          else if (char === quote) quote = null;
         } else if (char === '"' || char === "'") {
           quote = char;
         } else if (
@@ -39,12 +41,39 @@ function withoutComments(text: string) {
     .join("\n");
 }
 
-const RULES = withoutComments(
-  readFileSync(
-    new URL("../../../docs/operations/alerts.yml", import.meta.url),
-    "utf8",
-  ),
+const RULES_FILE = readFileSync(
+  new URL("../../../docs/operations/alerts.yml", import.meta.url),
+  "utf8",
 );
+const RULES = withoutComments(RULES_FILE);
+
+/**
+ * The lines of every block expression (`expr: >-` or `expr: |`). There a `#`
+ * is part of the expression, and PromQL reads it as a comment that hides the
+ * rest of the folded line from Prometheus, though not from this parser.
+ */
+function exprBlockLines(text: string) {
+  const lines = text.split("\n");
+  const found: string[] = [];
+  lines.forEach((line, index) => {
+    const start = /^(\s*)expr:\s*[>|][-+]?\s*$/.exec(line);
+    if (!start) return;
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() !== "" && next.search(/\S/) <= start[1]!.length) break;
+      found.push(next);
+    }
+  });
+  return found;
+}
+
+/** GitHub's anchor for a Markdown heading. */
+function slugOf(heading: string) {
+  return heading
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s/g, "-");
+}
 
 /**
  * Selectors left out on purpose: the 5xx series (one per route, method and
@@ -126,6 +155,11 @@ describe("series watched by increase() alert rules", () => {
     // and is not checked.
     const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
     expect(selectors).toHaveLength(ranges.length);
+    // A block expression may not hold a `#` (exprBlockLines). The World ID
+    // rule is one, which guards the block search.
+    const blockLines = exprBlockLines(RULES_FILE);
+    expect(blockLines.join("\n")).toContain("vham_world_id_requests_total");
+    for (const line of blockLines) expect(line).not.toContain("#");
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -140,6 +174,25 @@ describe("series watched by increase() alert rules", () => {
         expect(listed, selector).toContainEqual(labels);
       }
     }
+  });
+
+  it("links every alert to a heading of the runbook", () => {
+    const runbook = readFileSync(
+      new URL("../../../docs/operations/RUNBOOK.md", import.meta.url),
+      "utf8",
+    );
+    const slugs = new Set(
+      [...runbook.matchAll(/^#{1,6}\s+(.+)$/gm)].map(([, title]) =>
+        slugOf(title!),
+      ),
+    );
+    const alerts = [...RULES.matchAll(/-\s*alert:\s*(\w+)/g)];
+    const anchors = [
+      ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),
+    ].map(([, anchor]) => anchor!);
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(anchors).toHaveLength(alerts.length);
+    for (const anchor of anchors) expect(slugs, anchor).toContain(anchor);
   });
 
   it("lists outcome codes that exist and every payout anomaly scope", () => {

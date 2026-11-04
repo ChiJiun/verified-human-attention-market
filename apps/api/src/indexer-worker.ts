@@ -270,7 +270,8 @@ const lock = await retryWithBackoff(
 // Until the first successful pass the stall clock runs from here, so a worker
 // whose passes fail from its start still raises VhamIndexerStalled. Not
 // earlier: a worker waiting for the lock is not stalled, another one runs.
-gauges.lastSuccess.set(unixSeconds(new Date()));
+// A worker stopped while waiting (no lock) sets nothing.
+if (!stopping) gauges.lastSuccess.set(unixSeconds(new Date()));
 
 let backoffMs = pollMs;
 let inconsistentStreak = 0;

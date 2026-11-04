@@ -11,12 +11,12 @@
 | API readiness  | `GET /health/ready`             | Database + chain RPC; `indexerLagBlocks`, `chainHalted`. 503 on a failed check, not on a halt. |
 | API metrics    | `GET /metrics`                  | Bearer `METRICS_TOKEN` when set.                                  |
 | Worker metrics | `:INDEXER_METRICS_PORT/metrics` | Unset port = disabled.                                            |
+| Logs           | stdout, JSON                    | `requestId` on every API line; worker lines carry `level`, `msg`. |
+| Alert rules    | [`alerts.yml`](./alerts.yml)    | Prometheus rule file.                                             |
 
 Scrape every API instance and the worker as its own target, not through a
 load balancer: counters are per process, so a scrape that alternates between
 instances sees each counter jump back and forth and reads it as resets.
-| Logs           | stdout, JSON                    | `requestId` on every API line; worker lines carry `level`, `msg`. |
-| Alert rules    | [`alerts.yml`](./alerts.yml)    | Prometheus rule file.                                             |
 
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
@@ -73,10 +73,12 @@ scrape.
 What every `increase()` rule still misses:
 
 - Events before Prometheus first scrapes a newly started API or worker. After
-  a restart they count when a sample from before it is still within the range
-  and the restarted series has the same labels (instance, pod) and a different
-  value: a counter back at the value it had before the restart looks
-  unchanged.
+  a restart they count only when a sample from before it is still within the
+  range and the restarted series has the same labels (instance, pod).
+  Prometheus then reads a lower value as a reset and counts all of it, a
+  higher value only by its difference, and the same value as no change.
+- Events a process counts after its last scrape, when it stops before the
+  next one.
 - Counts per instance: a rule without `sum` (VhamWorldIdUnavailable) applies
   its threshold to each API instance separately.
 
@@ -226,9 +228,16 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 
 VhamIndexerStalled counts from the worker's last successful pass or, before
 its first one, from when it took the deployment lock: a worker whose passes
-fail from its start raises it after 5 minutes. A worker that keeps restarting
-starts that clock again each time; VhamIndexerLag, which the API computes from
-the stored cursor, still fires then.
+fail from its start raises it after 5 minutes. A pass runs until the index
+reaches the confirmed head, so a pass that catches up for more than 5 minutes
+raises it too, the first one included: after a long stop, or the rebuild
+after `reorg:recover --apply`. Catching up, the worker logs no
+`indexer pass failed`, `vham_indexer_rpc_requests_total` keeps growing and the
+API's `vham_indexer_lag_blocks` keeps falling as each range commits; stuck, it
+logs the failure and the lag grows. A worker that keeps restarting starts the
+clock again each time; VhamIndexerLag, which the API computes from the stored
+cursor, still fires then, once the worker has committed a range (the API
+exports no lag before that).
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
@@ -355,7 +364,10 @@ the chain variables (`EVM_CHAIN_ID`, `EVM_RPC_URL`, `USDC_ADDRESS`,
    index has caught up to the confirmed head, every link verifies, and every
    link's indexed funding and payouts equal the contract's. Until then it logs
    why it is waiting (`reorg recovery not verified yet`); VhamChainHalted
-   resolves when the halt is gone.
+   resolves when the halt is gone. A rebuild that takes more than 5 minutes
+   also raises VhamIndexerStalled until its first pass ends
+   ([VhamIndexerLag / VhamIndexerStalled](#vhamindexerlag--vhamindexerstalled)
+   tells catching up from stuck).
 6. Run `pnpm --filter @vham/api reconcile:start` afterwards.
 
 If `--apply` is run again during a rebuild (the worker must be stopped for
@@ -374,13 +386,16 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 
 ### VhamWorldIdUnavailable
 
-World ID's verify endpoint is failing, or World ID is not configured: then
+World ID's verify endpoint is failing (`PROVIDER_UNAVAILABLE`: check
+https://status.world.org; users get 503 and can retry), or World ID is not
+configured (`WORLD_ID_NOT_CONFIGURED`: set `WORLD_ID_RP_ID`, `RP_SIGNING_KEY`
+and `WORLD_ID_APP_ID`; a retry does not help). Without the configuration,
 `POST /world-id/request` already answers `503 WORLD_ID_NOT_CONFIGURED`, before
-any verification (`vham_world_id_requests_total`). Check
-https://status.world.org and the `WORLD_ID_*` variables. Users get 503 and can
-retry; no eligibility is recorded on failure. The rule counts each outcome and
-instance separately, and `increase()` extrapolates to the whole range, so it
-can fire on the third failure.
+any verification (`vham_world_id_requests_total`). No eligibility is recorded
+on failure. The rule counts each outcome, metric and instance separately (3
+refused requests and 3 refused verifications do not add up), and
+`increase()` extrapolates to the whole range, so it can fire on the third
+failure.
 
 ### VhamServerErrors
 

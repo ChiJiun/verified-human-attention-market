@@ -545,7 +545,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     }
   });
 
-  it("during a chain halt answers a replay with CHAIN_HALTED and refuses a new participant, reading nothing", async () => {
+  it("during a chain halt answers a replay with CHAIN_HALTED and refuses a new participant, without a contract call", async () => {
     const { verify, submit, events, scope, submissions, campaignId, rpc } =
       await setupOnchain(createClaimSigner(`0x${"11".repeat(32)}`));
     const eligibilityToken = await verify("human-1", WALLET_A);

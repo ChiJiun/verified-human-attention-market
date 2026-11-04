@@ -61,7 +61,7 @@ groups:
           severity: warn
         annotations:
           summary: Indexer is more than 50 blocks behind the chain head
-          runbook: docs/operations/RUNBOOK.md#vhamindexerlag
+          runbook: docs/operations/RUNBOOK.md#vhamindexerlag--vhamindexerstalled
 
       - alert: VhamIndexerStalled
         expr: time() - vham_indexer_last_success_timestamp_seconds > 300
@@ -69,7 +69,7 @@ groups:
           severity: page
         annotations:
           summary: No successful indexer pass in 5 minutes
-          runbook: docs/operations/RUNBOOK.md#vhamindexerstalled
+          runbook: docs/operations/RUNBOOK.md#vhamindexerlag--vhamindexerstalled
 
       # The RPC keeps answering one range from different forks or nodes,
       # leaving events out of it, or without the receipts that prove it
