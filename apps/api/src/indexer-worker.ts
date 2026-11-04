@@ -21,6 +21,10 @@ import {
 } from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
+import {
+  INDEXER_PASSES_METRIC,
+  REORG_BEYOND_CONFIRMATIONS,
+} from "./observability/alerted-series.js";
 import { MetricsRegistry } from "./observability/metrics.js";
 import { applyRetention } from "./privacy/retention.js";
 import { PostgresClaimRepository } from "./claims/repository.js";
@@ -141,7 +145,7 @@ const gauges = {
   ),
 };
 const passes = metrics.counter(
-  "vham_indexer_passes_total",
+  INDEXER_PASSES_METRIC,
   "Indexer passes by result",
 );
 // Every RPC request of the worker by method, failed passes included: what
@@ -410,7 +414,7 @@ while (!stopping) {
     passes.inc({
       result:
         error instanceof ReorgBeyondConfirmationsError
-          ? "reorg_beyond_confirmations"
+          ? REORG_BEYOND_CONFIRMATIONS
           : error instanceof ChainHaltedError
             ? "halted"
             : error instanceof InconsistentChainReadError

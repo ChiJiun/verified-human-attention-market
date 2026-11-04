@@ -4,21 +4,25 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { ERROR_CATALOG } from "../src/errors/catalog.js";
-import { ALERTED_COUNTER_SERIES } from "../src/observability/alerted-series.js";
+import {
+  ALERTED_COUNTER_SERIES,
+  INDEXER_PASSES_METRIC,
+  REORG_BEYOND_CONFIRMATIONS,
+} from "../src/observability/alerted-series.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 
-/** The alert rules without their comment lines. */
+/** The alert rules without their YAML comments. */
 const RULES = readFileSync(
   new URL("../../../docs/operations/alerts.yml", import.meta.url),
   "utf8",
-).replace(/^\s*#.*$/gm, "");
+).replace(/(^|\s)#.*$/gm, "$1");
 
-/** Series that carry the route, so they cannot be listed ahead. */
-const UNLISTABLE = new Set(["vham_http_requests_total"]);
+/** Not listed: one series per route, method and status, once it occurs. */
+const NOT_LISTED = new Set(["vham_http_requests_total"]);
 
 /** Counters of the indexer worker, which exports its own registry. */
-const WORKER_COUNTERS = new Set(["vham_indexer_passes_total"]);
+const WORKER_COUNTERS = new Set([INDEXER_PASSES_METRIC]);
 
 /** Counters whose `outcome` label is an error code of the catalog. */
 const OUTCOME_CODES = new Set([
@@ -74,14 +78,15 @@ describe("series watched by increase() alert rules", () => {
         "vham_indexer_passes_total",
       ]),
     );
-    // Every range function in the rules is one of the selectors parsed
-    // above. rate() and irate() would miss a first sample the same way, so a
-    // rule using one, or an increase() the pattern cannot read, fails here.
-    const rangeCalls = [...RULES.matchAll(/\b(?:increase|rate|irate)\s*\(/g)];
-    expect(selectors).toHaveLength(rangeCalls.length);
+    // Every range selector (`[10m]`) in the rules belongs to an increase()
+    // parsed above. rate(), changes() or delta() would miss a first sample the
+    // same way, so a rule using one, or an increase() the pattern cannot read,
+    // fails here. A comparison with `offset` has no range and is not checked.
+    const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
+    expect(selectors).toHaveLength(ranges.length);
 
     for (const { metric, matchers } of selectors) {
-      if (UNLISTABLE.has(metric)) continue;
+      if (NOT_LISTED.has(metric)) continue;
       const listed = ALERTED_COUNTER_SERIES.get(metric);
       expect(listed, metric).toBeDefined();
       expect(listed!.length, metric).toBeGreaterThan(0);
@@ -130,15 +135,14 @@ describe("series watched by increase() alert rules", () => {
 
   it("starts a watched series at 0 and keeps its count when the counter is fetched again", () => {
     const metrics = new MetricsRegistry();
-    // The indexer worker creates this counter the same way.
-    const passes = metrics.counter("vham_indexer_passes_total", "Passes");
-    const reorg = { result: "reorg_beyond_confirmations" };
-    expect(metrics.render()).toContain(
-      rendered("vham_indexer_passes_total", reorg),
-    );
+    // The indexer worker creates this counter the same way, with the same
+    // constants.
+    const passes = metrics.counter(INDEXER_PASSES_METRIC, "Passes");
+    const reorg = { result: REORG_BEYOND_CONFIRMATIONS };
+    expect(metrics.render()).toContain(rendered(INDEXER_PASSES_METRIC, reorg));
 
     passes.inc(reorg);
-    metrics.counter("vham_indexer_passes_total", "Passes");
-    expect(metrics.value("vham_indexer_passes_total", reorg)).toBe(1);
+    metrics.counter(INDEXER_PASSES_METRIC, "Passes");
+    expect(metrics.value(INDEXER_PASSES_METRIC, reorg)).toBe(1);
   });
 });

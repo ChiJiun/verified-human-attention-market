@@ -546,9 +546,8 @@ describe("POST /v1/campaigns/:id/submissions", () => {
   });
 
   it("replays an acceptance during a chain halt with 200 and claim code CHAIN_HALTED", async () => {
-    const { verify, submit, events, scope } = await setupOnchain(
-      createClaimSigner(`0x${"11".repeat(32)}`),
-    );
+    const { verify, submit, events, scope, submissions, campaignId } =
+      await setupOnchain(createClaimSigner(`0x${"11".repeat(32)}`));
     const eligibilityToken = await verify("human-1", WALLET_A);
     const body = { eligibilityToken, claimant: WALLET_A, answers: CORRECT };
     const accepted = await submit("halted", body);
@@ -579,6 +578,12 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     });
     expect(fresh.statusCode).toBe(503);
     expect(fresh.json()).toMatchObject({ error: { code: "CHAIN_HALTED" } });
+    // It stored nothing (a submission is recorded and signed together), so
+    // only the first participant's acceptance exists.
+    expect(await submissions.countByCampaign(campaignId)).toEqual({
+      accepted: 1,
+      rejected: 0,
+    });
   });
 
   it("replays the original outcome for the same idempotency key", async () => {
