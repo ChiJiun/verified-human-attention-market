@@ -203,21 +203,27 @@ export function buildApp(dependencies: AppDependencies = {}) {
     "1 while a reorg beyond the confirmation depth halts the deployment",
   );
 
+  /** Reads of chainStatus() in the order they started, and the last published. */
+  let chainReadsStarted = 0;
+  let chainReadPublished = 0;
+
   /**
    * Head and confirmed-cursor lag; throws when the RPC or the cursor cannot
    * be read. Scrapes and readiness checks both call it, at the same time too,
-   * so the gauges change only once its reads are done, all in one step: a
-   * scrape exports one whole read, the latest to finish, never the head of
-   * one and the lag of another.
+   * so the gauges change only once its reads are done, all in one step, and
+   * only if no read that started later has changed them: a scrape exports
+   * one whole read, the newest to have finished, never the head of one and
+   * the lag of another, nor an older read over a newer one.
    */
   async function chainStatus() {
     if (!chain) return null;
+    const read = ++chainReadsStarted;
 
     let head: bigint;
     try {
       head = await chain.rpc.blockNumber();
     } catch (error) {
-      publishChainRead(null, null);
+      publishChainRead(read, null, null);
       throw error;
     }
 
@@ -228,22 +234,29 @@ export function buildApp(dependencies: AppDependencies = {}) {
         contractAddress: chain.chain.contractAddress,
       });
     } catch (error) {
-      publishChainRead(head, null);
+      publishChainRead(read, head, null);
       throw error;
     }
     // No cursor: the worker has committed nothing yet, or `reorg:recover
     // --apply` reset the index. Then no lag is exported, not the last one.
     const lag = cursor ? head - cursor.latestConfirmedBlock : null;
-    publishChainRead(head, lag);
+    publishChainRead(read, head, lag);
     return { head, lag };
   }
 
   /**
-   * Sets the chain gauges from one read. A value that was not read is
-   * removed: without the RPC or the cursor, the last head and lag no longer
-   * hold. `head` is null when the RPC could not be read.
+   * Sets the chain gauges from read number `read`, unless a read that
+   * started later already has. A value that was not read is removed: without
+   * the RPC or the cursor, the last head and lag no longer hold. `head` is
+   * null when the RPC could not be read.
    */
-  function publishChainRead(head: bigint | null, lag: bigint | null) {
+  function publishChainRead(
+    read: number,
+    head: bigint | null,
+    lag: bigint | null,
+  ) {
+    if (read < chainReadPublished) return;
+    chainReadPublished = read;
     rpcUp.set(head === null ? 0 : 1);
     if (head === null) chainHead.remove();
     else chainHead.set(Number(head));

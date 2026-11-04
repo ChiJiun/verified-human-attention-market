@@ -21,46 +21,58 @@ function keyColumn(line: string) {
 const SCALAR_START = /(?:^\s*(?:-\s+)*|:\s+|[[{,]\s*)$/;
 
 /**
- * Drops YAML comments as YAML does: a `#` at the start of a line or after
- * whitespace, outside a quoted scalar and outside the content of a block
- * scalar (`>-`, `|`), which is kept as it is. A quote opens a quoted scalar
- * only where a scalar starts; elsewhere, as in `it's` or `{a="b"}`, it is
- * plain text. A quoted scalar may span lines; `\"` and `''` escape its
- * quote.
+ * The lines of a YAML file, each without its comment, as YAML drops them: a
+ * `#` at the start of a line or after whitespace, outside a quoted scalar
+ * and outside the content of a block scalar (`>-`, `|`), which is kept as
+ * it is. A quote opens a quoted scalar only where a scalar starts;
+ * elsewhere, as in `it's` or `{a="b"}`, it is plain text. A quoted scalar
+ * may span lines; `\"` and `''` escape its quote. `content` marks a line
+ * that starts inside a block scalar or a quoted scalar: text, not keys.
  */
-function withoutComments(text: string) {
+function yamlLines(text: string) {
   let quote: string | null = null;
   let blockColumn: number | null = null;
-  return text
-    .split("\n")
-    .map((line) => {
-      if (blockColumn !== null) {
-        if (line.trim() === "" || keyColumn(line) > blockColumn) return line;
-        blockColumn = null;
+  return text.split("\n").map((line) => {
+    if (blockColumn !== null) {
+      if (line.trim() === "" || keyColumn(line) > blockColumn) {
+        return { text: line, content: true };
       }
-      let kept = line;
-      for (let index = 0; index < line.length; index += 1) {
-        const char = line[index]!;
-        if (quote) {
-          if (quote === '"' && char === "\\") index += 1;
-          else if (quote === "'" && line.startsWith("''", index)) index += 1;
-          else if (char === quote) quote = null;
-        } else if (char === '"' || char === "'") {
-          if (SCALAR_START.test(line.slice(0, index))) quote = char;
-        } else if (
-          char === "#" &&
-          (index === 0 || /\s/.test(line[index - 1]!))
-        ) {
-          kept = line.slice(0, index);
-          break;
-        }
+      blockColumn = null;
+    }
+    const content = quote !== null;
+    let kept = line;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index]!;
+      if (quote) {
+        if (quote === '"' && char === "\\") index += 1;
+        else if (quote === "'" && line.startsWith("''", index)) index += 1;
+        else if (char === quote) quote = null;
+      } else if (char === '"' || char === "'") {
+        if (SCALAR_START.test(line.slice(0, index))) quote = char;
+      } else if (char === "#" && (index === 0 || /\s/.test(line[index - 1]!))) {
+        kept = line.slice(0, index);
+        break;
       }
-      if (quote === null && /:\s+[>|][-+0-9]*\s*$/.test(kept)) {
-        blockColumn = keyColumn(line);
-      }
-      return kept;
-    })
+    }
+    if (quote === null && /:\s+[>|][-+0-9]*\s*$/.test(kept)) {
+      blockColumn = keyColumn(line);
+    }
+    return { text: kept, content };
+  });
+}
+
+/** A YAML file without its comments (yamlLines). */
+function withoutComments(text: string) {
+  return yamlLines(text)
+    .map((line) => line.text)
     .join("\n");
+}
+
+/** The lines of a YAML file that may hold keys: not scalar content. */
+function keyLines(text: string) {
+  return yamlLines(text)
+    .filter((line) => !line.content)
+    .map((line) => line.text);
 }
 
 /**
@@ -80,21 +92,22 @@ const RULES = withoutComments(RULES_FILE);
 const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
 
 /**
- * The item lines of every `key:` list, such as `rules:`. The list must be a
- * block sequence (the selector test checks that each item is a block
- * mapping): a flow sequence or mapping would hide its keys from the
- * line-based checks here. Items may sit at the key's indentation.
+ * The item lines of every `key:` list of a YAML file, such as `rules:`. The
+ * key must be written plainly with a block sequence below it (the selector
+ * test checks that each item is a block mapping): a quoted key, or a flow
+ * sequence or mapping, would hide its keys from the line-based checks here.
+ * Items may sit at the key's indentation; scalar content is skipped.
  */
 function sequenceItems(text: string, key: string) {
-  const lines = text.split("\n");
+  const lines = keyLines(text);
   const items: string[] = [];
   lines.forEach((line, index) => {
-    const list = new RegExp(`^(\\s*)${key}:(.*)$`).exec(line);
-    if (!list) return;
-    if (list[2]!.trim() !== "") {
-      throw new Error(`Not a block sequence: ${line.trim()}`);
+    const spelled = new RegExp(`^\\s*(?:-\\s+)*["']?${key}["']?\\s*:`);
+    if (!spelled.test(line)) return;
+    if (!new RegExp(`^\\s*(?:-\\s+)*${key}:\\s*$`).test(line)) {
+      throw new Error(`Write \`${key}:\` with a list below: ${line.trim()}`);
     }
-    const keyIndent = list[1]!.length;
+    const keyIndent = keyColumn(line);
     let itemIndent: number | null = null;
     for (const next of lines.slice(index + 1)) {
       if (next.trim() === "") continue;
@@ -110,12 +123,13 @@ function sequenceItems(text: string, key: string) {
 
 /**
  * Where an `expr` value may start, on its key's line: a block scalar (`>-`,
- * `|`), a plain value, or one quoted on that line, `\"` and `''` escaped.
- * The next lines of a quoted value may sit at any indentation, where
- * exprLines would not look, so fold long ones with `>-`.
+ * `|`), a plain value starting as PromQL may (a name, a number, `(`, a
+ * sign, the `:` of a recording rule name), or one quoted on that line, `\"`
+ * and `''` escaped. The next lines of a quoted value may sit at any
+ * indentation, where exprLines would not look, so fold long ones with `>-`.
  */
 const EXPR_VALUE =
-  /^(?:[>|][-+0-9]*|[\w(-].*|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')$/;
+  /^(?:[>|][-+0-9]*|[\w(:.+-].*|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')$/;
 
 /**
  * Every line of every `expr` value: block, plain, or quoted on one line (the
@@ -127,9 +141,11 @@ const EXPR_VALUE =
  */
 function exprLines(text: string) {
   const lines = text.split("\n");
+  // An `expr:` inside scalar content, such as a description, is no key.
+  const content = yamlLines(text).map((line) => line.content);
   const found: string[] = [];
   lines.forEach((line, index) => {
-    if (!EXPR_KEY.test(line)) return;
+    if (content[index] || !EXPR_KEY.test(line)) return;
     found.push(line);
     for (const next of lines.slice(index + 1)) {
       if (next.trim() !== "" && keyColumn(next) <= keyColumn(line)) break;
@@ -142,7 +158,6 @@ function exprLines(text: string) {
 /** GitHub's anchor for the text of a Markdown heading. */
 function slugOf(heading: string) {
   return heading
-    .trim()
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "")
@@ -155,7 +170,7 @@ function slugOf(heading: string) {
  * fence closes only with a bare marker of its kind, at least as long. A
  * comment block starts with `<!--` at the start of a line and ends on the
  * line that holds `-->`; a comment inside a line is no block, and is not
- * part of a heading's text.
+ * part of a heading's text, though the spaces around it are.
  */
 function anchorsOf(markdown: string) {
   const anchors = new Set<string>();
@@ -185,11 +200,11 @@ function anchorsOf(markdown: string) {
       comment = !line.includes("-->", line.indexOf("<!--") + 4);
       continue;
     }
-    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(
-      line.replace(/<!--.*?-->/g, ""),
-    )?.[1];
+    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
     if (title === undefined) continue;
-    const slug = slugOf(title);
+    // GitHub drops an inline comment but keeps the spaces around it, so
+    // `### Foo <!-- note -->` gets the anchor `foo-`.
+    const slug = slugOf(title.replace(/<!--.*?-->/g, ""));
     const count = seen.get(slug) ?? 0;
     seen.set(slug, count + 1);
     anchors.add(count === 0 ? slug : `${slug}-${count}`);
@@ -278,16 +293,25 @@ describe("series watched by increase() alert rules", () => {
     // and is not checked.
     const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
     expect(selectors).toHaveLength(ranges.length);
-    // Groups and rules are block mappings in block sequences, so every key
-    // starts a line, where these checks look; flow style fails here. Every
-    // alert has an `expr` key whose value starts on its line (EXPR_VALUE),
-    // no `expr` line holds a `#` (exprLines), and the folded World ID rule's
-    // second line is found, which guards the search.
-    for (const group of sequenceItems(RULES, "groups")) {
-      expect(group).toMatch(/^\s*-\s+name:\s*\S+$/);
+    // Groups and rules are block mappings in block sequences, with plain
+    // keys, so every key starts a line, where these checks look: flow style,
+    // and quoted, explicit (`? `) or merge (`<<:`) keys fail here. Every rule
+    // is an alert with an `expr` key whose value starts on its line
+    // (EXPR_VALUE), no `expr` line holds a `#` (exprLines), and the folded
+    // World ID rule's second line is found, which guards the search.
+    const keyed = keyLines(RULES_FILE);
+    for (const line of keyed) {
+      expect(line).not.toMatch(/^\s*(?:-\s+)*(?:["'?]|<<)/);
     }
-    const alerts = sequenceItems(RULES, "rules");
-    for (const alert of alerts) expect(alert).toMatch(/^\s*-\s+alert:\s*\w+$/);
+    const BLOCK_MAPPING = /^\s*-\s+[\w-]+:(?:\s|$)/;
+    for (const group of sequenceItems(RULES_FILE, "groups")) {
+      expect(group).toMatch(BLOCK_MAPPING);
+    }
+    const alerts = sequenceItems(RULES_FILE, "rules");
+    for (const alert of alerts) expect(alert).toMatch(BLOCK_MAPPING);
+    expect(
+      keyed.filter((line) => /^\s*(?:-\s+)*alert:/.test(line)),
+    ).toHaveLength(alerts.length);
     const expressions = exprLines(RULES_FILE);
     const keys = expressions.filter((line) => EXPR_KEY.test(line));
     expect(keys).toHaveLength(alerts.length);
@@ -316,7 +340,7 @@ describe("series watched by increase() alert rules", () => {
     const slugs = anchorsOf(repositoryText("docs/operations/RUNBOOK.md"));
     // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
     expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
-    const alerts = sequenceItems(RULES, "rules");
+    const alerts = sequenceItems(RULES_FILE, "rules");
     const anchors = [
       ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),
     ].map(([, anchor]) => anchor!);
