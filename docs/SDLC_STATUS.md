@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-04. Merge dates on this page are GitHub's `mergedAt`, in UTC.
+> Last reviewed: 2026-11-05. Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -174,6 +174,7 @@ Each was reviewed by a separate agent before merging, with the review recorded o
 | #114 | — | CI `audit` job for high and critical production advisories, third-party actions pinned by SHA, an annotation fallback, and tests of the claim TTL and expiry boundary |
 | #115 | #104 | DOM tests for the mission and advertiser pages (jsdom); a claim shows as paid only with its `RewardClaimed` event, and a claim to an address without code is refused |
 | #116 | — | Review follow-ups: a cancelled or replaced claim shows the hash mined in its place and can be claimed again after a reload; a daily `Dependency audit` workflow; `*.sh` checked out with LF; both claim repositories refuse a bad signer authorization through one `assertSignedFor` check |
+| #118 | — | A submission before a campaign starts answers `CAMPAIGN_NOT_STARTED` again instead of `CAMPAIGN_NOT_ACTIVE`: the verifier checks the indexed campaign and the answers before the live contract read. Found in a local browser demo on anvil |
 
 ## Next SDLC Actions
 
