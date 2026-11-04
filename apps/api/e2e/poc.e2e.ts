@@ -55,7 +55,10 @@ import {
   checkReconciliation,
   type ReconciliationReport,
 } from "../src/reconciliation/check.js";
-import { createClaimSigner } from "../src/claims/signer.js";
+import {
+  createClaimSigner,
+  MAX_CLAIM_TTL_SECONDS,
+} from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import { PostgresEligibilityRepository } from "../src/eligibility/repository.js";
 import { PostgresModerationRepository } from "../src/moderation/repository.js";
@@ -889,14 +892,17 @@ describeE2e("POC economic loop on a local chain", () => {
       functionName: "campaigns",
       args: [onchainId],
     });
+    const maxAuthorizationTtl = await publicClient.readContract({
+      address: managerAddress,
+      abi: campaignManagerAbi,
+      functionName: "MAX_AUTHORIZATION_TTL",
+    });
+    // The deployed bytecode enforces the lifetime the API signs with.
+    expect(maxAuthorizationTtl).toBe(BigInt(MAX_CLAIM_TTL_SECONDS));
     const refundAt = refundAvailableAt({
       endTime: campaign[7],
       closedAt: parseClosedAt(campaign[8]),
-      maxAuthorizationTtl: await publicClient.readContract({
-        address: managerAddress,
-        abi: campaignManagerAbi,
-        functionName: "MAX_AUTHORIZATION_TTL",
-      }),
+      maxAuthorizationTtl,
     });
     await travelTo(new Date(Number(refundAt - 1n) * 1000));
     expect(await refundRevert()).toBe("RefundNotAvailable");

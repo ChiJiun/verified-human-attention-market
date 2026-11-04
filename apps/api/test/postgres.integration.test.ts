@@ -13,7 +13,10 @@ import {
 } from "../src/campaigns/repository.js";
 import { PostgresAuthRepository } from "../src/auth/repository.js";
 import { PostgresClaimRepository } from "../src/claims/repository.js";
-import { createClaimSigner } from "../src/claims/signer.js";
+import {
+  createClaimSigner,
+  MAX_CLAIM_TTL_SECONDS,
+} from "../src/claims/signer.js";
 import { createDatabase } from "../src/db/client.js";
 import {
   answers,
@@ -38,6 +41,7 @@ import {
   hashSubmissionRequest,
   PostgresSubmissionRepository,
 } from "../src/submissions/repository.js";
+import { fromUnixSeconds, unixSeconds } from "../src/time.js";
 import { defineCampaignLinkContract } from "./support/campaign-link-contract.js";
 import { defineClaimRepositoryContract } from "./support/claim-contract.js";
 import { FakeChain } from "./support/fake-chain.js";
@@ -663,6 +667,92 @@ describeWithDatabase("PostgresCampaignRepository", () => {
       .where(eq(submissions.id, submission.id));
     expect(saved?.claimOnchainCampaignId).toBe("13");
     expect(saved?.claimNonce).toBe(reissued.claim.payload.nonce);
+  });
+
+  it("refuses and stores nothing when the signer's authorization outlives the contract TTL", async () => {
+    const campaignId = await createCampaign();
+    await repository.linkOnchain(campaignId, {
+      onchainCampaignId: "14",
+      contractAddress: CONTRACT_ADDRESS,
+      publishTxHash: null,
+      status: "active",
+      updatedAt: new Date("2026-10-05T10:20:00.000Z"),
+    });
+    const { claimantAddress, accepted } = await participantOf(campaignId);
+    const { submission } = await new PostgresSubmissionRepository(
+      database.db,
+    ).recordIdempotent({ ...accepted, id: randomUUID() });
+    const claims = new PostgresClaimRepository(database.db);
+    const signer = createClaimSigner(`0x${"11".repeat(32)}`);
+    const now = new Date("2026-10-05T10:31:00.000Z");
+    let signatures = 0;
+    const issue = (ttlSeconds: number) =>
+      claims.issueOnce({
+        campaignId,
+        submissionId: submission.id,
+        now,
+        canIssue: true,
+        alreadyClaimed: false,
+        onchainPaidCompletions: 0,
+        sign: async () => {
+          signatures += 1;
+          const signed = await signer.sign({
+            campaignId: 14n,
+            draftRef: draftRefFor(campaignId),
+            claimant: claimantAddress as `0x${string}`,
+            amount: 1000000n,
+            chainId: 84532,
+            contractAddress: CONTRACT_ADDRESS as `0x${string}`,
+            issuedAt: BigInt(unixSeconds(now)),
+          });
+          // A signer (a misconfigured signing service, say) that returns a
+          // longer lifetime than CampaignManager.MAX_AUTHORIZATION_TTL.
+          return {
+            ...signed,
+            payload: {
+              ...signed.payload,
+              expiresAt: signed.payload.issuedAt + BigInt(ttlSeconds),
+            },
+          };
+        },
+      });
+    const stored = async () =>
+      (
+        await database.db
+          .select()
+          .from(submissions)
+          .where(eq(submissions.id, submission.id))
+      )[0];
+    const before = await stored();
+
+    await expect(issue(MAX_CLAIM_TTL_SECONDS + 1)).rejects.toThrow(
+      "Claim signer returned an invalid authorization",
+    );
+
+    expect(signatures).toBe(1);
+    expect(await stored()).toEqual(before);
+    expect(before).toMatchObject({
+      claimNonce: null,
+      claimSignature: null,
+      claimIssuedAt: null,
+      claimExpiresAt: null,
+      claimContractAddress: null,
+      claimChainId: null,
+      claimOnchainCampaignId: null,
+    });
+    expect(await claims.listIssuedClaims(campaignId)).toEqual([]);
+
+    // Exactly the contract TTL is accepted, and the refusal left no state
+    // (no stored claim, no held lock) in the way.
+    const issued = await issue(MAX_CLAIM_TTL_SECONDS);
+    expect(issued.created).toBe(true);
+    expect(signatures).toBe(2);
+    expect(await stored()).toMatchObject({
+      claimNonce: issued.claim.payload.nonce,
+      claimExpiresAt: fromUnixSeconds(
+        BigInt(unixSeconds(now)) + BigInt(MAX_CLAIM_TTL_SECONDS),
+      ),
+    });
   });
 
   describe("claim issuance", () => {
