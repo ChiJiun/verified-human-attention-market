@@ -811,8 +811,10 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const events = new InMemoryChainEventRepository();
     const steps: string[] = [];
     const options = {
-      onWaiting: (_attempt: number, error: unknown) =>
-        steps.push(`waiting: ${(error as Error).message}`),
+      onWaiting: (attempt: number, error: unknown, retryInMs: number) =>
+        steps.push(
+          `wait ${attempt}, ${retryInMs} ms: ${(error as Error).message}`,
+        ),
       onLocked: () => steps.push("clock started"),
     };
 
@@ -827,9 +829,10 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
         if (sleeps === 2) await other!.release();
       },
     });
+    // The worker logs each wait with these fields; the backoff doubles.
     expect(steps).toEqual([
-      `waiting: ${DEPLOYMENT_LOCK_HELD}`,
-      `waiting: ${DEPLOYMENT_LOCK_HELD}`,
+      `wait 1, 1000 ms: ${DEPLOYMENT_LOCK_HELD}`,
+      `wait 2, 2000 ms: ${DEPLOYMENT_LOCK_HELD}`,
       "clock started",
     ]);
     expect(await lock!.isHeld()).toBe(true);
@@ -850,7 +853,10 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       stopping: () => false,
       sleep: async () => {},
     });
-    expect(steps).toEqual(["waiting: database unavailable", "clock started"]);
+    expect(steps).toEqual([
+      "wait 1, 1000 ms: database unavailable",
+      "clock started",
+    ]);
     await retried!.release();
 
     // Stopped while waiting: no lock and no clock.
@@ -866,7 +872,7 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
         },
       }),
     ).toBeNull();
-    expect(steps).toEqual([`waiting: ${DEPLOYMENT_LOCK_HELD}`]);
+    expect(steps).toEqual([`wait 1, 1000 ms: ${DEPLOYMENT_LOCK_HELD}`]);
     await held!.release();
 
     // The lock came just as the worker stopped: it is returned, so the

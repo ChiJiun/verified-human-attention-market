@@ -80,8 +80,46 @@ const RULES = withoutComments(RULES_FILE);
 const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
 
 /**
+ * The item lines of every `key:` list, such as `rules:`. The list must be a
+ * block sequence (the selector test checks that each item is a block
+ * mapping): a flow sequence or mapping would hide its keys from the
+ * line-based checks here. Items may sit at the key's indentation.
+ */
+function sequenceItems(text: string, key: string) {
+  const lines = text.split("\n");
+  const items: string[] = [];
+  lines.forEach((line, index) => {
+    const list = new RegExp(`^(\\s*)${key}:(.*)$`).exec(line);
+    if (!list) return;
+    if (list[2]!.trim() !== "") {
+      throw new Error(`Not a block sequence: ${line.trim()}`);
+    }
+    const keyIndent = list[1]!.length;
+    let itemIndent: number | null = null;
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() === "") continue;
+      const indent = next.search(/\S/);
+      const item = next.trimStart().startsWith("-");
+      if (indent < keyIndent || (indent === keyIndent && !item)) break;
+      itemIndent ??= indent;
+      if (indent === itemIndent) items.push(next.trimEnd());
+    }
+  });
+  return items;
+}
+
+/**
+ * Where an `expr` value may start, on its key's line: a block scalar (`>-`,
+ * `|`), a plain value, or one quoted on that line, `\"` and `''` escaped.
+ * The next lines of a quoted value may sit at any indentation, where
+ * exprLines would not look, so fold long ones with `>-`.
+ */
+const EXPR_VALUE =
+  /^(?:[>|][-+0-9]*|[\w(-].*|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')$/;
+
+/**
  * Every line of every `expr` value: block, plain, or quoted on one line (the
- * selector test checks that a quoted one is). Prometheus reads a `#` in
+ * selector test checks EXPR_VALUE). Prometheus reads a `#` in
  * an expression as a PromQL comment that hides the rest of its line. In a
  * quoted or block value YAML keeps the `#`, so this parser would still see
  * what Prometheus does not; in a plain value YAML drops it as a comment. So
@@ -113,8 +151,11 @@ function slugOf(heading: string) {
 
 /**
  * GitHub's anchors for the headings of a Markdown file: none inside a code
- * fence or an HTML comment, and `-1`, `-2` after a repeated one. A fence
- * closes only with a bare marker of its kind, at least as long.
+ * fence or an HTML comment block, and `-1`, `-2` after a repeated one. A
+ * fence closes only with a bare marker of its kind, at least as long. A
+ * comment block starts with `<!--` at the start of a line and ends on the
+ * line that holds `-->`; a comment inside a line is no block, and is not
+ * part of a heading's text.
  */
 function anchorsOf(markdown: string) {
   const anchors = new Set<string>();
@@ -140,10 +181,13 @@ function anchorsOf(markdown: string) {
       continue;
     }
     if (fence !== null) continue;
-    const opened = line.indexOf("<!--");
-    if (opened !== -1 && !line.includes("-->", opened + 4)) comment = true;
-    if (/^ {0,3}<!--/.test(line)) continue;
-    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
+    if (/^ {0,3}<!--/.test(line)) {
+      comment = !line.includes("-->", line.indexOf("<!--") + 4);
+      continue;
+    }
+    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(
+      line.replace(/<!--.*?-->/g, ""),
+    )?.[1];
     if (title === undefined) continue;
     const slug = slugOf(title);
     const count = seen.get(slug) ?? 0;
@@ -234,23 +278,24 @@ describe("series watched by increase() alert rules", () => {
     // and is not checked.
     const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
     expect(selectors).toHaveLength(ranges.length);
-    // No `expr` line may hold a `#` (exprLines). Every alert has an `expr`
-    // key, and the folded World ID rule's second line is found, which
-    // guards the search.
+    // Groups and rules are block mappings in block sequences, so every key
+    // starts a line, where these checks look; flow style fails here. Every
+    // alert has an `expr` key whose value starts on its line (EXPR_VALUE),
+    // no `expr` line holds a `#` (exprLines), and the folded World ID rule's
+    // second line is found, which guards the search.
+    for (const group of sequenceItems(RULES, "groups")) {
+      expect(group).toMatch(/^\s*-\s+name:\s*\S+$/);
+    }
+    const alerts = sequenceItems(RULES, "rules");
+    for (const alert of alerts) expect(alert).toMatch(/^\s*-\s+alert:\s*\w+$/);
     const expressions = exprLines(RULES_FILE);
-    expect(expressions.filter((line) => EXPR_KEY.test(line))).toHaveLength(
-      [...RULES.matchAll(/-\s*alert:\s*\w+/g)].length,
-    );
+    const keys = expressions.filter((line) => EXPR_KEY.test(line));
+    expect(keys).toHaveLength(alerts.length);
+    for (const line of keys) {
+      expect(line.replace(EXPR_KEY, "").trim(), line).toMatch(EXPR_VALUE);
+    }
     expect(expressions.join("\n")).toContain("or increase(vham_world_id");
     for (const line of expressions) expect(line).not.toContain("#");
-    // A quoted expression stays on one line: YAML lets its next lines sit at
-    // any indentation, where exprLines would not look. Fold long ones with
-    // `>-`. Rules are block mappings, so every `expr` key starts a line.
-    for (const line of expressions.filter((text) => EXPR_KEY.test(text))) {
-      const value = line.replace(EXPR_KEY, "").trim();
-      if (/^["']/.test(value)) expect(value, line).toMatch(/^(["']).*\1$/);
-    }
-    expect(RULES).not.toMatch(/-\s*\{/);
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -271,7 +316,7 @@ describe("series watched by increase() alert rules", () => {
     const slugs = anchorsOf(repositoryText("docs/operations/RUNBOOK.md"));
     // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
     expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
-    const alerts = [...RULES.matchAll(/-\s*alert:\s*(\w+)/g)];
+    const alerts = sequenceItems(RULES, "rules");
     const anchors = [
       ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),
     ].map(([, anchor]) => anchor!);
