@@ -102,7 +102,8 @@ jobs:
     # A high or critical advisory against a production dependency in
     # pnpm-lock.yaml fails this job, including one published after the
     # lockfile last changed. The advisories come from the npm registry: if it
-    # does not answer, the job fails too (re-run it).
+    # does not answer, the job fails too (re-run it). audit.yml runs the same
+    # steps daily on main without a push; keep the two in step.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
