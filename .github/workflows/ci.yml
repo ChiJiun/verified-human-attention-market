@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Actions outside actions/* are pinned to a full commit SHA, with the release
+# it was resolved from in a comment (a moved tag cannot change what runs).
+# Bump the SHA and the comment together.
+
 env:
   # The one Foundry release every job installs. Deliberately not FOUNDRY_*:
   # forge reads each FOUNDRY_<KEY> variable as a config override.
@@ -40,7 +44,7 @@ jobs:
 
       - name: Setup pnpm
         # Installs the version in package.json "packageManager".
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           run_install: false
 
@@ -63,25 +67,15 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
-        # Failures become annotations (readable via the API). The source is the
-        # vitest github-actions reporter (see the vitest configs): one
-        # "::error file=..." line per failed test, at its file and line. The
-        # runner only reads a line that starts with "::" as a command, and
-        # pnpm -r starts each line of a package's output with
-        # "<package dir> test: ", so the reporter lines are printed again
-        # without that prefix (a line that has no prefix was already read).
-        # When the reporter wrote no line (vitest stopped before reporting, or
-        # no error had a frame in the project), the last 40 log lines become
-        # one annotation instead, cut to their last 4000 characters.
+        # Failures become annotations (readable via the API), from the vitest
+        # github-actions reporter with fallbacks for what it skips: see
+        # scripts/ci/vitest-annotations.sh. The step's result is the test
+        # status alone; the annotation script cannot change it.
         run: |
           pnpm test 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
-          sed -En 's/^[^ ]+ [^ ]+: (::error file=)/\1/p' test.log
-          if [ "$status" -ne 0 ] && ! grep -Eq '^([^ ]+ [^ ]+: )?::error file=' test.log; then
-            tail -40 test.log | sed 's/%/%25/g; s/\r//g' | awk '
-              { msg = msg (NR > 1 ? "%0A" : "") $0 }
-              END { if (NR) print "::error::" substr(msg, length(msg) > 4000 ? length(msg) - 3999 : 1) }'
-          fi
+          bash scripts/ci/vitest-annotations.sh test.log "$status" ||
+            echo "::warning::scripts/ci/vitest-annotations.sh failed; see the log above"
           exit "$status"
 
       - name: Build
@@ -103,6 +97,31 @@ jobs:
             echo "::error::$(git diff | head -80 | sed ':a;N;$!ba;s/\n/%0A/g')"
           fi
           exit "$status"
+
+  audit:
+    # A high or critical advisory against a production dependency in
+    # pnpm-lock.yaml fails this job, including one published after the
+    # lockfile last changed. The advisories come from the npm registry: if it
+    # does not answer, the job fails too (re-run it).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        # Installs the version in package.json "packageManager".
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          run_install: false
+
+      - name: Setup Node
+        # No pnpm cache: the audit reads the lockfile and installs nothing.
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
 
   e2e:
     # Local-chain end-to-end POC (issue #13): real contracts on anvil, real
@@ -131,7 +150,7 @@ jobs:
 
       - name: Setup pnpm
         # Installs the version in package.json "packageManager".
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           run_install: false
 
@@ -145,7 +164,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: ${{ env.CI_FOUNDRY_VERSION }}
 
@@ -171,18 +190,14 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
-        # Annotated like the javascript Test step: the vitest reporter
-        # (vitest.e2e.config.ts), else the end of the log. With one package,
-        # pnpm does not prefix the lines today, so nothing is printed again.
+        # Annotated like the javascript Test step (vitest.e2e.config.ts has
+        # the same reporter). With one package, pnpm does not prefix the lines
+        # today, so no reporter line is printed again.
         run: |
           pnpm --filter @vham/api test:e2e 2>&1 | tee e2e.log
           status=${PIPESTATUS[0]}
-          sed -En 's/^[^ ]+ [^ ]+: (::error file=)/\1/p' e2e.log
-          if [ "$status" -ne 0 ] && ! grep -Eq '^([^ ]+ [^ ]+: )?::error file=' e2e.log; then
-            tail -40 e2e.log | sed 's/%/%25/g; s/\r//g' | awk '
-              { msg = msg (NR > 1 ? "%0A" : "") $0 }
-              END { if (NR) print "::error::" substr(msg, length(msg) > 4000 ? length(msg) - 3999 : 1) }'
-          fi
+          bash scripts/ci/vitest-annotations.sh e2e.log "$status" ||
+            echo "::warning::scripts/ci/vitest-annotations.sh failed; see the log above"
           exit "$status"
 
       # Production-readiness drill (#29): the database the e2e run just
@@ -202,7 +217,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: ${{ env.CI_FOUNDRY_VERSION }}
 
