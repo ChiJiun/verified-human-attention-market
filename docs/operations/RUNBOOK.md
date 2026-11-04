@@ -369,7 +369,7 @@ caller and ignored.
 
 Browsers reach the API through the web app's `/api/*` rewrite. The rewrite
 forwards `X-Forwarded-For` exactly as it arrived and adds no entry of its own
-(Next 16.3.8; `pnpm --filter @vham/web smoke:forwarded-for` checks this in
+(Next 16.4.5; `pnpm --filter @vham/web smoke:forwarded-for` checks this in
 CI). Next's middleware cannot see the peer address, so the web app cannot add
 it itself. With `TRUST_PROXY_HOPS=0`, the default for local development, every
 browser shares the web server's address: one anonymous bucket and one
