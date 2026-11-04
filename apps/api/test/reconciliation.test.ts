@@ -8,15 +8,13 @@ import {
 } from "../src/chain/events-repository.js";
 import type { IssuedClaim } from "../src/claims/repository.js";
 import { checkReconciliation } from "../src/reconciliation/check.js";
-import { logs } from "./support/fake-chain.js";
+import { encodeCampaignStruct, logs, word } from "./support/fake-chain.js";
 
 const scope = { chainId: 84532, contractAddress: "0x" + "c0".repeat(20) };
 const ADVERTISER = "0x" + "aa".repeat(20);
 const ALICE = "0x" + "a1".repeat(20);
 const MALLORY = "0x" + "66".repeat(20);
 const USDC = 1_000_000n;
-const nonceHex = (value: number) =>
-  `0x${BigInt(value).toString(16).padStart(64, "0")}`;
 
 const campaign = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -48,20 +46,18 @@ function struct(values: {
   paid: bigint;
   paidCompletions: number;
 }) {
-  const word = (value: bigint | number) =>
-    BigInt(value).toString(16).padStart(64, "0");
-  return `0x${[
-    word(BigInt(ADVERTISER)),
-    word(values.funded),
-    word(values.paid),
-    word(USDC),
-    word(10),
-    word(values.paidCompletions),
-    word(1),
-    word(2),
-    word(0),
-    word(1),
-  ].join("")}`;
+  return encodeCampaignStruct({
+    advertiser: ADVERTISER,
+    fundedBudget: values.funded,
+    paidRewards: values.paid,
+    rewardPerCompletion: USDC,
+    maxCompletions: 10,
+    paidCompletions: values.paidCompletions,
+    startTime: 1,
+    endTime: 2,
+    closedAt: 0,
+    status: 1,
+  });
 }
 
 async function setup(options: {
@@ -112,7 +108,7 @@ describe("settlement reconciliation (#29)", () => {
     const { run, calls } = await setup({
       events: baseEvents(),
       contract: { funded: 10n * USDC, paid: USDC, paidCompletions: 1 },
-      issued: [{ claimant: ALICE, nonce: nonceHex(7) }],
+      issued: [{ claimant: ALICE, nonce: word(7) }],
     });
 
     expect(await run()).toEqual({
@@ -128,7 +124,7 @@ describe("settlement reconciliation (#29)", () => {
     const { run } = await setup({
       events: [...baseEvents(), event(logs.claimed(1, MALLORY, USDC, 8), 6, 0)],
       contract: { funded: 10n * USDC, paid: 2n * USDC, paidCompletions: 2 },
-      issued: [{ claimant: ALICE, nonce: nonceHex(7) }],
+      issued: [{ claimant: ALICE, nonce: word(7) }],
     });
 
     const report = await run();
@@ -145,7 +141,7 @@ describe("settlement reconciliation (#29)", () => {
     const { run } = await setup({
       events: baseEvents(),
       contract: { funded: 10n * USDC, paid: USDC, paidCompletions: 1 },
-      issued: [{ claimant: ALICE, nonce: nonceHex(99) }],
+      issued: [{ claimant: ALICE, nonce: word(99) }],
     });
 
     expect((await run()).findings.map((finding) => finding.kind)).toEqual([
@@ -177,7 +173,7 @@ describe("settlement reconciliation (#29)", () => {
     const { run } = await setup({
       events: [...baseEvents(), event(logs.refunded(1, 10n * USDC), 9, 0)],
       contract: "down",
-      issued: [{ claimant: ALICE, nonce: nonceHex(7) }],
+      issued: [{ claimant: ALICE, nonce: word(7) }],
     });
 
     expect(

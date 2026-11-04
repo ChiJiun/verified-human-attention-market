@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { EVM_ADDRESS } from "../http/validation.js";
+import { BYTES32_HEX, EVM_ADDRESS } from "../http/validation.js";
 
 import {
   getAddress,
@@ -98,7 +98,7 @@ function claimDomain(chainId: number, contractAddress: Address) {
  * {@link createRemoteClaimSigner} so the key never enters the API (#23).
  */
 export function createClaimSigner(privateKey: string): ClaimSigner {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(privateKey)) {
+  if (!BYTES32_HEX.test(privateKey)) {
     throw new Error("CLAIM_SIGNER_PRIVATE_KEY must be a 32-byte hex key");
   }
 

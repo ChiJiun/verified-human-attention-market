@@ -2,6 +2,7 @@ import { z } from "zod";
 import { EVM_ADDRESS } from "../http/validation.js";
 
 import { httpsUrlSchema, missionInputSchema } from "../missions/schemas.js";
+import { DAY_MS } from "../time.js";
 
 const evmAddressSchema = z.string().regex(EVM_ADDRESS, "Invalid EVM address");
 
@@ -39,7 +40,7 @@ export const createCampaignSchema = z
       });
     }
 
-    if (durationMs > 24 * 60 * 60 * 1000) {
+    if (durationMs > DAY_MS) {
       context.addIssue({
         code: "custom",
         path: ["endAt"],
@@ -55,5 +56,3 @@ export const createCampaignSchema = z
       });
     }
   });
-
-export type CreateCampaignInput = z.infer<typeof createCampaignSchema>;

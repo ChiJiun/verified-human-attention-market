@@ -159,8 +159,25 @@ describe("GET /metrics", () => {
     const app = buildApp({ metricsToken: "scrape-token-123456" });
     closers.push(app);
 
+    const refused = await app.inject({ method: "GET", url: "/metrics" });
+    expect(refused.statusCode).toBe(401);
+    // The catalog error body (errors/catalog.ts), like every other 401.
+    expect(refused.json()).toEqual({
+      error: {
+        code: "UNAUTHENTICATED",
+        message: "A valid metrics token is required",
+        requestId: refused.headers["x-request-id"],
+        retryable: false,
+      },
+    });
     expect(
-      (await app.inject({ method: "GET", url: "/metrics" })).statusCode,
+      (
+        await app.inject({
+          method: "GET",
+          url: "/metrics",
+          headers: { authorization: "Bearer wrong-token" },
+        })
+      ).statusCode,
     ).toBe(401);
 
     const response = await app.inject({

@@ -139,5 +139,3 @@ export const submittedAnswersSchema = z
   )
   .min(1)
   .max(3);
-
-export type SubmittedAnswers = z.infer<typeof submittedAnswersSchema>;

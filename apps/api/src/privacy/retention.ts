@@ -1,7 +1,9 @@
 import { sql, type SQL } from "drizzle-orm";
 import { EVM_ADDRESS } from "../http/validation.js";
 
+import { MAX_CLAIM_TTL_SECONDS } from "../claims/signer.js";
 import type { Database } from "../db/client.js";
+import { DAY_MS } from "../time.js";
 
 /**
  * Retention enforcement (#22, docs/privacy/DATA_RETENTION.md).
@@ -12,8 +14,6 @@ import type { Database } from "../db/client.js";
  * the chain is authoritative and those rows back advertiser analytics and
  * disputes.
  */
-
-const DAY_MS = 24 * 60 * 60_000;
 
 export interface RetentionPolicy {
   /** Days after campaign end before answers are deleted. */
@@ -28,7 +28,7 @@ export interface RetentionPolicy {
   authSessionDays: number;
 }
 
-export const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
+const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
   answersDays: 30,
   participantKeyDays: 30,
   unpaidWalletDays: 30,
@@ -38,10 +38,10 @@ export const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
 
 /**
  * Claim authorizations cannot be issued after campaign end and expire within
- * this TTL (contract MAX_AUTHORIZATION_TTL), so after end + TTL no flow
- * needs the participant key or an unpaid wallet link any more.
+ * the signer TTL (the contract MAX_AUTHORIZATION_TTL), so after end + TTL no
+ * flow needs the participant key or an unpaid wallet link any more.
  */
-export const ISSUANCE_SETTLED_MS = 15 * 60_000;
+const ISSUANCE_SETTLED_MS = MAX_CLAIM_TTL_SECONDS * 1000;
 
 export interface RetentionResult {
   answersDeleted: number;

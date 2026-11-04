@@ -17,17 +17,14 @@ import {
 import { requireWallet } from "../auth/routes.js";
 import type { Authenticate } from "../auth/siwe.js";
 import { sendError } from "../errors/catalog.js";
-import { UUID } from "../http/validation.js";
+import { BYTES32_HEX, UUID } from "../http/validation.js";
 import type { CampaignRepository } from "./repository.js";
 
 // txHash is optional: without it the draft is linked by its draft reference
 // (ADR-0011), e.g. after a lost RPC response.
 const linkBodySchema = z
   .object({
-    txHash: z
-      .string()
-      .regex(/^0x[0-9a-fA-F]{64}$/)
-      .optional(),
+    txHash: z.string().regex(BYTES32_HEX).optional(),
   })
   .optional();
 
@@ -187,22 +184,18 @@ export async function registerOnchainRoutes(
           outcome.code === "TX_UNCONFIRMED" ||
           outcome.code === "NOT_CREATED_YET" ||
           outcome.code === "RPC_UNAVAILABLE";
-        return reply.status(outcome.status).send(
-          pending
-            ? {
-                // Not a failure: the transaction may still be mined.
-                status: "reconciling",
-                code: outcome.code,
-                retryAfterSeconds: 10,
-              }
-            : {
-                error: {
-                  code: outcome.code,
-                  message: "On-chain campaign could not be linked",
-                  requestId: request.id,
-                },
-              },
-        );
+        if (pending) {
+          return reply.status(outcome.status).send({
+            // Not a failure: the transaction may still be mined.
+            status: "reconciling",
+            code: outcome.code,
+            retryAfterSeconds: 10,
+          });
+        }
+        return error(outcome.status, {
+          code: outcome.code,
+          message: "On-chain campaign could not be linked",
+        });
       }
 
       return reply.send({

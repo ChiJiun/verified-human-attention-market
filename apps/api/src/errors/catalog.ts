@@ -129,7 +129,7 @@ export const ERROR_CATALOG: Record<string, { retryable: boolean }> = {
   SIGNER_MISMATCH: { retryable: true },
 };
 
-export function isRetryable(code: string, statusCode: number): boolean {
+function isRetryable(code: string, statusCode: number): boolean {
   return (
     ERROR_CATALOG[code]?.retryable ?? (statusCode >= 500 || statusCode === 429)
   );

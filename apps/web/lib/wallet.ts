@@ -24,7 +24,7 @@ export interface Wallet {
   publicClient: PublicClient;
 }
 
-export function injectedProvider(): EIP1193Provider | null {
+function injectedProvider(): EIP1193Provider | null {
   return typeof window !== "undefined" && window.ethereum
     ? window.ethereum
     : null;

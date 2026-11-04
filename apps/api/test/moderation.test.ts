@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import type { Authenticate } from "../src/auth/siwe.js";
 import type { ModerationConfig } from "../src/moderation/routes.js";
 import { checkContentUrl } from "../src/moderation/url-policy.js";
-import { TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
+import {
+  bearerSession,
+  TEST_ADVERTISER as ADVERTISER,
+} from "./support/auth.js";
 import { campaignInput } from "./support/campaign.js";
 
 const TRUSTED = "0x" + "77".repeat(20);
@@ -18,17 +20,7 @@ afterEach(async () => {
 });
 
 /** Bearer token = wallet address (test-only authenticator). */
-const byToken: Authenticate = async (request) => {
-  const token = request.headers.authorization?.replace(/^Bearer /, "");
-  return token
-    ? {
-        sessionId: "00000000-0000-4000-8000-000000000001",
-        address: token.toLowerCase(),
-        chainId: 84532,
-        expiresAt: new Date("2100-01-01T00:00:00.000Z"),
-      }
-    : null;
-};
+const byToken = bearerSession();
 
 const as = (address: string) => ({ authorization: `Bearer ${address}` });
 

@@ -18,6 +18,39 @@ export const word = (value: bigint | number) =>
 export const addressWord = (address: string) =>
   `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
 
+/** `CampaignManager.campaigns(uint256)` fields, in the contract's order. */
+export interface CampaignStructFields {
+  advertiser: string;
+  fundedBudget: bigint | number;
+  paidRewards: bigint | number;
+  rewardPerCompletion: bigint | number;
+  maxCompletions: bigint | number;
+  paidCompletions: bigint | number;
+  startTime: bigint | number;
+  endTime: bigint | number;
+  closedAt: bigint | number;
+  /** CampaignStatus: Draft 0, Active 1, Closed 2. */
+  status: bigint | number;
+}
+
+/** The eth_call answer of `campaigns(uint256)`: ten 32-byte words. */
+export function encodeCampaignStruct(fields: CampaignStructFields): string {
+  return `0x${[
+    addressWord(fields.advertiser),
+    word(fields.fundedBudget),
+    word(fields.paidRewards),
+    word(fields.rewardPerCompletion),
+    word(fields.maxCompletions),
+    word(fields.paidCompletions),
+    word(fields.startTime),
+    word(fields.endTime),
+    word(fields.closedAt),
+    word(fields.status),
+  ]
+    .map((value) => value.slice(2))
+    .join("")}`;
+}
+
 const AUTHORIZED_SIGNER_SELECTOR = toFunctionSelector("authorizedSigner()");
 const CLAIMED_WALLET_SELECTOR = toFunctionSelector(
   "claimedWallet(uint256,address)",
@@ -396,20 +429,17 @@ export class FakeChain implements ChainRpc {
       return `0x${"0".repeat(640)}`;
     }
 
-    return [
-      addressWord(struct.advertiser),
-      word(struct.fundedBudget ?? 0n),
-      word(0),
-      word(struct.rewardPerCompletion),
-      word(struct.maxCompletions),
-      word(0),
-      word(struct.startTime),
-      word(struct.endTime),
-      word(struct.closedAt ?? 0),
-      // CampaignStatus: Draft 0, Active 1, Closed 2.
-      word(struct.closedAt ? 2 : struct.fundedBudget ? 1 : 0),
-    ]
-      .map((value, index) => (index === 0 ? value : value.slice(2)))
-      .join("");
+    return encodeCampaignStruct({
+      advertiser: struct.advertiser,
+      fundedBudget: struct.fundedBudget ?? 0n,
+      paidRewards: 0,
+      rewardPerCompletion: struct.rewardPerCompletion,
+      maxCompletions: struct.maxCompletions,
+      paidCompletions: 0,
+      startTime: struct.startTime,
+      endTime: struct.endTime,
+      closedAt: struct.closedAt ?? 0,
+      status: struct.closedAt ? 2 : struct.fundedBudget ? 1 : 0,
+    });
   }
 }

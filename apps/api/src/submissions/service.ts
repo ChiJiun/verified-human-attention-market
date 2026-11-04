@@ -41,7 +41,7 @@ import {
  * POC attempt cap per verified human per campaign. Without it a 1-3 question
  * multiple-choice check is trivially brute-forced by retrying.
  */
-export const MAX_ATTEMPTS_PER_ELIGIBILITY = 2;
+const MAX_ATTEMPTS_PER_ELIGIBILITY = 2;
 
 export interface SubmissionServiceDependencies {
   campaigns: CampaignRepository;

@@ -11,9 +11,10 @@ import {
   cardFlipsToDone,
   observeSettlementTx,
   pollSettlementTx,
-  resolveSettlementTx,
+  resolveTxOutcome,
   settlementButton,
   settlementEffectVisible,
+  unresolvedTxCheck,
   type SettlementAction,
   type SettlementTxObservation,
   type SettlementTxOutcome,
@@ -102,6 +103,11 @@ describe("close and refund buttons", () => {
 });
 
 describe("resolving an unknown close or refund outcome", () => {
+  /**
+   * As the page's check does it: the effect is whether the stored status read
+   * after the observation shows the action (settlementEffectVisible), and a
+   * failed read (`storedStatus: null`) is unknown, never "no effect".
+   */
   const resolve = (
     observation: SettlementTxObservation,
     {
@@ -109,7 +115,15 @@ describe("resolving an unknown close or refund outcome", () => {
       storedStatus = "active" as string | null,
       elapsedMs = 0,
     } = {},
-  ) => resolveSettlementTx({ action, storedStatus, observation, elapsedMs });
+  ) =>
+    resolveTxOutcome({
+      effect:
+        storedStatus === null
+          ? null
+          : settlementEffectVisible(action, storedStatus),
+      observation,
+      elapsedMs,
+    });
 
   it("is done when the receipt arrives after the wait timed out", () => {
     expect(resolve(pending)).toBe("pending");
@@ -352,17 +366,42 @@ describe("observing a close or refund transaction", () => {
         return { status: "success" };
       },
     });
-    const check = async () =>
-      resolveSettlementTx({
-        action: "close",
-        storedStatus: "active",
-        observation: await observeSettlementTx(wallet, CHAIN_ID, HASH, null),
-        elapsedMs: 0,
-      });
+    // The page's check for a close: the campaign still reads "active".
+    const check = unresolvedTxCheck({
+      wallet,
+      chainId: CHAIN_ID,
+      hash: HASH,
+      sentAtMs: Date.now(),
+      readEffect: async () => settlementEffectVisible("close", "active"),
+    });
 
     expect(await check()).toBe("pending");
     mined = true;
     expect(await check()).toBe("done");
+  });
+
+  it("never calls a close unchanged while the campaign cannot be read", async () => {
+    // Nonce 7 was used by another transaction, which may have closed it.
+    const { wallet } = walletWith({
+      transaction: async () => ({ nonce: 7 }),
+      minedNonce: async () => 8,
+    });
+    const check = (readEffect: () => Promise<boolean>) =>
+      unresolvedTxCheck({
+        wallet,
+        chainId: CHAIN_ID,
+        hash: HASH,
+        sentAtMs: Date.now(),
+        readEffect,
+      })();
+
+    expect(
+      await check(async () => {
+        throw new Error("rpc down");
+      }),
+    ).toBe("pending");
+    expect(await check(async () => false)).toBe("replaced");
+    expect(await check(async () => true)).toBe("done");
   });
 
   it("reads the sender's nonce before the receipt", async () => {

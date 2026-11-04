@@ -3,7 +3,7 @@ import {
   parseStoredCampaignStatus,
   type StoredCampaignStatus,
 } from "@vham/shared/settlement";
-import { getAddress, parseAbi } from "viem";
+import { erc20Abi, getAddress } from "viem";
 
 import {
   readDraftCampaign,
@@ -15,11 +15,6 @@ import {
   type TrackedAction,
 } from "./settlement";
 import type { Wallet } from "./wallet";
-
-export const erc20Abi = parseAbi([
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-]);
 
 /** The two transactions behind "Approve & fund". */
 export type FundingAction = Extract<TrackedAction, "approve" | "fund">;
@@ -155,10 +150,7 @@ const FUNDED_STATUSES: readonly string[] = ["active", "closed", "settled"];
  * fundCampaign's effect on-chain: funded with exactly the budget. It stays
  * funded through close and refund.
  */
-export function fundedOnchain(
-  reading: FundingReading,
-  required: bigint,
-): boolean {
+function fundedOnchain(reading: FundingReading, required: bigint): boolean {
   return (
     reading.fundedBudget === required &&
     FUNDED_STATUSES.includes(reading.storedStatus)
