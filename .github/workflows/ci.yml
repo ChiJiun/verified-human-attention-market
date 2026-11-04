@@ -63,18 +63,24 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
-        # Failures become annotations (readable via the API). The one source is
-        # the vitest github-actions reporter (see the vitest configs): one
-        # annotation per failed test, at its file and line. When it annotates
-        # nothing (vitest stopped before reporting, or no error had a frame in
-        # the project), the end of the log is annotated instead.
+        # Failures become annotations (readable via the API). The source is the
+        # vitest github-actions reporter (see the vitest configs): one
+        # "::error file=..." line per failed test, at its file and line. The
+        # runner only reads a line that starts with "::" as a command, and
+        # pnpm -r starts each line of a package's output with
+        # "<package dir> test: ", so the reporter lines are printed again
+        # without that prefix (a line that has no prefix was already read).
+        # When the reporter wrote no line (vitest stopped before reporting, or
+        # no error had a frame in the project), the last 40 log lines become
+        # one annotation instead, cut to their last 4000 characters.
         run: |
           pnpm test 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ] && ! grep -q '^::error file=' test.log; then
-            tail -40 test.log | sed 's/%/%25/g; s/\r//g' |
-              awk 'NR > 1 { printf "%%0A" } { printf "%s", $0 } END { print "" }' |
-              sed 's/^/::error::/'
+          sed -En 's/^[^ ]+ [^ ]+: (::error file=)/\1/p' test.log
+          if [ "$status" -ne 0 ] && ! grep -Eq '^([^ ]+ [^ ]+: )?::error file=' test.log; then
+            tail -40 test.log | sed 's/%/%25/g; s/\r//g' | awk '
+              { msg = msg (NR > 1 ? "%0A" : "") $0 }
+              END { if (NR) print "::error::" substr(msg, length(msg) > 4000 ? length(msg) - 3999 : 1) }'
           fi
           exit "$status"
 
@@ -166,14 +172,16 @@ jobs:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
         # Annotated like the javascript Test step: the vitest reporter
-        # (vitest.e2e.config.ts), else the end of the log.
+        # (vitest.e2e.config.ts), else the end of the log. With one package,
+        # pnpm does not prefix the lines today, so nothing is printed again.
         run: |
           pnpm --filter @vham/api test:e2e 2>&1 | tee e2e.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ] && ! grep -q '^::error file=' e2e.log; then
-            tail -40 e2e.log | sed 's/%/%25/g; s/\r//g' |
-              awk 'NR > 1 { printf "%%0A" } { printf "%s", $0 } END { print "" }' |
-              sed 's/^/::error::/'
+          sed -En 's/^[^ ]+ [^ ]+: (::error file=)/\1/p' e2e.log
+          if [ "$status" -ne 0 ] && ! grep -Eq '^([^ ]+ [^ ]+: )?::error file=' e2e.log; then
+            tail -40 e2e.log | sed 's/%/%25/g; s/\r//g' | awk '
+              { msg = msg (NR > 1 ? "%0A" : "") $0 }
+              END { if (NR) print "::error::" substr(msg, length(msg) > 4000 ? length(msg) - 3999 : 1) }'
           fi
           exit "$status"
 
