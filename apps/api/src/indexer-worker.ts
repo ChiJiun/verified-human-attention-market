@@ -127,7 +127,7 @@ const gauges = {
   lag: metrics.gauge("vham_indexer_lag_blocks", "Head minus confirmed block"),
   lastSuccess: metrics.gauge(
     "vham_indexer_last_success_timestamp_seconds",
-    "Unix time of the last successful pass",
+    "Unix time of the last successful pass, or of taking the deployment lock before the first one",
   ),
   violations: metrics.gauge(
     "vham_reconciliation_accounting_violations",
@@ -266,6 +266,11 @@ const lock = await retryWithBackoff(
       }),
   },
 );
+
+// Until the first successful pass the stall clock runs from here, so a worker
+// whose passes fail from its start still raises VhamIndexerStalled. Not
+// earlier: a worker waiting for the lock is not stalled, another one runs.
+gauges.lastSuccess.set(unixSeconds(new Date()));
 
 let backoffMs = pollMs;
 let inconsistentStreak = 0;

@@ -545,8 +545,8 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     }
   });
 
-  it("replays an acceptance during a chain halt with 200 and claim code CHAIN_HALTED", async () => {
-    const { verify, submit, events, scope, submissions, campaignId } =
+  it("during a chain halt answers a replay with CHAIN_HALTED and refuses a new participant, reading nothing", async () => {
+    const { verify, submit, events, scope, submissions, campaignId, rpc } =
       await setupOnchain(createClaimSigner(`0x${"11".repeat(32)}`));
     const eligibilityToken = await verify("human-1", WALLET_A);
     const body = { eligibilityToken, claimant: WALLET_A, answers: CORRECT };
@@ -559,6 +559,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     const otherToken = await verify("human-2", WALLET_B);
 
     await events.haltForReorg(scope, 5n, new Date("2026-10-05T10:31:00.000Z"));
+    const callsBefore = rpc.ethCalls;
     // The replay is answered before the halt check of a new submission, and
     // reading its authorization again refuses during the halt: no signed
     // authorization is returned.
@@ -584,6 +585,8 @@ describe("POST /v1/campaigns/:id/submissions", () => {
       accepted: 1,
       rejected: 0,
     });
+    // The halt is checked before any contract read, on both paths.
+    expect(rpc.ethCalls).toBe(callsBefore);
   });
 
   it("replays the original outcome for the same idempotency key", async () => {

@@ -115,12 +115,16 @@ groups:
 
   - name: vham-api
     rules:
+      # Without World ID configured, participants are refused when they ask
+      # for a signed request, before any verification.
       - alert: VhamWorldIdUnavailable
-        expr: increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
+        expr: >-
+          increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
+          or increase(vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
         labels:
           severity: warn
         annotations:
-          summary: World ID verification is failing on the provider side
+          summary: World ID verification is failing on the provider side, or World ID is not configured
           runbook: docs/operations/RUNBOOK.md#vhamworldidunavailable
 
       - alert: VhamServerErrors

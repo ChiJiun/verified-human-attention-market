@@ -11,6 +11,10 @@
 | API readiness  | `GET /health/ready`             | Database + chain RPC; `indexerLagBlocks`, `chainHalted`. 503 on a failed check, not on a halt. |
 | API metrics    | `GET /metrics`                  | Bearer `METRICS_TOKEN` when set.                                  |
 | Worker metrics | `:INDEXER_METRICS_PORT/metrics` | Unset port = disabled.                                            |
+
+Scrape every API instance and the worker as its own target, not through a
+load balancer: counters are per process, so a scrape that alternates between
+instances sees each counter jump back and forth and reads it as resets.
 | Logs           | stdout, JSON                    | `requestId` on every API line; worker lines carry `level`, `msg`. |
 | Alert rules    | [`alerts.yml`](./alerts.yml)    | Prometheus rule file.                                             |
 
@@ -35,6 +39,7 @@ API (`/metrics`):
 | `vham_campaign_creations_total`                                   | outcome               | Draft creation.                                                      |
 | `vham_campaign_publishes_total`                                   | outcome               | Publish intent.                                                      |
 | `vham_campaign_links_total`                                       | outcome               | On-chain create/fund link (`TX_REVERTED`, `PARAMETERS_MISMATCH`, …). |
+| `vham_world_id_requests_total`                                    | outcome               | Signed World ID request (`WORLD_ID_NOT_CONFIGURED`, …).              |
 | `vham_eligibility_verifications_total`                            | outcome               | World ID (`PROVIDER_UNAVAILABLE`, `VERIFICATION_FAILED`, …).         |
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
@@ -47,24 +52,36 @@ Worker (`INDEXER_METRICS_PORT`):
 | Metric                                                                               | Meaning                                                   |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
-| `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
+| `vham_indexer_last_success_timestamp_seconds`                                        | Stalls. Before the first successful pass: when the worker took the deployment lock. |
 | `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
 | `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
 | `vham_indexer_rpc_requests_total{method}`                                            | Every RPC request of the worker by JSON-RPC method, counted when sent, so failed passes and failed requests are included. `eth_getBlockReceipts` is the completeness check (#102). See [request cost](#indexer-request-cost). |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
-Counter series that a rule in [alerts.yml](alerts.yml) watches with `increase()` are
-exported at 0 from startup (`apps/api/src/observability/alerted-series.ts`).
-Prometheus derives `increase()` from the samples it scrapes, so an event counts
-only once Prometheus holds an earlier sample of the series within the rule's
-range: that 0, or the value from before a restart. Without the zeros, the
-first signer mismatch, signer outage, daily limit or payout anomaly would not
-alert, and VhamWorldIdUnavailable would not count the first failed
-verification. Every `increase()` rule keeps these gaps:
+Prometheus derives `increase()` from the samples it scrapes: an event counts
+only once Prometheus holds an earlier sample of the same series within the
+rule's range. So every counter series that a rule in [alerts.yml](alerts.yml)
+watches with `increase()`, except the 5xx series below, is exported at 0 from
+startup (`apps/api/src/observability/alerted-series.ts`;
+`alert-series.test.ts` checks the list against the rules). Without the zeros,
+every signer mismatch, signer outage, daily limit or payout anomaly counted
+before the series' first scrape would be lost, so the first of them would not
+alert, and VhamWorldIdUnavailable would lose the failures before its first
+scrape.
 
-- Events before Prometheus first scrapes a newly started API or worker are not
-  counted, unless a sample from before that start is still within the range.
+What every `increase()` rule still misses:
+
+- Events before Prometheus first scrapes a newly started API or worker. After
+  a restart they count when a sample from before it is still within the range
+  and the restarted series has the same labels (instance, pod) and a different
+  value: a counter back at the value it had before the restart looks
+  unchanged.
+- Counts per instance: a rule without `sum` (VhamWorldIdUnavailable) applies
+  its threshold to each API instance separately.
+
+What single rules miss:
+
 - VhamReorgBeyondConfirmations: the worker's `reorg_beyond_confirmations`
   series starts at 0 too, but the worker exits right after counting a deep
   reorg, so the alert fires only if a scrape lands in between. Rely on
@@ -75,8 +92,6 @@ verification. Every `increase()` rule keeps these gaps:
   an increase, whenever that series first appears: a burst of errors on routes
   or statuses with none so far can pass without this warning. Check the logs
   for `"level":50` when 5xx responses are reported.
-
-`alert-series.test.ts` checks the list against the rules.
 
 `vham_claim_authorizations_total` counts each call of the claim service, whichever
 route made it: acceptance in `POST .../submissions` (a refusal there answers
@@ -208,6 +223,12 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 `campaigns(id)` reads, and open an incident issue.
 
 ### VhamIndexerLag / VhamIndexerStalled
+
+VhamIndexerStalled counts from the worker's last successful pass or, before
+its first one, from when it took the deployment lock: a worker whose passes
+fail from its start raises it after 5 minutes. A worker that keeps restarting
+starts that clock again each time; VhamIndexerLag, which the API computes from
+the stored cursor, still fires then.
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
@@ -353,11 +374,13 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 
 ### VhamWorldIdUnavailable
 
-World ID's verify endpoint is failing or not configured. Check
-https://status.world.org and `WORLD_ID_RP_ID`. Users get 503 and can retry; no
-eligibility is recorded on failure. The rule counts each outcome separately,
-and `increase()` extrapolates to the whole range, so it can fire on the third
-failure of one outcome.
+World ID's verify endpoint is failing, or World ID is not configured: then
+`POST /world-id/request` already answers `503 WORLD_ID_NOT_CONFIGURED`, before
+any verification (`vham_world_id_requests_total`). Check
+https://status.world.org and the `WORLD_ID_*` variables. Users get 503 and can
+retry; no eligibility is recorded on failure. The rule counts each outcome and
+instance separately, and `increase()` extrapolates to the whole range, so it
+can fire on the third failure.
 
 ### VhamServerErrors
 

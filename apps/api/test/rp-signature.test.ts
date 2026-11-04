@@ -225,6 +225,15 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     expect(response.json()).toMatchObject({
       error: { code: "WORLD_ID_NOT_CONFIGURED" },
     });
+    // Counted where VhamWorldIdUnavailable watches: a participant never gets
+    // as far as verifying without a signed request.
+    const scrape = await unsigned.app.inject({
+      method: "GET",
+      url: "/metrics",
+    });
+    expect(scrape.body).toContain(
+      'vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"} 1',
+    );
     const missing = await unsigned.app.inject({
       method: "POST",
       url: "/v1/campaigns/00000000-0000-4000-8000-000000000999/world-id/request",
