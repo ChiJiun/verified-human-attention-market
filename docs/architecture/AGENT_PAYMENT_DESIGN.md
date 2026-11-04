@@ -5,7 +5,7 @@
 > Scope: future Milestone 4 agent payment architecture. **No change to M1/M2/M3 priorities, current wallet funding, deployed contracts, or API behavior.**
 > External design input (2026-10-15): a prospective x402 ecosystem integrator suggested EIP-3009 / direct-to-escrow funding. This is unverified feedback, **not** a MACH integration agreement, security audit, or compatibility guarantee.
 >
-> Facts updated 2026-11-04 (design conclusions unchanged): this draft reached `main` through PR #66, and PR #62 (ADR-0011) merged through #94 on 2026-11-02. `createCampaign`, `fundCampaign(campaignId, amount, draftRef)` and the signed `ClaimAuthorization` all carry the `draftRef`, and `campaignIdByDraft(advertiser, draftRef)` maps it to the campaign id. The ADR-0011 contract is not yet deployed on Base Sepolia (#13). The passages below that treat PR #62 as unmerged predate this.
+> Facts updated 2026-11-04 (design conclusions unchanged): this draft reached `main` through PR #66, and PR #62 (ADR-0011) merged through #94 on 2026-11-02 (UTC). `createCampaign`, `fundCampaign(campaignId, amount, draftRef)` and the signed `ClaimAuthorization` all carry the `draftRef`, and `campaignIdByDraft(advertiser, draftRef)` maps it to the campaign id. The ADR-0011 contract is not yet deployed on Base Sepolia (#13). The passages below that treat PR #62 as unmerged predate this.
 
 ## 1. Problem / non-goals
 
