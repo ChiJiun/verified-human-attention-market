@@ -56,11 +56,21 @@ Worker (`INDEXER_METRICS_PORT`):
 
 Counter series that a rule in [alerts.yml](alerts.yml) watches with `increase()` are
 exported at 0 from startup (`apps/api/src/observability/alerted-series.ts`).
-Prometheus sees no increase in a series whose first sample is already 1, so
-without that the first signer mismatch, payout anomaly or deep reorg would not
-alert, and the World ID rule would need one more failed verification.
-`vham_http_requests_total` is the exception: its series carry the route, so
-they cannot be listed ahead, and its 5xx rule alerts only above 10.
+Prometheus derives `increase()` from the samples it scrapes, so the first event
+of a series that first appears already at 1 is not counted. Without the zeros,
+the first signer mismatch, signer outage, daily limit or payout anomaly would
+not alert, and VhamWorldIdUnavailable would not count the first failed
+verification. Two rules still have a gap:
+
+- VhamReorgBeyondConfirmations: the worker's `reorg_beyond_confirmations`
+  series starts at 0 too, but the worker exits right after counting a deep
+  reorg, so the alert fires only if a scrape lands in between. Rely on
+  VhamChainHalted, which the API raises for as long as the halt lasts.
+- VhamServerErrors: `vham_http_requests_total` is not listed, because its
+  series carry the route, method and status. After a restart the first 5xx of
+  each new series is not counted, so the rule fires after 10 errors plus one
+  per new series. It is a warning, so the gap is accepted.
+
 `alert-series.test.ts` checks the list against the rules.
 
 `vham_claim_authorizations_total` counts each call of the claim service, whichever

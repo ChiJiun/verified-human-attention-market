@@ -556,19 +556,27 @@ describe("POST /v1/campaigns/:id/submissions", () => {
       status: "accepted",
       claim: { status: "authorized" },
     });
+    // A second participant, verified before the halt, has not submitted yet.
+    const otherToken = await verify("human-2", WALLET_B);
 
     await events.haltForReorg(scope, 5n, new Date("2026-10-05T10:31:00.000Z"));
     // The replay is answered before the halt check of a new submission, and
-    // reading its authorization again refuses during the halt.
+    // reading its authorization again refuses during the halt: no signed
+    // authorization is returned.
     const replay = await submit("halted", body);
     expect(replay.statusCode).toBe(200);
-    expect(replay.json()).toMatchObject({
-      status: "accepted",
-      claim: { status: "pending_authorization", code: "CHAIN_HALTED" },
+    expect(replay.json()).toMatchObject({ status: "accepted" });
+    expect(replay.json().claim).toEqual({
+      status: "pending_authorization",
+      code: "CHAIN_HALTED",
     });
 
-    // A new submission is refused outright.
-    const fresh = await submit("after-halt", body);
+    // A submission from the second participant is refused outright.
+    const fresh = await submit("after-halt", {
+      eligibilityToken: otherToken,
+      claimant: WALLET_B,
+      answers: CORRECT,
+    });
     expect(fresh.statusCode).toBe(503);
     expect(fresh.json()).toMatchObject({ error: { code: "CHAIN_HALTED" } });
   });

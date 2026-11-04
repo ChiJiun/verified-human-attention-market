@@ -175,8 +175,8 @@ Each was reviewed by a separate agent before merging, with the review recorded o
 | #115 | #104 | DOM tests for the mission and advertiser pages (jsdom); a claim shows as paid only with its `RewardClaimed` event, and a claim to an address without code is refused |
 | #116 | — | Review follow-ups: a cancelled or replaced claim shows the hash mined in its place and can be claimed again after a reload; a daily `Dependency audit` workflow; `*.sh` checked out with LF; both claim repositories refuse a bad signer authorization through one `assertSignedFor` check |
 | #118 | — | A submission before a campaign starts answers `CAMPAIGN_NOT_STARTED` again instead of `CAMPAIGN_NOT_ACTIVE`: the verifier checks the indexed campaign and the answers before the live contract read. Found in a local browser demo on anvil |
-| #119 | — | Review follow-ups to #118: tests show that a refused submission sends no contract call, an accepted replay during a chain halt answers `200` with `CHAIN_HALTED`, and the docs describe the verifier-first order; the re-run runbook checks for #118 |
-| #120 | — | Counter series that an `increase()` alert watches are exported at 0 from startup, so the first signer mismatch, payout anomaly, World ID outage or deep reorg alerts; a test checks the list against `alerts.yml` |
+| #119 | — | Review follow-ups to #118: tests show that a refused submission sends no contract call, and the docs describe the verifier-first order (the API spec states that an accepted replay during a chain halt answers `200` with `CHAIN_HALTED`); the re-run runbook checks for #118 |
+| #120 | — | Counter series that an `increase()` alert watches are exported at 0 from startup, so the first signer mismatch, signer outage, daily limit or payout anomaly alerts (the deep reorg counter still depends on a scrape before the worker exits; VhamChainHalted is the reliable signal); a test checks the list against `alerts.yml`. A test shows that an accepted replay during a chain halt answers `200` with `CHAIN_HALTED` and no authorization |
 
 ## Next SDLC Actions
 

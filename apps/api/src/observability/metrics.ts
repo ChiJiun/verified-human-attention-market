@@ -57,7 +57,7 @@ export class MetricsRegistry {
     const metric = this.metric(name, help, "counter");
     // Series an alert rule watches with increase() start at 0, so their
     // first event shows as an increase (alerted-series.ts).
-    for (const labels of ALERTED_COUNTER_SERIES[name] ?? []) {
+    for (const labels of ALERTED_COUNTER_SERIES.get(name) ?? []) {
       const key = labelKey(labels);
       if (!metric.series.has(key)) {
         metric.series.set(key, { labels: { ...labels }, value: 0 });

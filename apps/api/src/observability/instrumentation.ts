@@ -130,7 +130,7 @@ export function registerInstrumentation(
   // One that an alert watches exists from the start, so that response's
   // outcome already counts as an increase (alerted-series.ts).
   for (const { name, help } of Object.values(OUTCOME_METRICS)) {
-    if (ALERTED_COUNTER_SERIES[name]) metrics.counter(name, help);
+    if (ALERTED_COUNTER_SERIES.has(name)) metrics.counter(name, help);
   }
 
   app.addHook("onSend", async (request: FastifyRequest, reply, payload) => {
