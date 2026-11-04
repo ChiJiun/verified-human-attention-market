@@ -385,7 +385,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
       },
     ],
   ])(
-    "records no attempt when %s, before the answers are evaluated",
+    "records no attempt when %s, even for wrong answers",
     async (_reason, preparation) => {
       const s = await setup();
       const token = await s.verify("human-3", WALLET_A);
@@ -711,6 +711,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
 
     // Not stored and no attempt used, even for wrong answers.
     const earlyWrong = await submit("early-wrong", { ...body, answers: WRONG });
+    expect(earlyWrong.statusCode).toBe(409);
     expect(earlyWrong.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_STARTED" },
     });

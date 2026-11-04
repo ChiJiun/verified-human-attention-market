@@ -226,8 +226,8 @@ export async function submitCompletion(
   }
 
   // Pure and stores nothing, so it runs before the live read: a submission
-  // before `startAt` or after `endAt` gets its specific code instead of the
-  // live check's generic CAMPAIGN_NOT_ACTIVE (the live read refuses both).
+  // before `startAt` gets CAMPAIGN_NOT_STARTED instead of the live read's
+  // generic CAMPAIGN_NOT_ACTIVE, which also refuses a campaign not yet open.
   const evaluation = evaluateSubmission(mission, input.answers, {
     now,
     campaign,

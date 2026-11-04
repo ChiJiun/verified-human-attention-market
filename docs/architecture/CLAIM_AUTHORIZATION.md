@@ -25,9 +25,9 @@ sequenceDiagram
     W-->>API: valid / invalid
     API-->>U: eligibilityToken
     U->>API: POST submissions(eligibilityToken, claimant, answers)
-    API->>C: eth_call: live campaign state
-    API->>V: evaluate mission
+    API->>V: evaluate mission (indexed campaign, answers)
     V-->>API: pass / reject
+    API->>C: eth_call: live campaign state (before anything is recorded)
     API->>API: idempotency + duplicate-human check
     API->>S: sign bounded ClaimAuthorization (same DB transaction)
     S-->>API: EIP-712 signature
