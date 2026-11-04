@@ -52,5 +52,6 @@ export const ALERTED_COUNTER_SERIES: ReadonlyMap<string, readonly Labels[]> =
         { outcome: "WORLD_ID_NOT_CONFIGURED" },
       ],
     ],
+    ["vham_world_id_requests_total", [{ outcome: "WORLD_ID_NOT_CONFIGURED" }]],
     [INDEXER_PASSES_METRIC, [{ result: REORG_BEYOND_CONFIRMATIONS }]],
   ]);

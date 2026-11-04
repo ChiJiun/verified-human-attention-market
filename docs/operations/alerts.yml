@@ -61,7 +61,7 @@ groups:
           severity: warn
         annotations:
           summary: Indexer is more than 50 blocks behind the chain head
-          runbook: docs/operations/RUNBOOK.md#vhamindexerlag
+          runbook: docs/operations/RUNBOOK.md#vhamindexerlag--vhamindexerstalled
 
       - alert: VhamIndexerStalled
         expr: time() - vham_indexer_last_success_timestamp_seconds > 300
@@ -69,7 +69,7 @@ groups:
           severity: page
         annotations:
           summary: No successful indexer pass in 5 minutes
-          runbook: docs/operations/RUNBOOK.md#vhamindexerstalled
+          runbook: docs/operations/RUNBOOK.md#vhamindexerlag--vhamindexerstalled
 
       # The RPC keeps answering one range from different forks or nodes,
       # leaving events out of it, or without the receipts that prove it
@@ -115,12 +115,18 @@ groups:
 
   - name: vham-api
     rules:
+      # Without the World ID variables, participants are refused when they
+      # ask for a signed request, before any verification. Without
+      # PARTICIPANT_KEY_SECRET, verification refuses them. The runbook tells
+      # the cases apart.
       - alert: VhamWorldIdUnavailable
-        expr: increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
+        expr: >-
+          increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
+          or increase(vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}[10m]) > 3
         labels:
           severity: warn
         annotations:
-          summary: World ID verification is failing on the provider side
+          summary: World ID verification is failing on the provider side, or World ID is not configured
           runbook: docs/operations/RUNBOOK.md#vhamworldidunavailable
 
       - alert: VhamServerErrors

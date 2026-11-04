@@ -288,6 +288,37 @@ describe("readiness with a chain", () => {
     expect(metrics.value("vham_chain_halted")).toBe(0);
   });
 
+  it("exports the lag of the stored cursor, and none once the index is reset", async () => {
+    const metrics = new MetricsRegistry();
+    const deps = chainDeps({ blockNumber: async () => 120n });
+    const app = buildApp({ metrics, chain: deps });
+    closers.push(app);
+    const lagLines = async () =>
+      (await app.inject({ method: "GET", url: "/metrics" })).body
+        .split("\n")
+        .filter((line) => line.startsWith("vham_indexer_lag_blocks "));
+
+    // Nothing indexed yet: no lag rather than a made-up one.
+    expect(await lagLines()).toEqual([]);
+
+    await deps.events.commitConfirmedRange(
+      deps.chain,
+      {
+        from: 1n,
+        to: 100n,
+        toBlockHash: `0x${"ab".repeat(32)}`,
+        expectedCursor: null,
+      },
+      [],
+    );
+    expect(await lagLines()).toEqual(["vham_indexer_lag_blocks 20"]);
+
+    // `reorg:recover --apply` resets the index: the lag from before the
+    // reset no longer holds, so it is not exported until a range commits.
+    await deps.events.resetIndex(deps.chain);
+    expect(await lagLines()).toEqual([]);
+  });
+
   it("reports a deep-reorg halt without failing readiness (#77)", async () => {
     const metrics = new MetricsRegistry();
     const deps = chainDeps({ blockNumber: async () => 120n });

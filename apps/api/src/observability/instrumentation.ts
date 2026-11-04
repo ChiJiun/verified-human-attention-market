@@ -24,6 +24,12 @@ const OUTCOME_METRICS: Record<string, { name: string; help: string }> = {
     name: "vham_campaign_links_total",
     help: "On-chain campaign link attempts by outcome",
   },
+  // The participant asks for a signed World ID request before verifying, so
+  // a deployment without World ID answers WORLD_ID_NOT_CONFIGURED here first.
+  "POST /v1/campaigns/:id/world-id/request": {
+    name: "vham_world_id_requests_total",
+    help: "World ID request signing by outcome",
+  },
   "POST /v1/campaigns/:id/eligibility/verify": {
     name: "vham_eligibility_verifications_total",
     help: "World ID eligibility verifications by outcome",

@@ -108,12 +108,14 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
 
   async function setup(worldId: WorldIdConfig | null, chainId = 84532) {
     const now = new Date("2026-10-05T10:00:00.000Z");
+    const lines: string[] = [];
     const app = buildApp({
       authenticate: signedInAs(),
       worldId,
       chainId,
       participantKeySecret: SECRET,
       now: () => now,
+      logStream: { write: (line: string) => void lines.push(line) },
     });
     const created = await app.inject({
       method: "POST",
@@ -121,11 +123,24 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       headers: { "idempotency-key": "rp-request" },
       payload: campaignInput(),
     });
-    return { app, id: created.json<{ id: string }>().id };
+    /** The value of one `/metrics` series line, or undefined without it. */
+    async function metric(series: string) {
+      const scrape = await app.inject({ method: "GET", url: "/metrics" });
+      const line = scrape.body
+        .split("\n")
+        .find((candidate) => candidate.startsWith(`${series} `));
+      return line === undefined ? undefined : Number(line.slice(series.length));
+    }
+    return {
+      app,
+      id: created.json<{ id: string }>().id,
+      metric,
+      logs: () => lines.map((line) => JSON.parse(line)),
+    };
   }
 
   it("returns the campaign action and a verifiable rp_context, with no body and no signal", async () => {
-    const { app, id } = await setup(LIVE);
+    const { app, id, metric } = await setup(LIVE);
     const response = await app.inject({
       method: "POST",
       url: `/v1/campaigns/${id}/world-id/request`,
@@ -173,6 +188,15 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         signature: body.rpContext.signature,
       }),
     ).toBe(true);
+    // A signed request counts as a success, not as a refusal.
+    expect(
+      await metric('vham_world_id_requests_total{outcome="success"}'),
+    ).toBe(1);
+    expect(
+      await metric(
+        'vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}',
+      ),
+    ).toBe(0);
     await app.close();
   });
 
@@ -225,6 +249,38 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
     expect(response.json()).toMatchObject({
       error: { code: "WORLD_ID_NOT_CONFIGURED" },
     });
+    // Counted where VhamWorldIdUnavailable watches: a participant never gets
+    // as far as verifying without a signed request.
+    expect(
+      await unsigned.metric(
+        'vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}',
+      ),
+    ).toBe(1);
+    // Logged once, at error level (a 503 and an operator outcome alike),
+    // with identifiers and no request body.
+    const events = unsigned
+      .logs()
+      .filter((entry) => entry.event === "world_id_requests");
+    expect(events).toEqual([
+      expect.objectContaining({
+        level: 50,
+        outcome: "WORLD_ID_NOT_CONFIGURED",
+        statusCode: 503,
+        campaignId: unsigned.id,
+      }),
+    ]);
+    expect(Object.keys(events[0]).sort()).toEqual([
+      "campaignId",
+      "event",
+      "hostname",
+      "level",
+      "msg",
+      "outcome",
+      "pid",
+      "requestId",
+      "statusCode",
+      "time",
+    ]);
     const missing = await unsigned.app.inject({
       method: "POST",
       url: "/v1/campaigns/00000000-0000-4000-8000-000000000999/world-id/request",

@@ -14,6 +14,10 @@
 | Logs           | stdout, JSON                    | `requestId` on every API line; worker lines carry `level`, `msg`. |
 | Alert rules    | [`alerts.yml`](./alerts.yml)    | Prometheus rule file.                                             |
 
+Scrape every API instance and the worker as its own target, not through a
+load balancer: counters are per process, so a scrape that alternates between
+instances sees each counter jump back and forth and reads it as resets.
+
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
 in the response header. Search logs by that value.
@@ -35,11 +39,12 @@ API (`/metrics`):
 | `vham_campaign_creations_total`                                   | outcome               | Draft creation.                                                      |
 | `vham_campaign_publishes_total`                                   | outcome               | Publish intent.                                                      |
 | `vham_campaign_links_total`                                       | outcome               | On-chain create/fund link (`TX_REVERTED`, `PARAMETERS_MISMATCH`, …). |
+| `vham_world_id_requests_total`                                    | outcome               | Signed World ID request (`WORLD_ID_NOT_CONFIGURED`, …).              |
 | `vham_eligibility_verifications_total`                            | outcome               | World ID (`PROVIDER_UNAVAILABLE`, `VERIFICATION_FAILED`, …).         |
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
-| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
+| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness. No lag while there is no index cursor: before the worker's first committed range, and after `reorg:recover --apply` resets the index. |
 | `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on scrape, RPC up or not). |
 
 Worker (`INDEXER_METRICS_PORT`):
@@ -47,24 +52,38 @@ Worker (`INDEXER_METRICS_PORT`):
 | Metric                                                                               | Meaning                                                   |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
 | `vham_indexer_head_block`, `vham_indexer_confirmed_block`, `vham_indexer_lag_blocks` | Progress per pass.                                        |
-| `vham_indexer_last_success_timestamp_seconds`                                        | Stalls.                                                   |
+| `vham_indexer_last_success_timestamp_seconds`                                        | Stalls. Before the first successful pass: when the worker took the deployment lock. |
 | `vham_indexer_passes_total{result}`                                                  | `success`, `failure`, `inconsistent_read`, `reorg_beyond_confirmations`, `halted`, `lock_lost`. |
 | `vham_indexer_inconsistent_read_streak`                                              | Consecutive passes ending in `inconsistent_read`; 0 after a success. |
 | `vham_indexer_rpc_requests_total{method}`                                            | Every RPC request of the worker by JSON-RPC method, counted when sent, so failed passes and failed requests are included. `eth_getBlockReceipts` is the completeness check (#102). See [request cost](#indexer-request-cost). |
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
-Counter series that a rule in [alerts.yml](alerts.yml) watches with `increase()` are
-exported at 0 from startup (`apps/api/src/observability/alerted-series.ts`).
-Prometheus derives `increase()` from the samples it scrapes, so an event counts
-only once Prometheus holds an earlier sample of the series within the rule's
-range: that 0, or the value from before a restart. Without the zeros, the
-first signer mismatch, signer outage, daily limit or payout anomaly would not
-alert, and VhamWorldIdUnavailable would not count the first failed
-verification. Every `increase()` rule keeps these gaps:
+Prometheus derives `increase()` from the samples it scrapes: an event counts
+only once Prometheus holds an earlier sample of the same series within the
+rule's range. So every counter series that a rule in [alerts.yml](alerts.yml)
+watches with `increase()`, except the 5xx series below, is exported at 0 from
+startup (`apps/api/src/observability/alerted-series.ts`;
+`alert-series.test.ts` checks the list against the rules). Without the zeros,
+every signer mismatch, signer outage, daily limit or payout anomaly counted
+before the series' first scrape would be lost, so the first of them would not
+alert, and VhamWorldIdUnavailable would lose the failures before its first
+scrape.
 
-- Events before Prometheus first scrapes a newly started API or worker are not
-  counted, unless a sample from before that start is still within the range.
+What every `increase()` rule still misses:
+
+- Events before Prometheus first scrapes a newly started API or worker. After
+  a restart they count only when a sample from before it is still within the
+  range and the restarted series has the same labels (instance, pod).
+  Prometheus then reads a lower value as a reset and counts all of it, a
+  higher value only by its difference, and the same value as no change.
+- Events a process counts after its last scrape, when it stops before the
+  next one.
+- Counts per instance: a rule without `sum` (VhamWorldIdUnavailable) applies
+  its threshold to each API instance separately.
+
+What single rules miss:
+
 - VhamReorgBeyondConfirmations: the worker's `reorg_beyond_confirmations`
   series starts at 0 too, but the worker exits right after counting a deep
   reorg, so the alert fires only if a scrape lands in between. Rely on
@@ -75,8 +94,6 @@ verification. Every `increase()` rule keeps these gaps:
   an increase, whenever that series first appears: a burst of errors on routes
   or statuses with none so far can pass without this warning. Check the logs
   for `"level":50` when 5xx responses are reported.
-
-`alert-series.test.ts` checks the list against the rules.
 
 `vham_claim_authorizations_total` counts each call of the claim service, whichever
 route made it: acceptance in `POST .../submissions` (a refusal there answers
@@ -209,6 +226,22 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 
 ### VhamIndexerLag / VhamIndexerStalled
 
+VhamIndexerStalled counts from the worker's last successful pass or, before
+its first one, from when it took the deployment lock: a worker whose passes
+fail from its start raises it after 5 minutes. A pass runs until the index
+reaches the confirmed head, so a pass that catches up for more than 5 minutes
+raises it too, the first one included: after a long stop, or the rebuild
+after `reorg:recover --apply`. To tell catching up from stuck, watch the API's
+`vham_indexer_lag_blocks`: it falls with each range the worker commits while
+catching up, and stays or grows while stuck. Logs tell less: a pass that fails
+logs `indexer pass failed; retrying` whether it was catching up or not, and a
+pass that hangs logs nothing. A worker that keeps restarting starts the clock
+again each time; VhamIndexerLag, which the API computes from the stored
+cursor, still fires then. The API exports no lag while there is no cursor:
+before the worker's first committed range, and after `reorg:recover --apply`
+resets the index, until the rebuild commits its first range (VhamChainHalted
+fires meanwhile).
+
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
 `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
@@ -229,9 +262,32 @@ wrong chain id, missing code or a pre-ADR-0011 contract stops the process at
 once. No metrics exist until that check passes, so a worker stuck there shows
 up as VhamRpcDown on the API or as a missing worker scrape target, not as a
 stall, and an API stuck there does not listen yet, so its health checks fail.
-A worker that logs `waiting for the deployment lock` is waiting for another
-worker or a `reorg:recover --apply` on the same deployment to finish. A
-worker that logs `deployment lock lost; stopping` exits with code 1 so its
+A worker that logs `waiting for the deployment lock` cannot take the lock, and
+its `error` field says why. ``another indexer worker or `reorg:recover --apply`
+holds this deployment`` means another database session holds it: usually a
+running worker or an `--apply` on the same deployment, but it can be a session
+left behind, such as a connection whose end the server has not noticed yet.
+Any other `error` is a database failure, which the worker retries the same
+way. While it waits, the worker exports no stall clock, so VhamIndexerStalled
+does not fire for it. If the database answers and no other worker is
+indexing, VhamIndexerLag fires once the lag has stayed above 50 blocks for 10
+minutes; a database that does not answer shows as `database: error` in the
+API's readiness. To find the session that holds the lock, run this on the worker's
+database, with the worker's chain id and its `CAMPAIGN_MANAGER_ADDRESS` in
+lowercase in place of `84532` and `0x…`:
+
+```sql
+SELECT a.pid, a.application_name, a.client_addr, a.backend_start, a.state
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+  AND l.classid::bigint = 1986552173
+  AND l.objid::bigint = (hashtext('vham:deployment:84532:0x…')::bigint & 4294967295);
+```
+
+If it is neither a running worker nor a running `--apply`, end it with
+`SELECT pg_terminate_backend(<pid>)`; the waiting worker then takes the lock.
+A worker that logs `deployment lock lost; stopping` exits with code 1 so its
 supervisor restarts it: its database session ended (restart, failover,
 network, `idle_session_timeout`) and the server released the lock with it.
 If it repeats, check that `DATABASE_URL` is a direct or session-mode
@@ -334,7 +390,10 @@ the chain variables (`EVM_CHAIN_ID`, `EVM_RPC_URL`, `USDC_ADDRESS`,
    index has caught up to the confirmed head, every link verifies, and every
    link's indexed funding and payouts equal the contract's. Until then it logs
    why it is waiting (`reorg recovery not verified yet`); VhamChainHalted
-   resolves when the halt is gone.
+   resolves when the halt is gone. A rebuild that takes more than 5 minutes
+   also raises VhamIndexerStalled until its first pass ends
+   ([VhamIndexerLag / VhamIndexerStalled](#vhamindexerlag--vhamindexerstalled)
+   tells catching up from stuck).
 6. Run `pnpm --filter @vham/api reconcile:start` afterwards.
 
 If `--apply` is run again during a rebuild (the worker must be stopped for
@@ -353,11 +412,23 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 
 ### VhamWorldIdUnavailable
 
-World ID's verify endpoint is failing or not configured. Check
-https://status.world.org and `WORLD_ID_RP_ID`. Users get 503 and can retry; no
-eligibility is recorded on failure. The rule counts each outcome separately,
-and `increase()` extrapolates to the whole range, so it can fire on the third
-failure of one outcome.
+The alert does not name the metric that fired: `increase()` drops the metric
+name, and both metrics carry the same `outcome` label. Query both:
+
+| Series that grew | Cause | Fix |
+| --- | --- | --- |
+| `vham_eligibility_verifications_total{outcome="PROVIDER_UNAVAILABLE"}` | World ID's verify endpoint is failing. | Check https://status.world.org. Users get 503 and can retry. |
+| `vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | `POST /v1/campaigns/:id/world-id/request` cannot sign requests: the World ID variables are not set (startup warns `World ID is disabled: set WORLD_ID_RP_ID, RP_SIGNING_KEY and WORLD_ID_APP_ID`). | Set `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID`. |
+| `vham_eligibility_verifications_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | Verification is refused before World is asked. Participants get a signed request, so the variables above are set, but `PARTICIPANT_KEY_SECRET` is not (startup warns `World ID eligibility is disabled: set PARTICIPANT_KEY_SECRET`). A client that calls verify without a signed request gets this too when the World ID variables are missing. | Set `PARTICIPANT_KEY_SECRET` (at least 32 characters). |
+
+A retry does not help either configuration case. No eligibility is recorded
+on failure. The rule counts each outcome, metric and instance separately (3
+refused requests and 3 refused verifications do not add up), and
+`increase()` extrapolates to the whole range, so it can fire on the third
+failure. It needs more than 3 refusals on one instance within 10 minutes, so
+with few participants, or many instances, a missing configuration may never
+fire it: after every deploy, check the API's startup warnings, which name
+what is missing.
 
 ### VhamServerErrors
 

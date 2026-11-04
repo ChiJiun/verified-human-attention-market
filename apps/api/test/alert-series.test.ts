@@ -12,14 +12,136 @@ import {
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 
-/** The alert rules without their YAML comments. */
-const RULES = readFileSync(
+/** Column of a line's key, after its indentation and any `- `. */
+function keyColumn(line: string) {
+  return line.search(/[^\s-]/);
+}
+
+/** Where a YAML scalar may start: a quote there opens a quoted scalar. */
+const SCALAR_START = /(?:^\s*(?:-\s+)*|:\s+|[[{,]\s*)$/;
+
+/**
+ * Drops YAML comments as YAML does: a `#` at the start of a line or after
+ * whitespace, outside a quoted scalar and outside the content of a block
+ * scalar (`>-`, `|`), which is kept as it is. A quote opens a quoted scalar
+ * only where a scalar starts; elsewhere, as in `it's` or `{a="b"}`, it is
+ * plain text. A quoted scalar may span lines; `\"` and `''` escape its
+ * quote.
+ */
+function withoutComments(text: string) {
+  let quote: string | null = null;
+  let blockColumn: number | null = null;
+  return text
+    .split("\n")
+    .map((line) => {
+      if (blockColumn !== null) {
+        if (line.trim() === "" || keyColumn(line) > blockColumn) return line;
+        blockColumn = null;
+      }
+      let kept = line;
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index]!;
+        if (quote) {
+          if (quote === '"' && char === "\\") index += 1;
+          else if (quote === "'" && line.startsWith("''", index)) index += 1;
+          else if (char === quote) quote = null;
+        } else if (char === '"' || char === "'") {
+          if (SCALAR_START.test(line.slice(0, index))) quote = char;
+        } else if (
+          char === "#" &&
+          (index === 0 || /\s/.test(line[index - 1]!))
+        ) {
+          kept = line.slice(0, index);
+          break;
+        }
+      }
+      if (quote === null && /:\s+[>|][-+0-9]*\s*$/.test(kept)) {
+        blockColumn = keyColumn(line);
+      }
+      return kept;
+    })
+    .join("\n");
+}
+
+const RULES_FILE = readFileSync(
   new URL("../../../docs/operations/alerts.yml", import.meta.url),
   "utf8",
-).replace(/(^|\s)#.*$/gm, "$1");
+);
+const RULES = withoutComments(RULES_FILE);
 
-/** Not listed: one series per route, method and status, once it occurs. */
-const NOT_LISTED = new Set(["vham_http_requests_total"]);
+const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
+
+/**
+ * Every line of every `expr` value, in any style. Prometheus reads a `#` in
+ * an expression as a PromQL comment that hides the rest of its line. In a
+ * quoted or block value YAML keeps the `#`, so this parser would still see
+ * what Prometheus does not; in a plain value YAML drops it as a comment. So
+ * no `expr` line may hold one: put comments above the rule.
+ */
+function exprLines(text: string) {
+  const lines = text.split("\n");
+  const found: string[] = [];
+  lines.forEach((line, index) => {
+    if (!EXPR_KEY.test(line)) return;
+    found.push(line);
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() !== "" && keyColumn(next) <= keyColumn(line)) break;
+      found.push(next);
+    }
+  });
+  return found;
+}
+
+/** GitHub's anchor for the text of a Markdown heading. */
+function slugOf(heading: string) {
+  return heading
+    .trim()
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "")
+    .replace(/ /g, "-");
+}
+
+/**
+ * GitHub's anchors for the headings of a Markdown file: none inside a code
+ * fence, and `-1`, `-2` after a repeated one.
+ */
+function anchorsOf(markdown: string) {
+  const anchors = new Set<string>();
+  const seen = new Map<string, number>();
+  let fence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker) {
+      if (fence === null) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+    if (fence !== null) continue;
+    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
+    if (title === undefined) continue;
+    const slug = slugOf(title);
+    const count = seen.get(slug) ?? 0;
+    seen.set(slug, count + 1);
+    anchors.add(count === 0 ? slug : `${slug}-${count}`);
+  }
+  return anchors;
+}
+
+/**
+ * Selectors left out on purpose: the 5xx series (one per route, method and
+ * status) exist only once they occur. Any other selector of the metric is
+ * checked.
+ */
+const NOT_LISTED = new Set(['vham_http_requests_total{status=~"5.."}']);
+
+/**
+ * Counters whose list holds every value of their label, checked by type, so
+ * a selector without a matcher may watch them.
+ */
+const EXHAUSTIVE = new Set(["vham_payout_anomalies_total"]);
 
 /** Counters of the indexer worker, which exports its own registry. */
 const WORKER_COUNTERS = new Set([INDEXER_PASSES_METRIC]);
@@ -28,6 +150,7 @@ const WORKER_COUNTERS = new Set([INDEXER_PASSES_METRIC]);
 const OUTCOME_CODES = new Set([
   "vham_claim_authorizations_total",
   "vham_eligibility_verifications_total",
+  "vham_world_id_requests_total",
 ]);
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -42,14 +165,15 @@ function increaseSelectors() {
     ...RULES.matchAll(/\bincrease\(\s*(\w+)\s*(?:\{([^}]*)\})?\s*\[/g),
   ].map(([, metric, matchers]) => ({
     metric: metric!,
-    matchers: matchers ?? "",
+    // Spaces between matchers go, those inside a label value stay.
+    matchers: (matchers ?? "").replace(/\s+(?=(?:[^"]*"[^"]*")*[^"]*$)/g, ""),
   }));
 }
 
 /** The label sets a selector needs: `k="v"` or a literal `k=~"a|b"`. */
 function labelSetsOf(matchers: string): Record<string, string>[] {
-  if (matchers.trim() === "") return [];
-  const match = /^(\w+)\s*(=~?)\s*"([^"]*)"$/.exec(matchers.trim());
+  if (matchers === "") return [];
+  const match = /^(\w+)(=~?)"([^"]*)"$/.exec(matchers);
   if (!match) throw new Error(`Unsupported matchers: ${matchers}`);
   const [, key, operator, value] = match;
   if (operator === "=~" && !/^\w+(\|\w+)*$/.test(value!)) {
@@ -58,12 +182,12 @@ function labelSetsOf(matchers: string): Record<string, string>[] {
   return value!.split("|").map((part) => ({ [key!]: part }));
 }
 
-function rendered(metric: string, labels: Record<string, string>) {
+function seriesLine(metric: string, labels: Record<string, string>) {
   const pairs = Object.entries(labels)
     .sort(([left], [right]) => (left < right ? -1 : 1))
     .map(([key, value]) => `${key}="${value}"`)
     .join(",");
-  return `${metric}{${pairs}} 0`;
+  return `${metric}{${pairs}}`;
 }
 
 describe("series watched by increase() alert rules", () => {
@@ -75,30 +199,65 @@ describe("series watched by increase() alert rules", () => {
         "vham_payout_anomalies_total",
         "vham_claim_authorizations_total",
         "vham_eligibility_verifications_total",
+        "vham_world_id_requests_total",
         "vham_indexer_passes_total",
       ]),
     );
     // Every range selector (`[10m]`) in the rules belongs to an increase()
     // parsed above. rate(), changes() or delta() would miss a first sample the
     // same way, so a rule using one, or an increase() the pattern cannot read,
-    // fails here. A comparison with `offset` has no range and is not checked.
+    // fails here (so does a range over a gauge, such as avg_over_time(): add
+    // it here when one is needed). A comparison with `offset` has no range
+    // and is not checked.
     const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
     expect(selectors).toHaveLength(ranges.length);
+    // No `expr` line may hold a `#` (exprLines). Every alert has an `expr`
+    // key, and the folded World ID rule's second line is found, which
+    // guards the search.
+    const expressions = exprLines(RULES_FILE);
+    expect(expressions.filter((line) => EXPR_KEY.test(line))).toHaveLength(
+      [...RULES.matchAll(/-\s*alert:\s*\w+/g)].length,
+    );
+    expect(expressions.join("\n")).toContain("or increase(vham_world_id");
+    for (const line of expressions) expect(line).not.toContain("#");
 
     for (const { metric, matchers } of selectors) {
-      if (NOT_LISTED.has(metric)) continue;
+      const selector = `${metric}{${matchers}}`;
+      if (NOT_LISTED.has(selector)) continue;
       const listed = ALERTED_COUNTER_SERIES.get(metric);
-      expect(listed, metric).toBeDefined();
-      expect(listed!.length, metric).toBeGreaterThan(0);
-      for (const labels of labelSetsOf(matchers)) {
-        expect(listed, metric).toContainEqual(labels);
+      expect(listed, selector).toBeDefined();
+      const needed = labelSetsOf(matchers);
+      // Without a matcher every series counts, so only a list that holds
+      // every value will do.
+      if (needed.length === 0) expect(EXHAUSTIVE, selector).toContain(metric);
+      for (const labels of needed) {
+        expect(listed, selector).toContainEqual(labels);
       }
     }
   });
 
+  it("links every alert to a heading of the runbook", () => {
+    const runbook = readFileSync(
+      new URL("../../../docs/operations/RUNBOOK.md", import.meta.url),
+      "utf8",
+    );
+    const slugs = anchorsOf(runbook);
+    // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
+    expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
+    const alerts = [...RULES.matchAll(/-\s*alert:\s*(\w+)/g)];
+    const anchors = [
+      ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),
+    ].map(([, anchor]) => anchor!);
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(anchors).toHaveLength(alerts.length);
+    for (const anchor of anchors) expect(slugs, anchor).toContain(anchor);
+  });
+
   it("lists outcome codes that exist and every payout anomaly scope", () => {
     for (const metric of OUTCOME_CODES) {
-      for (const { outcome } of ALERTED_COUNTER_SERIES.get(metric) ?? []) {
+      const listed = ALERTED_COUNTER_SERIES.get(metric) ?? [];
+      expect(listed.length, metric).toBeGreaterThan(0);
+      for (const { outcome } of listed) {
         expect(ERROR_CATALOG, metric).toHaveProperty(outcome!);
       }
     }
@@ -128,21 +287,28 @@ describe("series watched by increase() alert rules", () => {
     for (const [metric, series] of ALERTED_COUNTER_SERIES) {
       if (WORKER_COUNTERS.has(metric)) continue;
       for (const labels of series) {
-        expect(scrape.body).toContain(rendered(metric, labels));
+        expect(scrape.body).toContain(`${seriesLine(metric, labels)} 0`);
       }
     }
   });
 
-  it("starts a watched series at 0 and keeps its count when the counter is fetched again", () => {
+  it("counts into the series it started at 0 and keeps that count", () => {
     const metrics = new MetricsRegistry();
     // The indexer worker creates this counter the same way, with the same
     // constants.
     const passes = metrics.counter(INDEXER_PASSES_METRIC, "Passes");
     const reorg = { result: REORG_BEYOND_CONFIRMATIONS };
-    expect(metrics.render()).toContain(rendered(INDEXER_PASSES_METRIC, reorg));
+    const line = seriesLine(INDEXER_PASSES_METRIC, reorg);
+    const linesOf = () =>
+      metrics
+        .render()
+        .split("\n")
+        .filter((rendered) => rendered.startsWith(`${line} `));
+    expect(linesOf()).toEqual([`${line} 0`]);
 
     passes.inc(reorg);
     metrics.counter(INDEXER_PASSES_METRIC, "Passes");
-    expect(metrics.value(INDEXER_PASSES_METRIC, reorg)).toBe(1);
+    // One series, not a 0 next to a 1: the increment found the started one.
+    expect(linesOf()).toEqual([`${line} 1`]);
   });
 });

@@ -79,6 +79,10 @@ export class MetricsRegistry {
       set: (value: number, labels: Labels = {}) => {
         metric.series.set(labelKey(labels), { labels, value });
       },
+      /** Stops exporting the series: its last value no longer holds. */
+      remove: (labels: Labels = {}) => {
+        metric.series.delete(labelKey(labels));
+      },
     };
   }
 
