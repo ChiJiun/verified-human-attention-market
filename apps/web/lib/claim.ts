@@ -1,5 +1,15 @@
 import { campaignManagerAbi } from "@vham/shared/contracts";
-import type { Address, Hex, PublicClient, WalletClient } from "viem";
+import {
+  isAddressEqual,
+  parseEventLogs,
+  type Address,
+  type Hash,
+  type Hex,
+  type Log,
+  type PublicClient,
+  type TransactionReceipt,
+  type WalletClient,
+} from "viem";
 
 import { ApiError } from "./api";
 import { describeSimulationFailure, revertName } from "./settlement";
@@ -81,6 +91,8 @@ export function claimCall(
   } as const;
 }
 
+export type ClaimCall = ReturnType<typeof claimCall>;
+
 /**
  * The wallet must still be on the campaign's chain: it can switch after it
  * was connected, and the same address on another chain is another contract
@@ -112,16 +124,22 @@ const BLOCK_WAIT: BlockWait = { waitMs: 15_000, pollMs: 1_000 };
  * as "already-paid", so no transaction is opened. Any other revert throws
  * with the contract's error name; nothing was sent.
  *
+ * The contract address must hold code first: an `eth_call` to an address
+ * without code returns empty data, which reads as a successful simulation,
+ * and the transaction would then be mined "successfully" while paying
+ * nothing (a stale or broken deployment in the API's configuration).
+ *
  * The API signs with `issuedAt` = now, and the simulation runs on the latest
  * block, usually a second or two older, where the contract answers
  * AuthorizationNotYetValid. That revert waits (bounded) for a block at or
  * after `issuedAt` and simulates once more.
  */
 export async function simulateClaim(
-  publicClient: Pick<PublicClient, "simulateContract" | "getBlock">,
-  call: ReturnType<typeof claimCall>,
+  publicClient: Pick<PublicClient, "simulateContract" | "getBlock" | "getCode">,
+  call: ClaimCall,
   blockWait: BlockWait = BLOCK_WAIT,
 ): Promise<"ready" | "already-paid"> {
+  await assertContractCode(publicClient, call.address);
   for (let attempt = 0; ; attempt += 1) {
     try {
       await publicClient.simulateContract(call);
@@ -138,6 +156,91 @@ export async function simulateClaim(
       throw new Error(describeSimulationFailure(caught), { cause: caught });
     }
   }
+}
+
+/** Throws, with nothing sent, unless `address` holds code on the wallet's chain. */
+async function assertContractCode(
+  publicClient: Pick<PublicClient, "getCode">,
+  address: Address,
+): Promise<void> {
+  let code: Hex | undefined;
+  try {
+    code = await publicClient.getCode({ address });
+  } catch (caught) {
+    throw new Error(describeSimulationFailure(caught), { cause: caught });
+  }
+  // viem returns undefined for "0x"; both mean no contract.
+  if (code === undefined || code === "0x") {
+    throw new Error(
+      `There is no contract at ${address} on your wallet's network, so nothing was sent. The site's contract configuration needs fixing.`,
+    );
+  }
+}
+
+/**
+ * Whether a claim transaction's receipt `logs` hold the RewardClaimed event
+ * this claim emits: from the claim's contract, for its campaign, claimant,
+ * amount and nonce. A receipt can say "success" without it, for example a
+ * call to an address that holds no code, or to a contract that is not
+ * CampaignManager; only the event shows that the reward was paid.
+ */
+export function claimEventIn(logs: readonly Log[], call: ClaimCall): boolean {
+  const [authorization] = call.args;
+  return parseEventLogs({
+    abi: campaignManagerAbi,
+    eventName: "RewardClaimed",
+    logs: [...logs],
+  }).some(
+    ({ address, args }) =>
+      isAddressEqual(address, call.address) &&
+      args.campaignId === authorization.campaignId &&
+      isAddressEqual(args.claimant, authorization.claimant) &&
+      args.amount === authorization.amount &&
+      args.nonce.toLowerCase() === authorization.nonce.toLowerCase(),
+  );
+}
+
+export type ClaimTxOutcome =
+  /** Mined with this claim's RewardClaimed event. */
+  | { kind: "paid"; hash: Hash }
+  /** Mined successfully, but the receipt has no RewardClaimed for this claim. */
+  | { kind: "no-claim-event"; hash: Hash }
+  | { kind: "reverted"; hash: Hash }
+  /** No receipt yet: the transaction may still be mined. Never resend. */
+  | { kind: "pending"; hash: Hash };
+
+/** Judges a mined claim transaction by its receipt (claimEventIn). */
+export function claimReceiptOutcome(
+  receipt: Pick<TransactionReceipt, "status" | "logs">,
+  call: ClaimCall,
+  hash: Hash,
+): Exclude<ClaimTxOutcome, { kind: "pending" }> {
+  if (receipt.status !== "success") return { kind: "reverted", hash };
+  return claimEventIn(receipt.logs, call)
+    ? { kind: "paid", hash }
+    : { kind: "no-claim-event", hash };
+}
+
+/**
+ * Waits for the claim's receipt like waitForTx (lib/wallet.ts), and reports
+ * it paid only when the receipt carries this claim's RewardClaimed event.
+ */
+export async function waitForClaim(
+  publicClient: Pick<PublicClient, "waitForTransactionReceipt">,
+  call: ClaimCall,
+  hash: Hash,
+  timeoutMs = 120_000,
+): Promise<ClaimTxOutcome> {
+  let receipt: TransactionReceipt;
+  try {
+    receipt = await publicClient.waitForTransactionReceipt({
+      hash,
+      timeout: timeoutMs,
+    });
+  } catch {
+    return { kind: "pending", hash };
+  }
+  return claimReceiptOutcome(receipt, call, hash);
 }
 
 /** Polls the latest block until its timestamp reaches `timestamp`. */
