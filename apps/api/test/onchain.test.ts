@@ -26,10 +26,12 @@ import {
 } from "../src/chain/reorg-recovery.js";
 import {
   ChainHaltedError,
+  DEPLOYMENT_LOCK_HELD,
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
   sleepUntilAborted,
+  takeDeploymentLock,
 } from "../src/chain/worker-pass.js";
 import { InMemoryEligibilityRepository } from "../src/eligibility/repository.js";
 import { InMemorySubmissionRepository } from "../src/submissions/repository.js";
@@ -802,6 +804,88 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     expect(
       await retryWithBackoff(flaky, { ...options, stopping: () => true }),
     ).toBeNull();
+  });
+
+  it("starts the stall clock only once it holds the deployment lock", async () => {
+    const scope = { chainId: 84532, contractAddress: CONTRACT };
+    const events = new InMemoryChainEventRepository();
+    const steps: string[] = [];
+    const options = {
+      onWaiting: (_attempt: number, error: unknown) =>
+        steps.push(`waiting: ${(error as Error).message}`),
+      onLocked: () => steps.push("clock started"),
+    };
+
+    // Another worker holds the lock, then stops after two waits.
+    const other = await events.lockDeployment(scope);
+    let sleeps = 0;
+    const lock = await takeDeploymentLock(events, scope, {
+      ...options,
+      stopping: () => false,
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 2) await other!.release();
+      },
+    });
+    expect(steps).toEqual([
+      `waiting: ${DEPLOYMENT_LOCK_HELD}`,
+      `waiting: ${DEPLOYMENT_LOCK_HELD}`,
+      "clock started",
+    ]);
+    expect(await lock!.isHeld()).toBe(true);
+    await lock!.release();
+
+    // A database error is retried the same way, with its own message.
+    steps.length = 0;
+    let calls = 0;
+    const flaky = {
+      lockDeployment: async (target: typeof scope) => {
+        calls += 1;
+        if (calls === 1) throw new Error("database unavailable");
+        return events.lockDeployment(target);
+      },
+    };
+    const retried = await takeDeploymentLock(flaky, scope, {
+      ...options,
+      stopping: () => false,
+      sleep: async () => {},
+    });
+    expect(steps).toEqual(["waiting: database unavailable", "clock started"]);
+    await retried!.release();
+
+    // Stopped while waiting: no lock and no clock.
+    steps.length = 0;
+    const held = await events.lockDeployment(scope);
+    let stopping = false;
+    expect(
+      await takeDeploymentLock(events, scope, {
+        ...options,
+        stopping: () => stopping,
+        sleep: async () => {
+          stopping = true;
+        },
+      }),
+    ).toBeNull();
+    expect(steps).toEqual([`waiting: ${DEPLOYMENT_LOCK_HELD}`]);
+    await held!.release();
+
+    // The lock came just as the worker stopped: it is returned, so the
+    // worker releases it, but the clock does not start.
+    steps.length = 0;
+    stopping = false;
+    const late = await takeDeploymentLock(
+      {
+        lockDeployment: async (target: typeof scope) => {
+          stopping = true;
+          return events.lockDeployment(target);
+        },
+      },
+      scope,
+      { ...options, stopping: () => stopping, sleep: async () => {} },
+    );
+    expect(await late!.isHeld()).toBe(true);
+    expect(steps).toEqual([]);
+    await late!.release();
   });
 
   it("does nothing while a halt has no recovery applied (#77)", async () => {

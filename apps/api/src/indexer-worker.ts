@@ -18,6 +18,7 @@ import {
   retryWithBackoff,
   runWorkerPass,
   sleepUntilAborted,
+  takeDeploymentLock,
 } from "./chain/worker-pass.js";
 import { JsonRpcClient } from "./chain/rpc.js";
 import { createDatabase } from "./db/client.js";
@@ -244,34 +245,19 @@ if (existingHalt?.recoveryAppliedAt) {
 // One worker per deployment, never next to `reorg:recover --apply` (#77).
 // Held until this process ends; a second worker waits for it. Needs a direct
 // or session-mode database connection (RUNBOOK: Running the built API).
-const lock = await retryWithBackoff(
-  async () => {
-    const held = await repository.lockDeployment(scope);
-    if (!held) {
-      throw new Error(
-        "another indexer worker or `reorg:recover --apply` holds this deployment",
-      );
-    }
-    return held;
-  },
-  {
-    retryable: () => true,
-    stopping: () => stopping,
-    sleep,
-    onFailure: (attempt, error, retryInMs) =>
-      log("warn", "waiting for the deployment lock", {
-        attempt,
-        error: errorMessage(error),
-        retryInMs,
-      }),
-  },
-);
-
-// Until the first successful pass the stall clock runs from here, so a worker
-// whose passes fail from its start still raises VhamIndexerStalled. Not
-// earlier: a worker waiting for the lock is not stalled, another one runs.
-// A worker stopped while waiting (no lock) sets nothing.
-if (!stopping) gauges.lastSuccess.set(unixSeconds(new Date()));
+const lock = await takeDeploymentLock(repository, scope, {
+  stopping: () => stopping,
+  sleep,
+  onWaiting: (attempt, error, retryInMs) =>
+    log("warn", "waiting for the deployment lock", {
+      attempt,
+      error: errorMessage(error),
+      retryInMs,
+    }),
+  // Until the first successful pass the stall clock runs from here, so a
+  // worker whose passes fail from its start still raises VhamIndexerStalled.
+  onLocked: () => gauges.lastSuccess.set(unixSeconds(new Date())),
+});
 
 let backoffMs = pollMs;
 let inconsistentStreak = 0;

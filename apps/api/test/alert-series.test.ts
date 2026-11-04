@@ -63,16 +63,25 @@ function withoutComments(text: string) {
     .join("\n");
 }
 
-const RULES_FILE = readFileSync(
-  new URL("../../../docs/operations/alerts.yml", import.meta.url),
-  "utf8",
-);
+/**
+ * A file of this repository with `\n` line ends: a Windows checkout may have
+ * `\r\n`, and a `.` in the patterns here does not match `\r`.
+ */
+function repositoryText(path: string) {
+  return readFileSync(
+    new URL(`../../../${path}`, import.meta.url),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+}
+
+const RULES_FILE = repositoryText("docs/operations/alerts.yml");
 const RULES = withoutComments(RULES_FILE);
 
 const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
 
 /**
- * Every line of every `expr` value, in any style. Prometheus reads a `#` in
+ * Every line of every `expr` value: block, plain, or quoted on one line (the
+ * selector test checks that a quoted one is). Prometheus reads a `#` in
  * an expression as a PromQL comment that hides the rest of its line. In a
  * quoted or block value YAML keeps the `#`, so this parser would still see
  * what Prometheus does not; in a plain value YAML drops it as a comment. So
@@ -104,22 +113,36 @@ function slugOf(heading: string) {
 
 /**
  * GitHub's anchors for the headings of a Markdown file: none inside a code
- * fence, and `-1`, `-2` after a repeated one.
+ * fence or an HTML comment, and `-1`, `-2` after a repeated one. A fence
+ * closes only with a bare marker of its kind, at least as long.
  */
 function anchorsOf(markdown: string) {
   const anchors = new Set<string>();
   const seen = new Map<string, number>();
   let fence: string | null = null;
+  let comment = false;
   for (const line of markdown.split("\n")) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker) {
-      if (fence === null) fence = marker;
-      else if (marker[0] === fence[0] && marker.length >= fence.length) {
+    if (comment) {
+      comment = !line.includes("-->");
+      continue;
+    }
+    const fenceLine = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fenceLine) {
+      const [, marker, rest] = fenceLine;
+      if (fence === null) fence = marker!;
+      else if (
+        marker![0] === fence[0] &&
+        marker!.length >= fence.length &&
+        rest!.trim() === ""
+      ) {
         fence = null;
       }
       continue;
     }
     if (fence !== null) continue;
+    const opened = line.indexOf("<!--");
+    if (opened !== -1 && !line.includes("-->", opened + 4)) comment = true;
+    if (/^ {0,3}<!--/.test(line)) continue;
     const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
     if (title === undefined) continue;
     const slug = slugOf(title);
@@ -220,6 +243,14 @@ describe("series watched by increase() alert rules", () => {
     );
     expect(expressions.join("\n")).toContain("or increase(vham_world_id");
     for (const line of expressions) expect(line).not.toContain("#");
+    // A quoted expression stays on one line: YAML lets its next lines sit at
+    // any indentation, where exprLines would not look. Fold long ones with
+    // `>-`. Rules are block mappings, so every `expr` key starts a line.
+    for (const line of expressions.filter((text) => EXPR_KEY.test(text))) {
+      const value = line.replace(EXPR_KEY, "").trim();
+      if (/^["']/.test(value)) expect(value, line).toMatch(/^(["']).*\1$/);
+    }
+    expect(RULES).not.toMatch(/-\s*\{/);
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -237,11 +268,7 @@ describe("series watched by increase() alert rules", () => {
   });
 
   it("links every alert to a heading of the runbook", () => {
-    const runbook = readFileSync(
-      new URL("../../../docs/operations/RUNBOOK.md", import.meta.url),
-      "utf8",
-    );
-    const slugs = anchorsOf(runbook);
+    const slugs = anchorsOf(repositoryText("docs/operations/RUNBOOK.md"));
     // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
     expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
     const alerts = [...RULES.matchAll(/-\s*alert:\s*(\w+)/g)];
