@@ -44,7 +44,7 @@ API (`/metrics`):
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
-| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness.                                   |
+| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Refreshed on scrape and readiness. No lag while there is no index cursor: before the worker's first committed range, and after `reorg:recover --apply` resets the index. |
 | `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on scrape, RPC up or not). |
 
 Worker (`INDEXER_METRICS_PORT`):
@@ -231,13 +231,16 @@ its first one, from when it took the deployment lock: a worker whose passes
 fail from its start raises it after 5 minutes. A pass runs until the index
 reaches the confirmed head, so a pass that catches up for more than 5 minutes
 raises it too, the first one included: after a long stop, or the rebuild
-after `reorg:recover --apply`. Catching up, the worker logs no
-`indexer pass failed`, `vham_indexer_rpc_requests_total` keeps growing and the
-API's `vham_indexer_lag_blocks` keeps falling as each range commits; stuck, it
-logs the failure and the lag grows. A worker that keeps restarting starts the
-clock again each time; VhamIndexerLag, which the API computes from the stored
-cursor, still fires then, once the worker has committed a range (the API
-exports no lag before that).
+after `reorg:recover --apply`. To tell catching up from stuck, watch the API's
+`vham_indexer_lag_blocks`: it falls with each range the worker commits while
+catching up, and stays or grows while stuck. Logs tell less: a pass that fails
+logs `indexer pass failed; retrying` whether it was catching up or not, and a
+pass that hangs logs nothing. A worker that keeps restarting starts the clock
+again each time; VhamIndexerLag, which the API computes from the stored
+cursor, still fires then. The API exports no lag while there is no cursor:
+before the worker's first committed range, and after `reorg:recover --apply`
+resets the index, until the rebuild commits its first range (VhamChainHalted
+fires meanwhile).
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
@@ -259,9 +262,32 @@ wrong chain id, missing code or a pre-ADR-0011 contract stops the process at
 once. No metrics exist until that check passes, so a worker stuck there shows
 up as VhamRpcDown on the API or as a missing worker scrape target, not as a
 stall, and an API stuck there does not listen yet, so its health checks fail.
-A worker that logs `waiting for the deployment lock` is waiting for another
-worker or a `reorg:recover --apply` on the same deployment to finish. A
-worker that logs `deployment lock lost; stopping` exits with code 1 so its
+A worker that logs `waiting for the deployment lock` cannot take the lock, and
+its `error` field says why. ``another indexer worker or `reorg:recover --apply`
+holds this deployment`` means another database session holds it: usually a
+running worker or an `--apply` on the same deployment, but it can be a session
+left behind, such as a connection whose end the server has not noticed yet.
+Any other `error` is a database failure, which the worker retries the same
+way. While it waits, the worker exports no stall clock, so VhamIndexerStalled
+does not fire for it. If the database answers and no other worker is
+indexing, VhamIndexerLag fires once the lag has stayed above 50 blocks for 10
+minutes; a database that does not answer shows as `database: error` in the
+API's readiness. To find the session that holds the lock, run this on the worker's
+database, with the worker's chain id and its `CAMPAIGN_MANAGER_ADDRESS` in
+lowercase in place of `84532` and `0x…`:
+
+```sql
+SELECT a.pid, a.application_name, a.client_addr, a.backend_start, a.state
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+  AND l.classid::bigint = 1986552173
+  AND l.objid::bigint = (hashtext('vham:deployment:84532:0x…')::bigint & 4294967295);
+```
+
+If it is neither a running worker nor a running `--apply`, end it with
+`SELECT pg_terminate_backend(<pid>)`; the waiting worker then takes the lock.
+A worker that logs `deployment lock lost; stopping` exits with code 1 so its
 supervisor restarts it: its database session ended (restart, failover,
 network, `idle_session_timeout`) and the server released the lock with it.
 If it repeats, check that `DATABASE_URL` is a direct or session-mode
@@ -386,16 +412,23 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 
 ### VhamWorldIdUnavailable
 
-World ID's verify endpoint is failing (`PROVIDER_UNAVAILABLE`: check
-https://status.world.org; users get 503 and can retry), or World ID is not
-configured (`WORLD_ID_NOT_CONFIGURED`: set `WORLD_ID_RP_ID`, `RP_SIGNING_KEY`
-and `WORLD_ID_APP_ID`; a retry does not help). Without the configuration,
-`POST /world-id/request` already answers `503 WORLD_ID_NOT_CONFIGURED`, before
-any verification (`vham_world_id_requests_total`). No eligibility is recorded
+The alert does not name the metric that fired: `increase()` drops the metric
+name, and both metrics carry the same `outcome` label. Query both:
+
+| Series that grew | Cause | Fix |
+| --- | --- | --- |
+| `vham_eligibility_verifications_total{outcome="PROVIDER_UNAVAILABLE"}` | World ID's verify endpoint is failing. | Check https://status.world.org. Users get 503 and can retry. |
+| `vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | `POST /v1/campaigns/:id/world-id/request` cannot sign requests: the World ID variables are not set (startup warns `World ID is disabled: set WORLD_ID_RP_ID, RP_SIGNING_KEY and WORLD_ID_APP_ID`). | Set `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID`. |
+| `vham_eligibility_verifications_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | Verification is refused before World is asked. Participants get a signed request, so the variables above are set, but `PARTICIPANT_KEY_SECRET` is not (startup warns `World ID eligibility is disabled: set PARTICIPANT_KEY_SECRET`). A client that calls verify without a signed request gets this too when the World ID variables are missing. | Set `PARTICIPANT_KEY_SECRET` (at least 32 characters). |
+
+A retry does not help either configuration case. No eligibility is recorded
 on failure. The rule counts each outcome, metric and instance separately (3
 refused requests and 3 refused verifications do not add up), and
 `increase()` extrapolates to the whole range, so it can fire on the third
-failure.
+failure. It needs more than 3 refusals on one instance within 10 minutes, so
+with few participants, or many instances, a missing configuration may never
+fire it: after every deploy, check the API's startup warnings, which name
+what is missing.
 
 ### VhamServerErrors
 

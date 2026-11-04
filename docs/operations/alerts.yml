@@ -115,8 +115,10 @@ groups:
 
   - name: vham-api
     rules:
-      # Without World ID configured, participants are refused when they ask
-      # for a signed request, before any verification.
+      # Without the World ID variables, participants are refused when they
+      # ask for a signed request, before any verification. Without
+      # PARTICIPANT_KEY_SECRET, verification refuses them. The runbook tells
+      # the cases apart.
       - alert: VhamWorldIdUnavailable
         expr: >-
           increase(vham_eligibility_verifications_total{outcome=~"PROVIDER_UNAVAILABLE|WORLD_ID_NOT_CONFIGURED"}[10m]) > 3

@@ -222,7 +222,10 @@ export function buildApp(dependencies: AppDependencies = {}) {
       contractAddress: chain.chain.contractAddress,
     });
     const lag = cursor ? head - cursor.latestConfirmedBlock : null;
-    if (lag !== null) indexerLag.set(Number(lag));
+    // No cursor: the worker has committed nothing yet, or `reorg:recover
+    // --apply` reset the index. Then no lag is exported, not the last one.
+    if (lag === null) indexerLag.remove();
+    else indexerLag.set(Number(lag));
     return { head, lag };
   }
 

@@ -12,31 +12,53 @@ import {
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
 
+/** Column of a line's key, after its indentation and any `- `. */
+function keyColumn(line: string) {
+  return line.search(/[^\s-]/);
+}
+
+/** Where a YAML scalar may start: a quote there opens a quoted scalar. */
+const SCALAR_START = /(?:^\s*(?:-\s+)*|:\s+|[[{,]\s*)$/;
+
 /**
- * Drops YAML comments: a `#` at the start of a line or after whitespace,
- * outside quotes. A `#` inside a quoted label value stays, also after an
- * escaped quote (`\"`) in a double-quoted string.
+ * Drops YAML comments as YAML does: a `#` at the start of a line or after
+ * whitespace, outside a quoted scalar and outside the content of a block
+ * scalar (`>-`, `|`), which is kept as it is. A quote opens a quoted scalar
+ * only where a scalar starts; elsewhere, as in `it's` or `{a="b"}`, it is
+ * plain text. A quoted scalar may span lines; `\"` and `''` escape its
+ * quote.
  */
 function withoutComments(text: string) {
+  let quote: string | null = null;
+  let blockColumn: number | null = null;
   return text
     .split("\n")
     .map((line) => {
-      let quote: string | null = null;
+      if (blockColumn !== null) {
+        if (line.trim() === "" || keyColumn(line) > blockColumn) return line;
+        blockColumn = null;
+      }
+      let kept = line;
       for (let index = 0; index < line.length; index += 1) {
         const char = line[index]!;
         if (quote) {
           if (quote === '"' && char === "\\") index += 1;
+          else if (quote === "'" && line.startsWith("''", index)) index += 1;
           else if (char === quote) quote = null;
         } else if (char === '"' || char === "'") {
-          quote = char;
+          if (SCALAR_START.test(line.slice(0, index))) quote = char;
         } else if (
           char === "#" &&
           (index === 0 || /\s/.test(line[index - 1]!))
         ) {
-          return line.slice(0, index);
+          kept = line.slice(0, index);
+          break;
         }
       }
-      return line;
+      if (quote === null && /:\s+[>|][-+0-9]*\s*$/.test(kept)) {
+        blockColumn = keyColumn(line);
+      }
+      return kept;
     })
     .join("\n");
 }
@@ -47,32 +69,65 @@ const RULES_FILE = readFileSync(
 );
 const RULES = withoutComments(RULES_FILE);
 
+const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
+
 /**
- * The lines of every block expression (`expr: >-` or `expr: |`). There a `#`
- * is part of the expression, and PromQL reads it as a comment that hides the
- * rest of the folded line from Prometheus, though not from this parser.
+ * Every line of every `expr` value, in any style. Prometheus reads a `#` in
+ * an expression as a PromQL comment that hides the rest of its line. In a
+ * quoted or block value YAML keeps the `#`, so this parser would still see
+ * what Prometheus does not; in a plain value YAML drops it as a comment. So
+ * no `expr` line may hold one: put comments above the rule.
  */
-function exprBlockLines(text: string) {
+function exprLines(text: string) {
   const lines = text.split("\n");
   const found: string[] = [];
   lines.forEach((line, index) => {
-    const start = /^(\s*)expr:\s*[>|][-+]?\s*$/.exec(line);
-    if (!start) return;
+    if (!EXPR_KEY.test(line)) return;
+    found.push(line);
     for (const next of lines.slice(index + 1)) {
-      if (next.trim() !== "" && next.search(/\S/) <= start[1]!.length) break;
+      if (next.trim() !== "" && keyColumn(next) <= keyColumn(line)) break;
       found.push(next);
     }
   });
   return found;
 }
 
-/** GitHub's anchor for a Markdown heading. */
+/** GitHub's anchor for the text of a Markdown heading. */
 function slugOf(heading: string) {
   return heading
     .trim()
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
-    .replace(/\s/g, "-");
+    .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "")
+    .replace(/ /g, "-");
+}
+
+/**
+ * GitHub's anchors for the headings of a Markdown file: none inside a code
+ * fence, and `-1`, `-2` after a repeated one.
+ */
+function anchorsOf(markdown: string) {
+  const anchors = new Set<string>();
+  const seen = new Map<string, number>();
+  let fence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker) {
+      if (fence === null) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+    if (fence !== null) continue;
+    const title = /^ {0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$/.exec(line)?.[1];
+    if (title === undefined) continue;
+    const slug = slugOf(title);
+    const count = seen.get(slug) ?? 0;
+    seen.set(slug, count + 1);
+    anchors.add(count === 0 ? slug : `${slug}-${count}`);
+  }
+  return anchors;
 }
 
 /**
@@ -110,7 +165,8 @@ function increaseSelectors() {
     ...RULES.matchAll(/\bincrease\(\s*(\w+)\s*(?:\{([^}]*)\})?\s*\[/g),
   ].map(([, metric, matchers]) => ({
     metric: metric!,
-    matchers: (matchers ?? "").replace(/\s+/g, ""),
+    // Spaces between matchers go, those inside a label value stay.
+    matchers: (matchers ?? "").replace(/\s+(?=(?:[^"]*"[^"]*")*[^"]*$)/g, ""),
   }));
 }
 
@@ -155,11 +211,15 @@ describe("series watched by increase() alert rules", () => {
     // and is not checked.
     const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
     expect(selectors).toHaveLength(ranges.length);
-    // A block expression may not hold a `#` (exprBlockLines). The World ID
-    // rule is one, which guards the block search.
-    const blockLines = exprBlockLines(RULES_FILE);
-    expect(blockLines.join("\n")).toContain("vham_world_id_requests_total");
-    for (const line of blockLines) expect(line).not.toContain("#");
+    // No `expr` line may hold a `#` (exprLines). Every alert has an `expr`
+    // key, and the folded World ID rule's second line is found, which
+    // guards the search.
+    const expressions = exprLines(RULES_FILE);
+    expect(expressions.filter((line) => EXPR_KEY.test(line))).toHaveLength(
+      [...RULES.matchAll(/-\s*alert:\s*\w+/g)].length,
+    );
+    expect(expressions.join("\n")).toContain("or increase(vham_world_id");
+    for (const line of expressions) expect(line).not.toContain("#");
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -181,11 +241,9 @@ describe("series watched by increase() alert rules", () => {
       new URL("../../../docs/operations/RUNBOOK.md", import.meta.url),
       "utf8",
     );
-    const slugs = new Set(
-      [...runbook.matchAll(/^#{1,6}\s+(.+)$/gm)].map(([, title]) =>
-        slugOf(title!),
-      ),
-    );
+    const slugs = anchorsOf(runbook);
+    // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
+    expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
     const alerts = [...RULES.matchAll(/-\s*alert:\s*(\w+)/g)];
     const anchors = [
       ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),

@@ -256,8 +256,8 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         'vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}',
       ),
     ).toBe(1);
-    // Logged once at error level as an operator problem, with identifiers
-    // only.
+    // Logged once, at error level (a 503 and an operator outcome alike),
+    // with identifiers and no request body.
     const events = unsigned
       .logs()
       .filter((entry) => entry.event === "world_id_requests");
@@ -268,6 +268,18 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
         statusCode: 503,
         campaignId: unsigned.id,
       }),
+    ]);
+    expect(Object.keys(events[0]).sort()).toEqual([
+      "campaignId",
+      "event",
+      "hostname",
+      "level",
+      "msg",
+      "outcome",
+      "pid",
+      "requestId",
+      "statusCode",
+      "time",
     ]);
     const missing = await unsigned.app.inject({
       method: "POST",
