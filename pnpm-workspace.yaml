@@ -6,3 +6,25 @@ onlyBuiltDependencies:
   - esbuild
 allowBuilds:
   esbuild: true
+
+overrides:
+  # viem 2.38.6 pins ws 8.18.3 (GHSA-96hv-2xvq-fx4p, GHSA-58qx-3vcg-4xpx);
+  # viem 2.54.2 and later pin 8.21.0. The project never opens a WebSocket
+  # transport. The range stops matching once viem is upgraded: drop it then.
+  "ws@<8.21.0": 8.21.3
+
+# next 16.4.5 is the 2026-11-03 security release and was younger than pnpm's
+# default 24 h minimumReleaseAge when it was adopted. Without these
+# exact-version entries a fresh `pnpm install --frozen-lockfile` rejects the
+# lockfile until 2026-11-04T17:52Z; after that they have no effect and can go.
+minimumReleaseAgeExclude:
+  - "@next/env@16.4.5"
+  - "@next/swc-darwin-arm64@16.4.5"
+  - "@next/swc-darwin-x64@16.4.5"
+  - "@next/swc-linux-arm64-gnu@16.4.5"
+  - "@next/swc-linux-arm64-musl@16.4.5"
+  - "@next/swc-linux-x64-gnu@16.4.5"
+  - "@next/swc-linux-x64-musl@16.4.5"
+  - "@next/swc-win32-arm64-msvc@16.4.5"
+  - "@next/swc-win32-x64-msvc@16.4.5"
+  - next@16.4.5
