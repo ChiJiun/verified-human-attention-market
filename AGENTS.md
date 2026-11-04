@@ -63,7 +63,7 @@ On 2026-11-03 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
-`@worldcoin/idkit` 4.4.0 is a dependency of `apps/web`. `@worldcoin/idkit-core` is only a dev dependency of `apps/api`: its tests check the signal hash against its `hashSignal` (`apps/api/test/world-id-signal.test.ts`), so removing it breaks `pnpm test`. The API does not use it at runtime; RP signing is implemented with viem against the official vectors. `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+`@worldcoin/idkit` 4.4.0 is a dependency of `apps/web`, and the web app gets `@worldcoin/idkit-core` 4.4.0 through it. Only `apps/api` declares `@worldcoin/idkit-core` directly, as a dev dependency: its tests check the signal hash against its `hashSignal` (`apps/api/test/world-id-signal.test.ts`, `apps/api/test/eligibility.test.ts`), and `world-id-signal.test.ts` also checks that this pin equals the version the web's IDKit resolves, so removing it breaks `pnpm test`. The API does not use it at runtime; RP signing is implemented with viem against the official vectors. `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 `@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
@@ -422,7 +422,7 @@ Current contract tests cover:
 - cancel of an unfunded draft, no cancel once funded, no funding after end;
 - signer rotation revokes old signatures; typehash pinned against the backend;
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
-- every remaining `CampaignManager` revert (#73): wrong claim amount; authorization timing (not yet valid, lifetime too long, issued before start or after end); signature encoding (wrong length, high `s`, invalid `v`, and `v` of 0 or 1 accepted); wrong funding amount and funding twice; the `AlreadyFunded` and `InsufficientCampaignBudget` guards, which the public interface cannot reach, through a test harness that forces the state (#80 decides whether they stay); campaign window edges and fuzzed duration bounds and past starts;
+- every remaining `CampaignManager` revert (#73): wrong claim amount; authorization timing (not yet valid, lifetime too long, an inverted window that fails the time checks before the lifetime check, issued before start or after end); signature encoding (wrong length, high `s`, invalid `v`, and `v` of 0 or 1 accepted); wrong funding amount and funding twice; the `AlreadyFunded` and `InsufficientCampaignBudget` guards, which the public interface cannot reach, through a test harness that forces the state (#80 decides whether they stay); campaign window edges and fuzzed duration bounds and past starts;
 - deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.
