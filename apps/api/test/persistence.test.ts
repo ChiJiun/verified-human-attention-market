@@ -30,12 +30,18 @@ describe("in-memory campaign repository", () => {
 
 describe("in-memory claim repository", () => {
   const contractAddress: Address = `0x${"2".repeat(40)}`;
-  const submissions = new Map<string, { campaignId: string; result: string }>();
+  const submissions = new Map<
+    string,
+    { campaignId: string; result: string; claimantAddress: string }
+  >();
   const campaigns = new Map<
     string,
     {
+      id: string;
       status: string;
       maxCompletions: number;
+      rewardAtomic: string;
+      chainId: number;
       onchainCampaignId: string;
       onchainContractAddress: string;
     }
@@ -43,11 +49,13 @@ describe("in-memory claim repository", () => {
   let nextOnchainId = 1;
   const submission = async (campaignId: string, result: string) => {
     const submissionId = randomUUID();
-    submissions.set(submissionId, { campaignId, result });
-    return {
-      submissionId,
-      claimant: `0x${randomBytes(20).toString("hex")}` as Address,
-    };
+    const claimant = `0x${randomBytes(20).toString("hex")}` as Address;
+    submissions.set(submissionId, {
+      campaignId,
+      result,
+      claimantAddress: claimant.toLowerCase(),
+    });
+    return { submissionId, claimant };
   };
   const harness: ClaimHarness = {
     claims: new InMemoryClaimRepository(
@@ -58,8 +66,11 @@ describe("in-memory claim repository", () => {
       const campaignId = randomUUID();
       const onchainCampaignId = String(nextOnchainId++);
       campaigns.set(campaignId, {
+        id: campaignId,
         status: "active",
         maxCompletions: 10,
+        rewardAtomic: "1000000",
+        chainId: 84532,
         onchainCampaignId,
         onchainContractAddress: contractAddress,
       });
