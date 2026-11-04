@@ -122,10 +122,13 @@ pnpm --filter @vham/api exec vitest run postgres
 
 ```bash
 cp .env.example .env    # 依註解填入；不要 commit .env
+set -a; source .env; set +a        # 載入 .env；API 和 indexer 不會自己讀它
 pnpm --filter @vham/api db:migrate
 pnpm --filter @vham/api dev        # API，預設 http://localhost:3001
-pnpm --filter @vham/api indexer    # 鏈上事件索引 + campaign 狀態同步
+pnpm --filter @vham/api indexer    # 另開一個終端機（同樣先載入 .env）：鏈上事件索引 + campaign 狀態同步
 ```
+
+API 和 indexer 只從環境變數讀設定。沒載入 `.env`、shell 裡也沒有 `DATABASE_URL` 時，`db:migrate` 會直接失敗（`DATABASE_URL is required for migrations`）。每個執行 API 或 indexer 的終端機都要先載入：bash/zsh 用上面的 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
 
 各組環境變數的作用：
 

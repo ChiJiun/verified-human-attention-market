@@ -63,7 +63,7 @@ On 2026-11-03 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87
 
 Do not skip directly to multi-chain, x402, publisher SDK, or AARC.
 
-`@worldcoin/idkit` 4.4.0 is in the web lockfile; `@worldcoin/idkit-core` is optional (RP signing is implemented with viem against the official vectors). `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
+`@worldcoin/idkit` 4.4.0 is a dependency of `apps/web`. `@worldcoin/idkit-core` is only a dev dependency of `apps/api`: its tests check the signal hash against its `hashSignal` (`apps/api/test/world-id-signal.test.ts`), so removing it breaks `pnpm test`. The API does not use it at runtime; RP signing is implemented with viem against the official vectors. `viem` is in both apps. Do not hand-roll keccak/secp256k1/EIP-712 signing.
 
 `@vham/shared` is consumed from its build output (`packages/shared/dist`), built automatically by the root `postinstall`. After editing it (or regenerating the ABI) run `pnpm --filter @vham/shared build`.
 
@@ -178,7 +178,7 @@ Current baseline:
 - Solidity 0.8.30
 - PostgreSQL 16 in CI
 
-Since the machine was reset on 2026-11-02 it has only Node 24 and pnpm; Foundry (otherwise native or in WSL), PostgreSQL and the anvil e2e run in CI, which is the required check for them. Without a local database the PostgreSQL integration tests skip.
+Foundry may be installed natively or, on Windows, in WSL. A machine may lack Foundry, PostgreSQL or anvil; CI is then the required check for what it cannot run locally: the `solidity` job for Foundry, the `javascript` job (with a PostgreSQL service) for the PostgreSQL integration tests, and the `e2e` job for the anvil run. Without a local database (`TEST_DATABASE_URL` unset) the PostgreSQL integration tests skip.
 
 Do not install or upgrade major dependencies casually. If an upgrade changes architecture/runtime behavior, document it.
 
@@ -345,9 +345,9 @@ If a transaction was broadcast and the RPC times out, reconcile by transaction h
 
 ## 12. World ID / privacy rules
 
-World ID integration is implemented (ADR-0007) but has not yet been exercised against a real World App / Developer Portal app.
+World ID integration is implemented (ADR-0007). On 2026-10-14 the v1 contract run on Base Sepolia verified a real production proof from an Orb-verified World App against a Developer Portal app (`docs/DEMO.md`). That run used the `proofOfHuman` preset, so its proof may have been a 3.0 proof. The 4.0-only request and the wallet-bound signal have not yet run against a real World App; the ADR-0011 re-run checks them (#13, #71, #74).
 
-Before implementing it:
+Before changing the World ID integration:
 
 1. open current official World docs;
 2. confirm the current API/SDK flow;
@@ -422,6 +422,7 @@ Current contract tests cover:
 - cancel of an unfunded draft, no cancel once funded, no funding after end;
 - signer rotation revokes old signatures; typehash pinned against the backend;
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
+- every remaining `CampaignManager` revert (#73): wrong claim amount; authorization timing (not yet valid, lifetime too long, issued before start or after end); signature encoding (wrong length, high `s`, invalid `v`, and `v` of 0 or 1 accepted); wrong funding amount and funding twice; the `AlreadyFunded` and `InsufficientCampaignBudget` guards, which the public interface cannot reach, through a test harness that forces the state (#80 decides whether they stay); campaign window edges and fuzzed duration bounds and past starts;
 - deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.

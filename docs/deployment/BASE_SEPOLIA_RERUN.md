@@ -24,29 +24,16 @@ Run `forge` and `cast` in WSL, where Foundry is installed. The commands use bash
 
 The run needs all of the following:
 
-- The pull requests below merged, with green CI on the commit you deploy from. The owner decides whether and when each one merges. The order follows the PR bases at the time of writing, so re-read the bases before you merge (`gh pr view <number> --json baseRefName`).
+- A commit of `main` to deploy from, with green CI (the `javascript`, `solidity`, and `e2e` jobs). Everything this runbook needs reached `main` through #94 (merge commit `d77981e`), so there is nothing left to merge or retarget for the run. `git merge-base --is-ancestor d77981e HEAD` exits with `0` on a commit that has it. #94 brought in:
+  - #62: the ADR-0011 contract, idempotent creation per draft, and the acceptance that signs the claim authorization. You deploy this contract.
+  - #88 and #90: acceptance signs at submission without starving the connection pool or deadlocking on a row lock, every acceptance-time authorization feeds the alert series ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)), and refusals are logged.
+  - #79: the API accepts only World ID 4.0 proofs, and the web app requests a 4.0 `proof_of_human` credential with legacy proofs off.
+  - #84: the **Close campaign** and **Refund unused budget** buttons on the advertiser page (#69).
+  - #85: the wallet-bound signal with a browser salt (#71), which step 15 tests.
+  - #87: cookie sessions, CSRF checks, the CSP, and `WEB_ORIGIN` (#72).
+  - #92: unexpected API errors answer with a generic `500` and log the cause.
 
-  | Order | PR  | What the run needs from it                                                                                                             | Base now                                         |
-  | ----- | --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-  | 1     | #88 | Acceptance signs at submission without starving the connection pool or deadlocking on a row lock.                                      | `docs/13-base-sepolia-run` (PR #62's branch)     |
-  | 2     | #90 | Every acceptance-time authorization feeds the alert series ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)), and refusals are logged.  | `docs/13-base-sepolia-run` (PR #62's branch)     |
-  | 3     | #62 | The ADR-0011 contract, idempotent creation per draft, and the acceptance that signs the claim authorization. You deploy this contract. | `main`                                           |
-  | 4     | #68 | The reconciled architecture, specs, and test plan that the PRs below build on.                                                         | `docs/13-base-sepolia-run`                       |
-  | 5     | #79 | The API accepts only World ID 4.0 proofs, and the web app requests a 4.0 `proof_of_human` credential with legacy proofs off.           | `docs/framework-review` (PR #68's branch)        |
-  | 6     | #81 | Contract tests for the reverts that no test covered.                                                                                   | `docs/framework-review`                          |
-  | 7     | #84 | The **Close campaign** and **Refund unused budget** buttons on the advertiser page (#69).                                              | `docs/framework-review`                          |
-  | 8     | #85 | The wallet-bound signal with a browser salt (#71), which step 15 tests.                                                                | `fix/world-id-v4-only` (PR #79's branch)         |
-  | 9     | #87 | Cookie sessions, CSRF checks, the CSP, and `WEB_ORIGIN` (#72).                                                                         | `feat/69-close-refund-buttons` (PR #84's branch) |
-  | 10    | #92 | Unexpected API errors answer with a generic `500` and log the cause.                                                                   | `main`                                           |
-
-  Notes on the order:
-  - #88 and #90 base on PR #62's branch, so merge them into it first. PR #62 then carries them to `main`.
-  - #68 bases on PR #62's branch too. After #62 merges, retarget #68 to `main`, then merge it.
-  - #79, #81, and #84 base on #68's branch (`docs/framework-review`). Retarget each to `main` after #68 merges, or the merge lands in #68's branch only.
-  - #85 bases on #79's branch and #87 on #84's. Merge #79 before #85 and #84 before #87.
-  - The ADR-0007 link in step 15 resolves to the hard condition only after #85 merges.
-  - #81 and #92 touch no step of this runbook. Merge them before the run only so that you deploy the commit that CI covered.
-  - This runbook (#83) needs none of the code above to merge, but its steps assume all of it.
+  The stacked PRs (#68, #79, #81, #83–#85, #87, #88, #90) were closed with a pointer to #94, and #62 and #92 merged with it. If the owner's decision on #80 changes `CampaignManager`, deploy from a commit that contains that change, because this redeploy is the next on-chain change.
 
 - A checkout of that commit, after `pnpm install`, which also builds `@vham/shared`. Rebuild it with `pnpm --filter @vham/shared build` if you switch commits without reinstalling.
 - These wallets on Base Sepolia:
@@ -149,6 +136,7 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
 
 8. Set the API environment from the record ([Configure the API](TESTNET.md#configure-the-api), TESTNET.md step 4). For this run, also check these values:
    - `INDEXER_MAX_BLOCK_RANGE=200` with the public RPC;
+   - an `EVM_RPC_URL` that serves `eth_getBlockReceipts` with a block hash. Since #106 the indexer reads it for every block that may hold a `CampaignManager` event before it commits a range. The public Base Sepolia RPC served it when [RUNBOOK.md](../operations/RUNBOOK.md#indexer-request-cost) measured it. With an RPC that does not, the worker stalls at the first such block (VhamIndexerInconsistentReads, then VhamIndexerStalled), and linking and status sync wait for it. Check it again if you use another RPC;
    - `SIWE_DOMAIN=localhost:3000`;
    - `WORLD_ID_MODE=live` (the default) and `WORLD_ID_ENVIRONMENT=production`;
    - `WORLD_ID_APP_ID` (`app_` followed by the id), `WORLD_ID_RP_ID` (`rp_` followed by 1 to 16 hex digits), and `RP_SIGNING_KEY` (32 bytes of hex, a secret), all three together. With none of them set, the API starts with the warning "World ID is disabled" and answers `503 WORLD_ID_NOT_CONFIGURED` to the World ID request. With only some of them, or with a malformed id or key, the API refuses to start with "Invalid World ID configuration" (step 9);

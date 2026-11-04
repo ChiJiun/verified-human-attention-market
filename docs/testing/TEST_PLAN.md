@@ -7,7 +7,7 @@
 
 Where a case is implemented, the test name is given in brackets.
 
-Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
+Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `apps/web/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
 
 # Contract Tests
 
@@ -67,12 +67,12 @@ At minimum:
 - authentication, API keys, rate limits, moderation, observability, retention [`auth.test.ts`, `api-clients.test.ts`, `moderation.test.ts`, `observability.test.ts`, `postgres.integration.test.ts`]; browser sessions: cookie credential, CSRF rule, header-only routes, logout and sign-in revocation [`auth.test.ts`];
 - web app: campaign link and submission id parsing, typed API paths, sign-in that confirms the cookie, session store ordering, CSP builder and proxy matcher, the claim simulation before the wallet is asked (`ALREADY_CLAIMED`, `NonceAlreadyUsed` and `WalletAlreadyClaimed` mean already paid, other reverts are named, `AuthorizationNotYetValid` waits a bounded time for a block at `issuedAt` and simulates once more, the wallet must be on the campaign's chain, #82) [`apps/web/test/*.test.ts`; the path types in `apps/web/test/api-path.typecheck.ts` run with `pnpm typecheck`]; the CSP nonce on every script of the production build [`apps/web/scripts/csp-smoke.mjs`, CI step "CSP smoke"];
 - chain configuration fail-fast [`chain-config.test.ts`, `canonical-abi.test.ts`];
-- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment,world-id}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`, the claim issuance rules through `test/support/claim-contract.ts`;
+- health endpoints [`health.test.ts`], quality signals [`quality.test.ts`], shared package [`packages/shared/test/{amount,contracts,deployment,settlement,world-id}.test.ts`]; the persistence rules run against both repositories through `test/support/persistence-contract.ts`, the claim issuance rules through `test/support/claim-contract.ts`;
 - database retry behavior [not planned: the API uses idempotent requests and the `retryable` error flag instead of a server-side retry layer (API_CONTRACT.md)].
 
 # Integration Tests
 
-All five scenarios run in one anvil test, `apps/api/e2e/poc.e2e.ts` (real contracts, real API, PostgreSQL; World ID simulated), plus the Base Sepolia run recorded in `docs/DEMO.md`.
+All six scenarios run in one anvil test, `apps/api/e2e/poc.e2e.ts` (real contracts, real API, PostgreSQL; World ID simulated), plus the Base Sepolia run recorded in `docs/DEMO.md`.
 
 ## E2E-001 Happy Path
 

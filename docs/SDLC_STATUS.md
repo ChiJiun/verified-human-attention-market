@@ -140,7 +140,7 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues: #80 and #70 are owner decisions (#80 has a recommendation in the issue, 2026-11-03); #74 and #71 wait for the #13 re-run; #104 (DOM tests for the web pages) adds dev dependencies and is left for the owner; the epics #27, #29 and #30.
+Open issues: #80 and #70 are owner decisions (#80 has a recommendation in the issue, 2026-11-03); #74 and #71 wait for the #13 re-run; #104 (DOM tests for the web pages) adds dev dependencies and is left for the owner; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand).
 
 ## Follow-ups merged 2026-11-03
 

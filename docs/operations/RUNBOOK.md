@@ -18,9 +18,11 @@ Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
 in the response header. Search logs by that value.
 
-Redaction: `authorization`/`cookie` headers, `idkitResponse`, `proof`,
-`signature`, `privateKey` and `nullifier` fields are replaced by
-`[redacted]`; request bodies are never logged.
+Redaction: `authorization`/`cookie` request headers, the `set-cookie`
+response header, and `idkitResponse`, `signalSalt`, `proof`, `signature`,
+`privateKey` and `nullifier` fields are replaced by `[redacted]`
+(`LOGGER_REDACT_PATHS` in `apps/api/src/observability/instrumentation.ts`);
+request bodies are never logged.
 
 ## Metrics
 
@@ -176,7 +178,7 @@ handling) first. Freeze advertiser analytics decisions, compare with on-chain
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
 `INDEXER_MAX_BLOCK_RANGE` only if the RPC allows it. Status
-sync (`active`, `closed`, `refunded`) and analytics lag behind until it recovers;
+sync (`active`, `closed`, `settled`, `cancelled`) and analytics lag behind until it recovers;
 claim issuance still reads the contract directly. Linking a new campaign
 (`POST /v1/campaigns/:id/onchain`) also waits for the worker: it reads the
 contract at the worker's latest confirmed block, so advertisers get
@@ -405,8 +407,11 @@ Both are exercised in CI (`CampaignManager.t.sol` and the local-chain E2E).
 
 1. Owner (multisig in production) calls `CampaignManager.pause()`:
    `cast send $CAMPAIGN_MANAGER_ADDRESS "pause()" --account <owner>`.
-2. Effect: every `claim`, `fundCampaign` and `refundUnusedBudget` reverts
-   with `Paused`. Nothing can move funds out — the owner has no withdrawal.
+2. Effect: every `createCampaign`, `fundCampaign`, `claim` and
+   `refundUnusedBudget` reverts with `Paused`; `closeCampaign` and
+   `cancelCampaign` still work
+   ([CONTRACT_SPEC.md](../architecture/CONTRACT_SPEC.md)). Nothing can move funds
+   out — the owner has no withdrawal.
 3. Verify: `cast call $CAMPAIGN_MANAGER_ADDRESS "paused()(bool)"` → `true`;
    the indexer logs a `PausedStateChanged` event.
 4. Investigate, fix, then `unpause()`. Authorizations that expired during the
@@ -427,6 +432,7 @@ For local/testnet keys, step 1 is a new `CLAIM_SIGNER_PRIVATE_KEY`.
 
 ## Dashboard
 
-No hosted dashboard yet (no deployment, #19). A Grafana board should chart:
+No hosted dashboard yet: the API has no hosted deployment, and production is
+gated by #29. A Grafana board should chart:
 request rate/5xx by route, each outcome counter, `vham_indexer_lag_blocks`,
 `vham_rpc_up`, and the anomaly/violation counters. Link it here once deployed.

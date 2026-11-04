@@ -179,7 +179,7 @@ These do not block the testnet POC but must be revisited before real funds (#29)
 
 Not in the critical path (AGENTS.md §5):
 
-- x402 agent payments (#28; research draft in PR #66 is not a decision);
+- x402 agent payments (#28; the research draft [AGENT_PAYMENT_DESIGN.md](./AGENT_PAYMENT_DESIGN.md), merged in PR #66, is not a decision);
 - AARC / multi-chain (#30);
 - publisher SDK and attribution (#27);
 - cross-campaign reputation (ADR-0009 requires a new ADR);
