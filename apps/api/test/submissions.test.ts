@@ -385,7 +385,7 @@ describe("acceptance and authorization are one persisted result (ADR-0011)", () 
       },
     ],
   ])(
-    "records no attempt when %s, before the answers are evaluated",
+    "records no attempt when %s, even for wrong answers",
     async (_reason, preparation) => {
       const s = await setup();
       const token = await s.verify("human-3", WALLET_A);
@@ -693,6 +693,35 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     expect((await submit("k3", body)).json()).toMatchObject({
       status: "accepted",
     });
+  });
+
+  it("answers CAMPAIGN_NOT_STARTED before startAt when the contract is read live", async () => {
+    // The live read refuses a campaign before its window too; its generic
+    // CAMPAIGN_NOT_ACTIVE used to hide the specific code from participants.
+    const { verify, submit, setNow } = await setupOnchain();
+    const token = await verify("human-1", WALLET_A);
+    const body = { eligibilityToken: token, claimant: WALLET_A };
+
+    setNow(new Date("2026-10-05T10:05:00.000Z"));
+    const early = await submit("early", { ...body, answers: CORRECT });
+    expect(early.statusCode).toBe(409);
+    expect(early.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_STARTED" },
+    });
+
+    // Not stored and no attempt used, even for wrong answers.
+    const earlyWrong = await submit("early-wrong", { ...body, answers: WRONG });
+    expect(earlyWrong.statusCode).toBe(409);
+    expect(earlyWrong.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_STARTED" },
+    });
+
+    setNow(new Date("2026-10-05T10:30:00.000Z"));
+    const retry = await submit("retry", { ...body, answers: WRONG });
+    expect(retry.json()).toMatchObject({ status: "rejected" });
+    expect(
+      (await submit("in-window", { ...body, answers: CORRECT })).json(),
+    ).toMatchObject({ status: "accepted" });
   });
 
   it("does not store or count malformed answers", async () => {

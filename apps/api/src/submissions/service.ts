@@ -225,23 +225,9 @@ export async function submitCompletion(
     return { ok: false, status: 429, code: "ATTEMPT_LIMIT_REACHED" };
   }
 
-  let signing: ClaimSigning = { state: "unconfigured" };
-  if (dependencies.prepareClaim) {
-    const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
-    if (!prepared.ok) {
-      dependencies.observeClaim?.(campaign.id, prepared, input.log);
-      return {
-        ok: false,
-        status: prepared.status,
-        code: prepared.code as SubmissionFailureCode,
-      };
-    }
-    if (!prepared.payable) {
-      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
-    }
-    signing = prepared.signing;
-  }
-
+  // Pure and stores nothing, so it runs before the live read: a submission
+  // before `startAt` gets CAMPAIGN_NOT_STARTED instead of the live read's
+  // generic CAMPAIGN_NOT_ACTIVE, which also refuses a campaign not yet open.
   const evaluation = evaluateSubmission(mission, input.answers, {
     now,
     campaign,
@@ -257,6 +243,25 @@ export async function submitCompletion(
         code: evaluation.rejectionCode as SubmissionFailureCode,
       };
     }
+  }
+
+  // A refusal here stores nothing, even for wrong answers: the evaluation
+  // above is only recorded further down, once the contract would pay.
+  let signing: ClaimSigning = { state: "unconfigured" };
+  if (dependencies.prepareClaim) {
+    const prepared = await dependencies.prepareClaim(campaign, claimantAddress);
+    if (!prepared.ok) {
+      dependencies.observeClaim?.(campaign.id, prepared, input.log);
+      return {
+        ok: false,
+        status: prepared.status,
+        code: prepared.code as SubmissionFailureCode,
+      };
+    }
+    if (!prepared.payable) {
+      return { ok: false, status: 409, code: "CAMPAIGN_NOT_ACTIVE" };
+    }
+    signing = prepared.signing;
   }
 
   const quality = dependencies.quality ?? DEFAULT_QUALITY_CONFIG;
