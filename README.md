@@ -19,7 +19,7 @@ Advertisers pay for attention from **verified unique humans**, and those humans 
 | **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14 with the v1 contract. ADR-0011 (idempotent creation) changed the contract, so the flow is repeated on a redeploy before #12 and #13 close |
 | **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [docs/DEMO.md](docs/DEMO.md) |
 | **Contract** | v1 `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`), retired by ADR-0011; the redeploy is pending |
-| **Next** | Redeploy and re-run to close M1, then decide [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md): earn while browsing, with World ID at login and withdrawal |
+| **Next** | The owner decides the `CampaignManager` cleanup ([#80](https://github.com/ChiJiun/verified-human-attention-market/issues/80)) before the redeploy. Then redeploy and re-run to close M1, and decide [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md): earn while browsing, with World ID at login and withdrawal |
 
 Detailed status: [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md).
 

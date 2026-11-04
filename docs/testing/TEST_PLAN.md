@@ -7,7 +7,7 @@
 
 Where a case is implemented, the test name is given in brackets.
 
-Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
+Suites and how to run them: `pnpm test` (Vitest: `apps/api/test`, `apps/web/test`, `packages/shared/test`; the PostgreSQL suite `postgres.integration.test.ts` runs when `TEST_DATABASE_URL` is set, always in CI), `pnpm --filter @vham/api test:e2e` (`apps/api/e2e/poc.e2e.ts` against anvil, CI job `e2e`), `forge test` in `packages/contracts` (CI job `solidity`).
 
 # Contract Tests
 
@@ -72,7 +72,7 @@ At minimum:
 
 # Integration Tests
 
-All five scenarios run in one anvil test, `apps/api/e2e/poc.e2e.ts` (real contracts, real API, PostgreSQL; World ID simulated), plus the Base Sepolia run recorded in `docs/DEMO.md`.
+All six scenarios run in one anvil test, `apps/api/e2e/poc.e2e.ts` (real contracts, real API, PostgreSQL; World ID simulated), plus the Base Sepolia run recorded in `docs/DEMO.md`.
 
 ## E2E-001 Happy Path
 

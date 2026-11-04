@@ -18,42 +18,42 @@ The owner does every step that needs a key, a password, or the phone. Nobody els
 
 The operator runs the services, the database commands, and the read-only checks, with the `.env` that the owner provides. The operator needs no wallet key. One person can do both roles. Steps for the owner say **(owner)**.
 
-Run `forge` and `cast` in WSL, where Foundry is installed. The commands use bash syntax. [DEMO.md](../DEMO.md) shows how to load `.env` in bash and in PowerShell. The `cast` commands reuse `EVM_RPC_URL` and `USDC` from step 2 and `CM` from step 7, so run them in one WSL terminal.
+Run `forge` and `cast` where Foundry is installed: natively, or in WSL on Windows. The commands use bash syntax. [DEMO.md](../DEMO.md) shows how to load `.env` in bash and in PowerShell. The `cast` commands reuse `EVM_RPC_URL` and `USDC` from step 2 and `CM` from step 7, so run them in one bash terminal.
 
 ## Before you start
 
 The run needs all of the following:
 
-- The pull requests below merged, with green CI on the commit you deploy from. The owner decides whether and when each one merges. The order follows the PR bases at the time of writing, so re-read the bases before you merge (`gh pr view <number> --json baseRefName`).
+- A commit of `main` to deploy from, with green CI (the `javascript`, `solidity`, and `e2e` jobs). Take the newest such commit. Nothing is left to merge or retarget for the run. The steps rely on #94 and on the fixes that reached `main` after it, up to #106 (`58204f3`), so on the commit you deploy from, `git merge-base --is-ancestor 58204f3 HEAD` must exit with `0`. A commit that has #94 (merge commit `d77981e`) but not the later fixes is too old, even though it passes the same check for `d77981e`. Without #97, for example, the press before `expiresAt` in step 24 opens a wallet prompt, and the claim reverts on-chain with `NonceAlreadyUsed`. If a later change alters a step, update this list and the commit in the check with it.
 
-  | Order | PR  | What the run needs from it                                                                                                             | Base now                                         |
-  | ----- | --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-  | 1     | #88 | Acceptance signs at submission without starving the connection pool or deadlocking on a row lock.                                      | `docs/13-base-sepolia-run` (PR #62's branch)     |
-  | 2     | #90 | Every acceptance-time authorization feeds the alert series ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)), and refusals are logged.  | `docs/13-base-sepolia-run` (PR #62's branch)     |
-  | 3     | #62 | The ADR-0011 contract, idempotent creation per draft, and the acceptance that signs the claim authorization. You deploy this contract. | `main`                                           |
-  | 4     | #68 | The reconciled architecture, specs, and test plan that the PRs below build on.                                                         | `docs/13-base-sepolia-run`                       |
-  | 5     | #79 | The API accepts only World ID 4.0 proofs, and the web app requests a 4.0 `proof_of_human` credential with legacy proofs off.           | `docs/framework-review` (PR #68's branch)        |
-  | 6     | #81 | Contract tests for the reverts that no test covered.                                                                                   | `docs/framework-review`                          |
-  | 7     | #84 | The **Close campaign** and **Refund unused budget** buttons on the advertiser page (#69).                                              | `docs/framework-review`                          |
-  | 8     | #85 | The wallet-bound signal with a browser salt (#71), which step 15 tests.                                                                | `fix/world-id-v4-only` (PR #79's branch)         |
-  | 9     | #87 | Cookie sessions, CSRF checks, the CSP, and `WEB_ORIGIN` (#72).                                                                         | `feat/69-close-refund-buttons` (PR #84's branch) |
-  | 10    | #92 | Unexpected API errors answer with a generic `500` and log the cause.                                                                   | `main`                                           |
+  #94 brought in:
+  - #62: the ADR-0011 contract, idempotent creation per draft, and the acceptance that signs the claim authorization. You deploy this contract.
+  - #88 and #90: acceptance signs at submission without starving the connection pool or deadlocking on a row lock, every acceptance-time authorization feeds the alert series ([RUNBOOK.md](../operations/RUNBOOK.md#metrics)), and refusals are logged.
+  - #79: the API accepts only World ID 4.0 proofs, and the web app requests a 4.0 `proof_of_human` credential with legacy proofs off.
+  - #84: the **Close campaign** and **Refund unused budget** buttons on the advertiser page (#69).
+  - #85: the wallet-bound signal with a browser salt (#71), which step 15 tests.
+  - #87: cookie sessions, CSRF checks, the CSP, and `WEB_ORIGIN` (#72).
+  - #92: unexpected API errors answer with a generic `500` and log the cause.
 
-  Notes on the order:
-  - #88 and #90 base on PR #62's branch, so merge them into it first. PR #62 then carries them to `main`.
-  - #68 bases on PR #62's branch too. After #62 merges, retarget #68 to `main`, then merge it.
-  - #79, #81, and #84 base on #68's branch (`docs/framework-review`). Retarget each to `main` after #68 merges, or the merge lands in #68's branch only.
-  - #85 bases on #79's branch and #87 on #84's. Merge #79 before #85 and #84 before #87.
-  - The ADR-0007 link in step 15 resolves to the hard condition only after #85 merges.
-  - #81 and #92 touch no step of this runbook. Merge them before the run only so that you deploy the commit that CI covered.
-  - This runbook (#83) needs none of the code above to merge, but its steps assume all of it.
+  The stacked PRs (#68, #79, #81, #83–#85, #87, #88, #90) were closed with a pointer to #94, and #62 and #92 merged with it.
+
+  After #94, these fixes reached `main`, and the steps rely on them:
+  - #97 (`a815b40`): once the wallet is paid, the API answers `409 ALREADY_CLAIMED` before and after `expiresAt` instead of returning the paid authorization, and the mission page simulates the claim before the wallet sends it (steps 22 and 24, #82).
+  - #98 (`2b6d456`): after a `503 RPC_UNAVAILABLE` the advertiser page retries the reconciliation of a creation for about two minutes before it asks for **Check again** (step 11, #78), and it keeps checking a close or refund without a receipt instead of offering to send it again (steps 21, 27, and 29, #86).
+  - #99 (`39635d0`): the indexer commits only ranges whose blocks link by hash, and linking reads the contract at the worker's latest confirmed block, so a creation links only after the worker has indexed it (step 11, #76).
+  - #100 (`78c7514`): the worker retries an unreachable RPC at startup instead of exiting, holds a lock per deployment so that a second worker waits and `reorg:recover --apply` is refused beside it, and a halt raises VhamChainHalted (step 9, #77).
+  - #101 (`ad65e6f`): the API retries an unreachable RPC at startup too, instead of exiting (step 9).
+  - #106 (`58204f3`): the indexer commits a range only with all of its events, which needs `eth_getBlockReceipts` (step 8, #102).
+  - #107 (`f0bb306`): the advertiser page keeps checking an approval or funding without a receipt and offers **Fund campaign** once the allowance shows (step 11, #103).
+
+  #95, #96, #105, and #108 change no step: they remove duplicated code, add a CI smoke test and a test helper, and update docs. If the owner's decision on #80 changes `CampaignManager`, deploy from a commit that contains that change, because this redeploy is the next on-chain change.
 
 - A checkout of that commit, after `pnpm install`, which also builds `@vham/shared`. Rebuild it with `pnpm --filter @vham/shared build` if you switch commits without reinstalling.
 - These wallets on Base Sepolia:
 
   | Wallet                                                              | Needs                    | Used for                                                           |
   | ------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------ |
-  | `deployer`, a Foundry keystore in WSL (`cast wallet list` shows it) | test ETH                 | the deploy                                                         |
+  | `deployer`, a Foundry keystore (`cast wallet list` shows it)        | test ETH                 | the deploy                                                         |
   | advertiser                                                          | test ETH and 3 test USDC | two campaigns                                                      |
   | participant A                                                       | test ETH                 | the claim                                                          |
   | participant B, a second account in the participants' browser wallet | nothing                  | steps 15 and 17 only; it never sends a transaction                 |
@@ -149,6 +149,7 @@ The wallet reports a transaction as soon as it is mined. The `status` field on t
 
 8. Set the API environment from the record ([Configure the API](TESTNET.md#configure-the-api), TESTNET.md step 4). For this run, also check these values:
    - `INDEXER_MAX_BLOCK_RANGE=200` with the public RPC;
+   - an `EVM_RPC_URL` that serves `eth_getBlockReceipts` with a block hash. Since #106 the indexer reads it for every block that may hold a `CampaignManager` event before it commits the range that holds the block. The public Base Sepolia RPC served it when [RUNBOOK.md](../operations/RUNBOOK.md#indexer-request-cost) measured it. With an RPC that does not, the worker never commits the range that holds the first such block, so it stalls there (VhamIndexerInconsistentReads, then VhamIndexerStalled), and linking and status sync wait for it. Check the RPC you use with `cast rpc eth_getBlockReceipts "$(cast block latest --field hash --rpc-url "$EVM_RPC_URL")" --rpc-url "$EVM_RPC_URL" | head -c 300`, which prints the start of a JSON list of receipts. An error, such as a method that does not exist, means that the RPC does not serve it;
    - `SIWE_DOMAIN=localhost:3000`;
    - `WORLD_ID_MODE=live` (the default) and `WORLD_ID_ENVIRONMENT=production`;
    - `WORLD_ID_APP_ID` (`app_` followed by the id), `WORLD_ID_RP_ID` (`rp_` followed by 1 to 16 hex digits), and `RP_SIGNING_KEY` (32 bytes of hex, a secret), all three together. With none of them set, the API starts with the warning "World ID is disabled" and answers `503 WORLD_ID_NOT_CONFIGURED` to the World ID request. With only some of them, or with a malformed id or key, the API refuses to start with "Invalid World ID configuration" (step 9);

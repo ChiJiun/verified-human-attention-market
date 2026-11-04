@@ -4,6 +4,8 @@
 > Reviewed: 2026-10-16. Tracks [Issue #28](https://github.com/ChiJiun/verified-human-attention-market/issues/28).
 > Scope: future Milestone 4 agent payment architecture. **No change to M1/M2/M3 priorities, current wallet funding, deployed contracts, or API behavior.**
 > External design input (2026-10-15): a prospective x402 ecosystem integrator suggested EIP-3009 / direct-to-escrow funding. This is unverified feedback, **not** a MACH integration agreement, security audit, or compatibility guarantee.
+>
+> Facts updated 2026-11-04 (design conclusions unchanged): this draft reached `main` through PR #66, and PR #62 (ADR-0011) merged through #94 on 2026-11-02. `createCampaign`, `fundCampaign(campaignId, amount, draftRef)` and the signed `ClaimAuthorization` all carry the `draftRef`, and `campaignIdByDraft(advertiser, draftRef)` maps it to the campaign id. The ADR-0011 contract is not yet deployed on Base Sepolia (#13). The passages below that treat PR #62 as unmerged predate this.
 
 ## 1. Problem / non-goals
 
@@ -11,7 +13,7 @@ The current wallet path is `POST /v1/campaigns` (off-chain draft) followed by wa
 
 1. `CampaignManager.createCampaign(...)` creates an on-chain draft and records `msg.sender` as advertiser.
 2. The advertiser `USDC.approve(CampaignManager, amount)`.
-3. The advertiser `CampaignManager.fundCampaign(campaignId, amount)`: only the recorded advertiser can call this, and the contract pulls funds with `transferFrom(msg.sender, address(this), amount)`.
+3. The advertiser `CampaignManager.fundCampaign(campaignId, amount, draftRef)`: only the recorded advertiser can call this, the `draftRef` must name that campaign (ADR-0011), and the contract pulls funds with `transferFrom(msg.sender, address(this), amount)`.
 
 That is not an autonomous one-authorization x402 purchase. A conventional x402 EVM `exact` transfer only moves tokens to `payTo`; it does **not** call `fundCampaign()`, set the contract's campaign ownership, or book campaign liabilities.
 

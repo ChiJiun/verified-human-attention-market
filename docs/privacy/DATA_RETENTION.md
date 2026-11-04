@@ -8,7 +8,7 @@
 1. **Proof of Human is not an identity record.** World ID tells us "one human
    per campaign". We never keep the proof, the nullifier, or anything that
    lets two campaigns be joined by person.
-2. **The chain is public and permanent.** A paid claim (`Claimed` event)
+2. **The chain is public and permanent.** A paid claim (`RewardClaimed` event)
    reveals `wallet ↔ on-chain campaign` forever. We do not add anything to
    that link, and we remove every link the chain does not already reveal.
 3. **Keep settlement facts, drop behavior detail.** Campaign rows, accepted
@@ -58,8 +58,9 @@ expire within that TTL, so nothing needs the scrubbed data afterwards.
 
 ## Logs
 
-- Request bodies are never logged. Pino redacts `authorization`/`cookie`
-  headers and any `idkitResponse`, `proof`, `signature`, `privateKey` or
+- Request bodies are never logged. Pino redacts the `authorization`/`cookie`
+  request headers, the `set-cookie` response header, and any
+  `idkitResponse`, `signalSalt`, `proof`, `signature`, `privateKey` or
   `nullifier` field (`apps/api/src/observability/instrumentation.ts`).
 - Critical-path rejections log the route outcome and campaign id only — no
   wallet, no answers.

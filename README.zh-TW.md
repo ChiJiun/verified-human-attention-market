@@ -19,7 +19,7 @@
 | **里程碑** | M1（概念驗證）：完整流程已於 2026-10-14 以 v1 合約在 **Base Sepolia** 執行。ADR-0011（冪等建立）改動了合約，因此需在重新部署後再跑一次，#12、#13 才會關閉 |
 | **證明了什麼** | 真實 World ID proof、作答驗證、後端簽發授權、鏈上發放 USDC，接著關閉與退款。交易紀錄見 [docs/DEMO.md](docs/DEMO.md) |
 | **合約** | v1 `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc)，Base Sepolia（chain `84532`），已因 ADR-0011 退役；重新部署待進行 |
-| **下一步** | 重新部署並重跑以完成 M1，接著決定 [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md)：瀏覽即累積，登入與提領時驗證 World ID |
+| **下一步** | 重新部署前，先由 owner 決定 `CampaignManager` 的清理項目（[#80](https://github.com/ChiJiun/verified-human-attention-market/issues/80)）。接著重新部署並重跑以完成 M1，再決定 [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md)：瀏覽即累積，登入與提領時驗證 World ID |
 
 詳細進度：[docs/SDLC_STATUS.md](docs/SDLC_STATUS.md)。
 

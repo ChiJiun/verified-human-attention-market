@@ -1,13 +1,17 @@
 # Production-Readiness Gate
 
 > Issue #29. This is a hard gate: no meaningful real funds (anything beyond
-> test USDC) until every exit criterion is ✅. Status as of 2026-10-19.
+> test USDC) until every exit criterion is ✅. Exit criteria status as of
+> 2026-11-04. The exit criteria below are the checklist in issue #29. Its
+> checkboxes are not ticked yet; the status column here is the reviewed state.
+> The workstream checklists further down change with the pull request that
+> settles each item; they were not re-checked as a whole on that date.
 
 ## Exit criteria
 
 | Criterion | Status | Evidence |
 | --- | --- | --- |
-| No known P0 financial/security findings open | 🟡 | Track with the `P0` label; none known in code today, but the external review below has not happened |
+| No known P0 financial/security findings open | 🟡 | The repository has no `P0` label; priority shows only as `[P0]` in an issue title. List the open ones with `gh issue list --state open --search "[P0] in:title"`. On 2026-11-04 it listed only #29, this gate itself, which is not a finding. None known in code today, but the external review below has not happened |
 | Backup and restore tested | ✅ | CI `e2e` job: `scripts/db/backup-restore-check.sh` restores the populated database and compares every table ([BACKUP_RESTORE.md](./BACKUP_RESTORE.md)) |
 | Emergency pause procedure tested | ✅ | Foundry tests + E2E drill (pause → claim fails → unpause; signer rotation) — [RUNBOOK.md](./RUNBOOK.md#emergency-procedures-23-adr-0008) |
 | Financial reconciliation detects mismatches | ✅ | `checkReconciliation`: contract ↔ indexed events ↔ issued authorizations; unit tests for each finding, E2E asserts a clean report; worker gauge + alert |

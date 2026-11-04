@@ -56,7 +56,7 @@ Fixed one-minute windows, per API instance:
 | Bucket | Default | Env |
 | --- | --- | --- |
 | Per IP, unauthenticated or SIWE | 300 / min | `RATE_LIMIT_ANONYMOUS_PER_MINUTE` |
-| Per IP and route: sign-in, eligibility, reports | 30 / min | `RATE_LIMIT_SENSITIVE_PER_MINUTE` |
+| Per IP and route: sign-in (`POST /v1/auth/nonce`, `POST /v1/auth/verify`), World ID request (`POST /v1/campaigns/:id/world-id/request`), eligibility (`POST /v1/campaigns/:id/eligibility/verify`), reports (`POST /v1/campaigns/:id/reports`) | 30 / min | `RATE_LIMIT_SENSITIVE_PER_MINUTE` |
 | Per API key | 600 / min (key setting, max 6000) | `RATE_LIMIT_CLIENT_DEFAULT_PER_MINUTE`, `RATE_LIMIT_CLIENT_MAX_PER_MINUTE` |
 
 Responses carry `RateLimit-Limit`, `RateLimit-Remaining` and
