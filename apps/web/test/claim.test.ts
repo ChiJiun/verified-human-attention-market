@@ -2,11 +2,17 @@ import { campaignManagerAbi } from "@vham/shared/contracts";
 import {
   createPublicClient,
   custom,
+  encodeAbiParameters,
   encodeErrorResult,
+  encodeEventTopics,
   encodeFunctionData,
+  getAddress,
   toHex,
+  WaitForTransactionReceiptTimeoutError,
   type ContractErrorName,
+  type Hash,
   type Hex,
+  type Log,
 } from "viem";
 import { describe, expect, it } from "vitest";
 
@@ -14,8 +20,11 @@ import { ApiError } from "../lib/api";
 import {
   assertClaimChain,
   claimCall,
+  claimEventIn,
+  claimReceiptOutcome,
   isAlreadyPaid,
   simulateClaim,
+  waitForClaim,
   type Authorization,
 } from "../lib/claim";
 
@@ -44,18 +53,32 @@ type Revert = ContractErrorName<typeof campaignManagerAbi>;
 /**
  * A node whose latest block starts at `blockTime` and moves `tick` seconds
  * per block read. eth_call answers like the contract would at that block:
- * `revert(blockTime)` names the error, or null for success.
+ * `revert(blockTime)` names the error, or null for success. eth_getCode
+ * answers `code` for CONTRACT ("0x": no contract there; an Error: the
+ * lookup fails), and "0x" for any other address.
  */
 function node(
   revert: (blockTime: number) => Revert | null,
-  { blockTime = ISSUED_AT, tick = 0 } = {},
+  {
+    blockTime = ISSUED_AT,
+    tick = 0,
+    code = "0x6080" as Hex | Error,
+  }: { blockTime?: number; tick?: number; code?: Hex | Error } = {},
 ) {
   const calls: { from?: string; to?: string; data?: Hex }[] = [];
+  const codeReads: string[] = [];
   let blockReads = 0;
   const publicClient = createPublicClient({
     transport: custom(
       {
         async request({ method, params }) {
+          if (method === "eth_getCode") {
+            const [address] = params as [string];
+            codeReads.push(address);
+            if (address.toLowerCase() !== CONTRACT) return "0x";
+            if (code instanceof Error) throw code;
+            return code;
+          }
           if (method === "eth_getBlockByNumber") {
             blockReads += 1;
             blockTime += tick;
@@ -80,7 +103,7 @@ function node(
       { retryCount: 0 },
     ),
   });
-  return { publicClient, calls, blockReads: () => blockReads };
+  return { publicClient, calls, codeReads, blockReads: () => blockReads };
 }
 
 /** The contract's issuedAt check against the block the call runs on. */
@@ -232,4 +255,221 @@ describe("the authorization's chain", () => {
       expect(sent).toEqual([]);
     },
   );
+});
+
+describe("the claim's contract (#110 review)", () => {
+  it("refuses an address without code before anything is simulated", async () => {
+    // A stale or broken deployment: eth_call to an address without code
+    // returns empty data, which would read as a successful simulation.
+    const { publicClient, calls, codeReads } = node(() => null, {
+      code: "0x",
+    });
+
+    await expect(simulateClaim(publicClient, CALL, FAST)).rejects.toThrow(
+      `There is no contract at ${CONTRACT} on your wallet's network, so nothing was sent.`,
+    );
+    expect(codeReads).toEqual([CONTRACT]);
+    expect(calls).toEqual([]);
+  });
+
+  it("reports a code lookup that fails as not sent", async () => {
+    const { publicClient, calls } = node(() => null, {
+      code: new Error("rpc down"),
+    });
+
+    await expect(simulateClaim(publicClient, CALL, FAST)).rejects.toThrow(
+      "Nothing was sent.",
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("checks the claim's own contract address, once", async () => {
+    const { publicClient, codeReads } = node(notYetValidBefore(ISSUED_AT), {
+      blockTime: ISSUED_AT - 1,
+      tick: 1,
+    });
+
+    await expect(simulateClaim(publicClient, CALL, FAST)).resolves.toBe(
+      "ready",
+    );
+    expect(codeReads).toEqual([CONTRACT]);
+  });
+});
+
+const TX = `0x${"44".repeat(32)}` as Hash;
+const OTHER = "0xdddddddddddddddddddddddddddddddddddddddd";
+
+/** A log of a mined transaction, as viem formats a receipt's logs. */
+type MinedLog = Log<bigint, number, false>;
+
+/** The RewardClaimed log CampaignManager emits for AUTH, as viem formats it. */
+function rewardClaimed(
+  overrides: {
+    address?: Hex;
+    campaignId?: bigint;
+    claimant?: Hex;
+    amount?: bigint;
+    nonce?: Hex;
+  } = {},
+): MinedLog {
+  const {
+    address = CONTRACT,
+    campaignId = 1n,
+    claimant = WALLET,
+    amount = 1_000_000n,
+    nonce = AUTH.nonce,
+  } = overrides;
+  return {
+    address,
+    topics: encodeEventTopics({
+      abi: campaignManagerAbi,
+      eventName: "RewardClaimed",
+      args: { campaignId, claimant },
+    }) as Log["topics"],
+    data: encodeAbiParameters(
+      [{ type: "uint256" }, { type: "bytes32" }],
+      [amount, nonce],
+    ),
+    blockHash: `0x${"55".repeat(32)}`,
+    blockNumber: 10n,
+    logIndex: 0,
+    transactionHash: TX,
+    transactionIndex: 0,
+    removed: false,
+  };
+}
+
+/** Another event of the same contract in the same receipt. */
+const funded: MinedLog = {
+  ...rewardClaimed(),
+  topics: encodeEventTopics({
+    abi: campaignManagerAbi,
+    eventName: "CampaignFunded",
+    args: { campaignId: 1n },
+  }) as Log["topics"],
+  data: encodeAbiParameters([{ type: "uint256" }], [1_000_000n]),
+};
+
+describe("the claim's receipt (#110 review)", () => {
+  it("is paid with this claim's RewardClaimed event", () => {
+    expect(
+      claimReceiptOutcome(
+        { status: "success", logs: [funded, rewardClaimed()] },
+        CALL,
+        TX,
+      ),
+    ).toEqual({ kind: "paid", hash: TX });
+    // A checksummed address in the log is the same contract.
+    expect(
+      claimEventIn([rewardClaimed({ address: getAddress(CONTRACT) })], CALL),
+    ).toBe(true);
+  });
+
+  it("is not paid when a successful receipt has no event at all", () => {
+    // What a claim sent to an address without code gets: success, no logs.
+    expect(
+      claimReceiptOutcome({ status: "success", logs: [] }, CALL, TX),
+    ).toEqual({ kind: "no-claim-event", hash: TX });
+    expect(
+      claimReceiptOutcome({ status: "success", logs: [funded] }, CALL, TX),
+    ).toEqual({ kind: "no-claim-event", hash: TX });
+  });
+
+  it.each([
+    ["another contract", { address: OTHER }],
+    ["another claimant", { claimant: OTHER }],
+    ["another campaign", { campaignId: 2n }],
+    ["another amount", { amount: 2_000_000n }],
+    ["another nonce", { nonce: `0x${"66".repeat(32)}` }],
+  ] as const)(
+    "is not paid when the RewardClaimed event is for %s",
+    (_case, overrides) => {
+      expect(
+        claimReceiptOutcome(
+          { status: "success", logs: [rewardClaimed(overrides)] },
+          CALL,
+          TX,
+        ),
+      ).toEqual({ kind: "no-claim-event", hash: TX });
+    },
+  );
+
+  it("reports a reverted receipt as reverted, whatever its logs", () => {
+    expect(
+      claimReceiptOutcome(
+        { status: "reverted", logs: [rewardClaimed()] },
+        CALL,
+        TX,
+      ),
+    ).toEqual({ kind: "reverted", hash: TX });
+  });
+});
+
+/** A node that has mined TX with `logs` (RPC form) and `status`. */
+function minedNode(logs: MinedLog[], status: "0x1" | "0x0" = "0x1") {
+  return createPublicClient({
+    transport: custom(
+      {
+        async request({ method }) {
+          if (method !== "eth_getTransactionReceipt") {
+            throw new Error(`unexpected ${method}`);
+          }
+          return {
+            blockHash: `0x${"55".repeat(32)}`,
+            blockNumber: "0xa",
+            contractAddress: null,
+            cumulativeGasUsed: "0x5208",
+            effectiveGasPrice: "0x1",
+            from: WALLET,
+            gasUsed: "0x5208",
+            logs: logs.map((log) => ({
+              ...log,
+              blockNumber: "0xa",
+              logIndex: "0x0",
+              transactionIndex: "0x0",
+            })),
+            logsBloom: `0x${"00".repeat(256)}`,
+            status,
+            to: CONTRACT,
+            transactionHash: TX,
+            transactionIndex: "0x0",
+            type: "0x2",
+          };
+        },
+      },
+      { retryCount: 0 },
+    ),
+  });
+}
+
+describe("waiting for the claim (#110 review)", () => {
+  it("reports paid only when the mined receipt carries the event", async () => {
+    await expect(
+      waitForClaim(minedNode([rewardClaimed()]), CALL, TX, 1_000),
+    ).resolves.toEqual({ kind: "paid", hash: TX });
+    await expect(
+      waitForClaim(
+        minedNode([rewardClaimed({ address: OTHER })]),
+        CALL,
+        TX,
+        1_000,
+      ),
+    ).resolves.toEqual({ kind: "no-claim-event", hash: TX });
+    await expect(
+      waitForClaim(minedNode([], "0x0"), CALL, TX, 1_000),
+    ).resolves.toEqual({ kind: "reverted", hash: TX });
+  });
+
+  it("leaves a claim without a receipt pending, never failed", async () => {
+    const publicClient = {
+      waitForTransactionReceipt: async () => {
+        throw new WaitForTransactionReceiptTimeoutError({ hash: TX });
+      },
+    };
+
+    await expect(waitForClaim(publicClient, CALL, TX)).resolves.toEqual({
+      kind: "pending",
+      hash: TX,
+    });
+  });
 });

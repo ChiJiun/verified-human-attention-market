@@ -29,10 +29,11 @@ import {
   claimCall,
   isAlreadyPaid,
   simulateClaim,
+  waitForClaim,
   type Authorization,
 } from "../../lib/claim";
 import { chain, formatUsdc } from "../../lib/config";
-import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
+import { connectWallet, type Wallet } from "../../lib/wallet";
 
 interface Campaign {
   id: string;
@@ -79,6 +80,8 @@ type Step =
   | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash }
+  /** Mined successfully, but its receipt shows no reward paid by this claim. */
+  | { kind: "no-claim-event"; hash: Hash }
   /** Paid earlier (another tab, an earlier visit); no transaction was sent. */
   | { kind: "already-paid" };
 
@@ -292,16 +295,20 @@ export default function MissionPage() {
       // `chain`, the chain the wallet was checked against above and the one
       // writeContract sends on.
       const call = claimCall(wallet.address, auth, chain);
-      // A claim the contract would refuse never reaches the wallet.
+      // A claim the contract would refuse, or an address without code,
+      // never reaches the wallet.
       if ((await simulateClaim(wallet.publicClient, call)) === "already-paid") {
         setStep({ kind: "already-paid" });
         return;
       }
       const hash = await wallet.walletClient.writeContract({ ...call, chain });
       setStep({ kind: "pending", hash });
-      const outcome = await waitForTx(wallet.publicClient, hash);
-      if (outcome.kind === "confirmed") {
+      // "Paid" only with this claim's RewardClaimed event in the receipt.
+      const outcome = await waitForClaim(wallet.publicClient, call, hash);
+      if (outcome.kind === "paid") {
         setStep({ kind: "paid", hash });
+      } else if (outcome.kind === "no-claim-event") {
+        setStep({ kind: "no-claim-event", hash });
       } else if (outcome.kind === "reverted") {
         setStep({ kind: "claim", submissionId: step.submissionId });
         setError("The claim transaction reverted. You can request it again.");
@@ -469,6 +476,20 @@ export default function MissionPage() {
       {step.kind === "paid" && (
         <section className="card tx done" aria-live="polite">
           <strong>Reward paid to your wallet.</strong>
+          <p>
+            <code>{step.hash}</code>
+          </p>
+        </section>
+      )}
+
+      {step.kind === "no-claim-event" && (
+        <section className="card tx failed" aria-live="polite">
+          <strong>
+            The claim transaction succeeded, but no reward payment was found.
+          </strong>{" "}
+          Its receipt has no RewardClaimed event from the campaign contract for
+          this wallet, so this page cannot confirm that the reward was paid. Do
+          not send it again; check the transaction in your wallet.
           <p>
             <code>{step.hash}</code>
           </p>

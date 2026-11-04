@@ -380,7 +380,7 @@ describe("observing a close or refund transaction", () => {
     expect(await check()).toBe("done");
   });
 
-  it("never calls a close unchanged while the campaign cannot be read", async () => {
+  it("never reports a close as replaced while the campaign cannot be read", async () => {
     // Nonce 7 was used by another transaction, which may have closed it.
     const { wallet } = walletWith({
       transaction: async () => ({ nonce: 7 }),
