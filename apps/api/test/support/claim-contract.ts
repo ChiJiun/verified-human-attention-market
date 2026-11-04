@@ -1,4 +1,4 @@
-import type { Address } from "viem";
+import { getAddress, type Address } from "viem";
 import { expect, it } from "vitest";
 
 import { draftRefFor } from "../../src/campaigns/onchain.js";
@@ -6,7 +6,11 @@ import type {
   ClaimIssueInput,
   ClaimRepository,
 } from "../../src/claims/repository.js";
-import { createClaimSigner } from "../../src/claims/signer.js";
+import {
+  createClaimSigner,
+  MAX_CLAIM_TTL_SECONDS,
+  type SignedClaim,
+} from "../../src/claims/signer.js";
 
 export interface ClaimHarness {
   claims: ClaimRepository;
@@ -50,7 +54,15 @@ export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
       result === "accepted" ? acceptedSubmission : rejectedSubmission
     )(linked.campaignId);
     let signatures = 0;
-    const issue = (overrides: Partial<ClaimIssueInput> = {}) => {
+    /**
+     * Issues for this submission. `signerReturns` stands for a faulty signer
+     * (a misconfigured signing service, say): it changes the authorization
+     * the signer returns, after signing.
+     */
+    const issue = (
+      overrides: Partial<ClaimIssueInput> = {},
+      signerReturns: (claim: SignedClaim) => SignedClaim = (claim) => claim,
+    ) => {
       const now = overrides.now ?? NOW;
       return claims.issueOnce({
         campaignId: linked.campaignId,
@@ -59,17 +71,19 @@ export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
         canIssue: true,
         alreadyClaimed: false,
         onchainPaidCompletions: 0,
-        sign: () => {
+        sign: async () => {
           signatures += 1;
-          return SIGNER.sign({
-            campaignId: BigInt(linked.onchainCampaignId),
-            draftRef: draftRefFor(linked.campaignId),
-            claimant,
-            amount: 1_000_000n,
-            chainId: 84532,
-            contractAddress: linked.contractAddress,
-            issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
-          });
+          return signerReturns(
+            await SIGNER.sign({
+              campaignId: BigInt(linked.onchainCampaignId),
+              draftRef: draftRefFor(linked.campaignId),
+              claimant,
+              amount: 1_000_000n,
+              chainId: 84532,
+              contractAddress: linked.contractAddress,
+              issuedAt: BigInt(Math.floor(now.getTime() / 1000)),
+            }),
+          );
         },
         ...overrides,
       });
@@ -176,5 +190,118 @@ export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
 
     expect(replay.created).toBe(false);
     expect(replay.claim.signature).toBe(otherClaim.claim.signature);
+  });
+
+  /** The signer's authorization with a lifetime of `seconds`. */
+  const lifetime =
+    (seconds: number) =>
+    (claim: SignedClaim): SignedClaim => ({
+      ...claim,
+      payload: {
+        ...claim.payload,
+        expiresAt: claim.payload.issuedAt + BigInt(seconds),
+      },
+    });
+
+  it("refuses, storing nothing, an authorization from the signer that outlives the contract TTL", async () => {
+    const { claims, campaign, claimant, issue, signatures } =
+      await participant();
+
+    await expect(
+      issue({}, lifetime(MAX_CLAIM_TTL_SECONDS + 1)),
+    ).rejects.toThrow("Claim signer returned an invalid authorization");
+    // Refused after signing (the TTL check), and nothing was kept.
+    expect(signatures()).toBe(1);
+    expect(await claims.listIssuedClaims(campaign.campaignId)).toEqual([]);
+
+    // Exactly the contract TTL is accepted, and the refusal left nothing in
+    // the way: this one is new, and it is the one replayed afterwards.
+    const issued = await issue({}, lifetime(MAX_CLAIM_TTL_SECONDS));
+    expect(issued.created).toBe(true);
+    expect(issued.claim.payload.expiresAt - issued.claim.payload.issuedAt).toBe(
+      BigInt(MAX_CLAIM_TTL_SECONDS),
+    );
+    expect(signatures()).toBe(2);
+    const replay = await issue();
+    expect(replay.created).toBe(false);
+    expect(replay.claim.signature).toBe(issued.claim.signature);
+    expect(await claims.listIssuedClaims(campaign.campaignId)).toEqual([
+      {
+        claimant: claimant.toLowerCase(),
+        nonce: issued.claim.payload.nonce.toLowerCase(),
+      },
+    ]);
+  });
+
+  const OTHER: Address = `0x${"9".repeat(40)}`;
+  it.each<[string, (claim: SignedClaim) => SignedClaim]>([
+    [
+      "another on-chain campaign",
+      (claim) => ({
+        ...claim,
+        payload: {
+          ...claim.payload,
+          campaignId: claim.payload.campaignId + 1n,
+        },
+      }),
+    ],
+    [
+      "another draft",
+      (claim) => ({
+        ...claim,
+        payload: { ...claim.payload, draftRef: draftRefFor("another draft") },
+      }),
+    ],
+    [
+      "another claimant",
+      (claim) => ({ ...claim, payload: { ...claim.payload, claimant: OTHER } }),
+    ],
+    [
+      "another amount",
+      (claim) => ({
+        ...claim,
+        payload: { ...claim.payload, amount: claim.payload.amount + 1n },
+      }),
+    ],
+    ["another chain", (claim) => ({ ...claim, chainId: 1 })],
+    ["another contract", (claim) => ({ ...claim, contractAddress: OTHER })],
+    [
+      "an issuedAt after now",
+      (claim) => ({
+        ...claim,
+        payload: {
+          ...claim.payload,
+          issuedAt: claim.payload.issuedAt + 1n,
+          expiresAt: claim.payload.expiresAt + 1n,
+        },
+      }),
+    ],
+    ["no lifetime", lifetime(0)],
+  ])(
+    "refuses, storing nothing, an authorization from the signer for %s",
+    async (_case, signerReturns) => {
+      const { claims, campaign, issue, signatures } = await participant();
+
+      await expect(issue({}, signerReturns)).rejects.toThrow(
+        "Claim signer returned an invalid authorization",
+      );
+      expect(signatures()).toBe(1);
+      expect(await claims.listIssuedClaims(campaign.campaignId)).toEqual([]);
+    },
+  );
+
+  it("accepts the signer's claimant and contract in checksum case", async () => {
+    const { issue } = await participant();
+
+    const issued = await issue({}, (claim) => ({
+      ...claim,
+      payload: {
+        ...claim.payload,
+        claimant: getAddress(claim.payload.claimant),
+      },
+      contractAddress: getAddress(claim.contractAddress),
+    }));
+
+    expect(issued.created).toBe(true);
   });
 }

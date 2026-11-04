@@ -72,16 +72,84 @@ const rewardClaimed = {
   removed: false,
 };
 
+/** A successful receipt of `hash`, sent by WALLET to `to`, as a node returns it. */
+function minedReceipt(hash: Hash, to: string, logs: unknown[]) {
+  return {
+    blockHash: `0x${"55".repeat(32)}`,
+    blockNumber: "0xa",
+    contractAddress: null,
+    cumulativeGasUsed: "0x5208",
+    effectiveGasPrice: "0x1",
+    from: WALLET,
+    gasUsed: "0x5208",
+    logs,
+    logsBloom: `0x${"00".repeat(256)}`,
+    status: "0x1",
+    to,
+    transactionHash: hash,
+    transactionIndex: "0x0",
+    type: "0x2",
+  };
+}
+
+/** A transaction of WALLET at nonce 5, as a node returns it. */
+function walletTransaction(hash: Hash, to: string, blockNumber: string | null) {
+  return {
+    hash,
+    from: WALLET,
+    to,
+    nonce: "0x5",
+    value: "0x0",
+    input: to === WALLET ? "0x" : "0x1234",
+    gas: "0x5208",
+    maxFeePerGas: "0x2",
+    maxPriorityFeePerGas: "0x1",
+    type: "0x2",
+    chainId: toHex(chain.id),
+    accessList: [],
+    blockHash: blockNumber && `0x${"55".repeat(32)}`,
+    blockNumber,
+    transactionIndex: blockNumber && "0x0",
+    yParity: "0x0",
+    r: "0x1",
+    s: "0x1",
+  };
+}
+
+/** The wallet's cancel of the claim: nonce 5 again, to itself, no value. */
+const CANCEL = `0x${"77".repeat(32)}` as Hash;
+
 /**
  * A wallet on the site's chain whose node answers the claim: the contract's
  * `code`, eth_call (`simulation`: null passes, an Error reverts) and, once
- * sent, a successful receipt with `logs`.
+ * sent, a successful receipt with `logs`. With `cancelled`, the claim is
+ * never mined: the node mines the wallet's CANCEL at the claim's nonce
+ * instead, which viem finds in the latest block and waits for in its place.
  */
 function claimWallet({
   code = "0x6080" as Hex,
   simulation = null as Error | null,
   logs = [rewardClaimed] as unknown[],
+  cancelled = false,
 } = {}) {
+  const sent = {
+    eth_sendTransaction: () => TX,
+    eth_getTransactionReceipt: () => minedReceipt(TX, CONTRACT, logs),
+  };
+  const replaced = {
+    eth_sendTransaction: () => TX,
+    eth_getTransactionReceipt: ([hash]: readonly unknown[]) =>
+      hash === CANCEL ? minedReceipt(CANCEL, WALLET, []) : null,
+    eth_getTransactionByHash: ([hash]: readonly unknown[]) =>
+      hash === TX ? walletTransaction(TX, CONTRACT, null) : null,
+    eth_blockNumber: () => "0xa",
+    eth_getBlockByNumber: () => ({
+      hash: `0x${"55".repeat(32)}`,
+      number: "0xa",
+      timestamp: toHex(ISSUED_AT + 12),
+      transactions: [walletTransaction(CANCEL, WALLET, "0xa")],
+    }),
+  };
   return injectedWallet({
     eth_requestAccounts: () => [WALLET],
     eth_chainId: () => toHex(chain.id),
@@ -90,23 +158,7 @@ function claimWallet({
       if (simulation) throw simulation;
       return "0x";
     },
-    eth_sendTransaction: () => TX,
-    eth_getTransactionReceipt: () => ({
-      blockHash: `0x${"55".repeat(32)}`,
-      blockNumber: "0xa",
-      contractAddress: null,
-      cumulativeGasUsed: "0x5208",
-      effectiveGasPrice: "0x1",
-      from: WALLET,
-      gasUsed: "0x5208",
-      logs,
-      logsBloom: `0x${"00".repeat(256)}`,
-      status: "0x1",
-      to: CONTRACT,
-      transactionHash: TX,
-      transactionIndex: "0x0",
-      type: "0x2",
-    }),
+    ...(cancelled ? replaced : sent),
   });
 }
 
@@ -236,7 +288,37 @@ describe("mission page: what the claim's receipt shows (#110 review)", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText("Reward paid to your wallet.")).toBeNull();
+    // The claim itself was mined: one hash, and no "claim again" yet unless
+    // the wallet says it was cancelled or replaced.
     expect(screen.getByText(TX)).toBeTruthy();
+    expect(screen.queryByText(/Mined in its place/)).toBeNull();
+    expect(
+      screen.getByText(
+        /cancelled or replaced, it paid\s+nothing: reload this page and claim again\. Otherwise, do not send it\s+again for now/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Claim USDC" })).toBeNull();
+  });
+
+  it("shows the transaction mined in the claim's place when the wallet cancelled it (#115 review)", async () => {
+    const wallet = claimWallet({ cancelled: true });
+    await openClaimStep(wallet, api(() => ({ body: authorization })).fetch);
+
+    expect(
+      await screen.findByText(
+        "The claim transaction succeeded, but no reward payment was found.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Reward paid to your wallet.")).toBeNull();
+    // Both hashes: the claim that was sent and the cancel that was mined.
+    expect(screen.getByText(/Claim sent:/)).toBeTruthy();
+    expect(screen.getByText(TX)).toBeTruthy();
+    expect(screen.getByText(/Mined in its place:/)).toBeTruthy();
+    expect(screen.getByText(CANCEL)).toBeTruthy();
+    expect(screen.getByText(/reload this page and claim again/)).toBeTruthy();
+    // viem looked for the replacement in the block, and nothing else was sent.
+    expect(wallet.count("eth_getBlockByNumber")).toBeGreaterThan(0);
+    expect(wallet.count("eth_sendTransaction")).toBe(1);
   });
 
   it("refuses a contract address without code, sending nothing", async () => {

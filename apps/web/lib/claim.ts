@@ -203,27 +203,37 @@ export function claimEventIn(logs: readonly Log[], call: ClaimCall): boolean {
 export type ClaimTxOutcome =
   /** Mined with this claim's RewardClaimed event. */
   | { kind: "paid"; hash: Hash }
-  /** Mined successfully, but the receipt has no RewardClaimed for this claim. */
-  | { kind: "no-claim-event"; hash: Hash }
+  /**
+   * Mined successfully, but the receipt has no RewardClaimed for this claim.
+   * `receiptHash` is the transaction the receipt is for: `hash`, or the one
+   * the wallet replaced the claim with (a cancel or a speed-up), whose
+   * receipt viem returns instead. Once a replacement is mined, the claim
+   * itself never will be.
+   */
+  | { kind: "no-claim-event"; hash: Hash; receiptHash: Hash }
   | { kind: "reverted"; hash: Hash }
   /** No receipt yet: the transaction may still be mined. Never resend. */
   | { kind: "pending"; hash: Hash };
 
 /** Judges a mined claim transaction by its receipt (claimEventIn). */
 export function claimReceiptOutcome(
-  receipt: Pick<TransactionReceipt, "status" | "logs">,
+  receipt: Pick<TransactionReceipt, "status" | "logs" | "transactionHash">,
   call: ClaimCall,
   hash: Hash,
 ): Exclude<ClaimTxOutcome, { kind: "pending" }> {
   if (receipt.status !== "success") return { kind: "reverted", hash };
   return claimEventIn(receipt.logs, call)
     ? { kind: "paid", hash }
-    : { kind: "no-claim-event", hash };
+    : { kind: "no-claim-event", hash, receiptHash: receipt.transactionHash };
 }
 
 /**
  * Waits for the claim's receipt like waitForTx (lib/wallet.ts), and reports
  * it paid only when the receipt carries this claim's RewardClaimed event.
+ *
+ * Keep the timeout and the error handling in step with waitForTx: the same
+ * 120 s default, and any error while waiting (a timeout, an RPC failure)
+ * is "pending", never "failed", because the claim may still be mined.
  */
 export async function waitForClaim(
   publicClient: Pick<PublicClient, "waitForTransactionReceipt">,

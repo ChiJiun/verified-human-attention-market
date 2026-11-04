@@ -1,0 +1,43 @@
+name: Dependency audit
+
+# The audit job of ci.yml, on a schedule: an advisory published after the
+# last push to main shows up within a day, not only on the next push or pull
+# request. ci.yml keeps its own audit job for every push and pull request.
+# This is a separate file so that a scheduled run audits and nothing else
+# (no tests, builds, e2e or Foundry), and the CI workflow and its job names
+# stay as they are. Keep the steps in step with the audit job in ci.yml.
+on:
+  schedule:
+    # Daily at 03:17 UTC (off the hour, when scheduled runs queue the most).
+    # GitHub runs schedules on the default branch only.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    # A high or critical advisory against a production dependency in
+    # pnpm-lock.yaml fails this job. The advisories come from the npm
+    # registry: if it does not answer, the job fails too (re-run it).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        # Installs the version in package.json "packageManager". Pinned like
+        # in ci.yml; bump both files together.
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          run_install: false
+
+      - name: Setup Node
+        # No pnpm cache: the audit reads the lockfile and installs nothing.
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high

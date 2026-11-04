@@ -154,6 +154,46 @@ function alreadyPaid(
   );
 }
 
+/** What a newly signed authorization must be for, as the store holds it. */
+interface IssuanceTarget {
+  /** The off-chain campaign id; the authorization carries its draftRef. */
+  campaignId: string;
+  onchainCampaignId: string;
+  /** Lowercase, as the submission stores it. */
+  claimantAddress: string;
+  rewardAtomic: string;
+  chainId: number;
+  /** Lowercase, as the campaign stores it; null matches no contract. */
+  contractAddress: string | null;
+  now: Date;
+}
+
+/**
+ * Throws unless `claim`, just returned by the signer, is for `target`: the
+ * campaign's on-chain id and draft reference, the submission's claimant, the
+ * campaign reward, the campaign's chain and contract, issued no later than
+ * `now`, and a lifetime within the contract's MAX_AUTHORIZATION_TTL. Runs
+ * before the authorization is stored, so a refused one leaves no state.
+ * Both repositories call it, so the in-memory store refuses exactly what
+ * PostgreSQL refuses.
+ */
+function assertSignedFor(claim: SignedClaim, target: IssuanceTarget): void {
+  if (
+    claim.payload.campaignId !== BigInt(target.onchainCampaignId) ||
+    claim.payload.draftRef !== draftRefFor(target.campaignId) ||
+    claim.payload.claimant.toLowerCase() !== target.claimantAddress ||
+    claim.payload.amount !== BigInt(target.rewardAtomic) ||
+    claim.chainId !== target.chainId ||
+    claim.contractAddress.toLowerCase() !== target.contractAddress ||
+    claim.payload.issuedAt > BigInt(unixSeconds(target.now)) ||
+    claim.payload.expiresAt <= claim.payload.issuedAt ||
+    claim.payload.expiresAt - claim.payload.issuedAt >
+      BigInt(MAX_CLAIM_TTL_SECONDS)
+  ) {
+    throw new Error("Claim signer returned an invalid authorization");
+  }
+}
+
 /** The stored signature was issued for the campaign's current link. */
 function isBoundTo(
   row: Pick<
@@ -280,21 +320,15 @@ export class PostgresClaimRepository implements ClaimRepository {
       }
 
       const claim = await input.sign();
-      if (
-        claim.payload.campaignId !== BigInt(campaign.onchainCampaignId) ||
-        claim.payload.draftRef !== draftRefFor(campaign.id) ||
-        claim.payload.claimant.toLowerCase() !== row.claimantAddress ||
-        claim.payload.amount !== BigInt(campaign.rewardAtomic) ||
-        claim.chainId !== campaign.chainId ||
-        claim.contractAddress.toLowerCase() !==
-          campaign.onchainContractAddress ||
-        claim.payload.issuedAt > BigInt(unixSeconds(input.now)) ||
-        claim.payload.expiresAt <= claim.payload.issuedAt ||
-        claim.payload.expiresAt - claim.payload.issuedAt >
-          BigInt(MAX_CLAIM_TTL_SECONDS)
-      ) {
-        throw new Error("Claim signer returned an invalid authorization");
-      }
+      assertSignedFor(claim, {
+        campaignId: campaign.id,
+        onchainCampaignId: campaign.onchainCampaignId,
+        claimantAddress: row.claimantAddress,
+        rewardAtomic: campaign.rewardAtomic,
+        chainId: campaign.chainId,
+        contractAddress: campaign.onchainContractAddress,
+        now: input.now,
+      });
       await tx
         .update(submissions)
         .set({
@@ -340,14 +374,21 @@ export class InMemoryClaimRepository implements ClaimRepository {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly getSubmission: (
-      id: string,
-    ) => Promise<{ campaignId: string; result: string } | null>,
+    private readonly getSubmission: (id: string) => Promise<{
+      campaignId: string;
+      result: string;
+      /** Lowercase, as the submission repositories store it. */
+      claimantAddress: string;
+    } | null>,
     private readonly getCampaign: (id: string) => Promise<{
+      id: string;
       status: string;
       maxCompletions: number;
-      onchainCampaignId?: string | null;
-      onchainContractAddress?: string | null;
+      rewardAtomic: string;
+      chainId: number;
+      onchainCampaignId: string | null;
+      /** Lowercase, as the campaign repositories store it. */
+      onchainContractAddress: string | null;
     } | null>,
   ) {}
 
@@ -433,6 +474,16 @@ export class InMemoryClaimRepository implements ClaimRepository {
         }
       }
       const claim = await input.sign();
+      // The same refusal as PostgresClaimRepository, before anything is kept.
+      assertSignedFor(claim, {
+        campaignId: campaign.id,
+        onchainCampaignId: campaign.onchainCampaignId,
+        claimantAddress: submission.claimantAddress,
+        rewardAtomic: campaign.rewardAtomic,
+        chainId: campaign.chainId,
+        contractAddress: campaign.onchainContractAddress,
+        now: input.now,
+      });
       this.records.set(input.submissionId, {
         campaignId: input.campaignId,
         claim,
