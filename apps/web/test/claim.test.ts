@@ -350,11 +350,20 @@ const funded: MinedLog = {
   data: encodeAbiParameters([{ type: "uint256" }], [1_000_000n]),
 };
 
+/** A receipt of TX (or of `transactionHash`, a replacement) as viem returns it. */
+function receipt(
+  status: "success" | "reverted",
+  logs: MinedLog[],
+  transactionHash: Hash = TX,
+) {
+  return { status, logs, transactionHash };
+}
+
 describe("the claim's receipt (#110 review)", () => {
   it("is paid with this claim's RewardClaimed event", () => {
     expect(
       claimReceiptOutcome(
-        { status: "success", logs: [funded, rewardClaimed()] },
+        receipt("success", [funded, rewardClaimed()]),
         CALL,
         TX,
       ),
@@ -367,12 +376,23 @@ describe("the claim's receipt (#110 review)", () => {
 
   it("is not paid when a successful receipt has no event at all", () => {
     // What a claim sent to an address without code gets: success, no logs.
+    expect(claimReceiptOutcome(receipt("success", []), CALL, TX)).toEqual({
+      kind: "no-claim-event",
+      hash: TX,
+      receiptHash: TX,
+    });
+    expect(claimReceiptOutcome(receipt("success", [funded]), CALL, TX)).toEqual(
+      { kind: "no-claim-event", hash: TX, receiptHash: TX },
+    );
+  });
+
+  it("names the transaction that was mined in the claim's place (#115 review)", () => {
+    // A cancel in the wallet: viem returns the replacement's receipt, a
+    // transfer to itself with no logs.
+    const cancel = `0x${"77".repeat(32)}` as Hash;
     expect(
-      claimReceiptOutcome({ status: "success", logs: [] }, CALL, TX),
-    ).toEqual({ kind: "no-claim-event", hash: TX });
-    expect(
-      claimReceiptOutcome({ status: "success", logs: [funded] }, CALL, TX),
-    ).toEqual({ kind: "no-claim-event", hash: TX });
+      claimReceiptOutcome(receipt("success", [], cancel), CALL, TX),
+    ).toEqual({ kind: "no-claim-event", hash: TX, receiptHash: cancel });
   });
 
   it.each([
@@ -386,21 +406,17 @@ describe("the claim's receipt (#110 review)", () => {
     (_case, overrides) => {
       expect(
         claimReceiptOutcome(
-          { status: "success", logs: [rewardClaimed(overrides)] },
+          receipt("success", [rewardClaimed(overrides)]),
           CALL,
           TX,
         ),
-      ).toEqual({ kind: "no-claim-event", hash: TX });
+      ).toEqual({ kind: "no-claim-event", hash: TX, receiptHash: TX });
     },
   );
 
   it("reports a reverted receipt as reverted, whatever its logs", () => {
     expect(
-      claimReceiptOutcome(
-        { status: "reverted", logs: [rewardClaimed()] },
-        CALL,
-        TX,
-      ),
+      claimReceiptOutcome(receipt("reverted", [rewardClaimed()]), CALL, TX),
     ).toEqual({ kind: "reverted", hash: TX });
   });
 });
@@ -454,7 +470,7 @@ describe("waiting for the claim (#110 review)", () => {
         TX,
         1_000,
       ),
-    ).resolves.toEqual({ kind: "no-claim-event", hash: TX });
+    ).resolves.toEqual({ kind: "no-claim-event", hash: TX, receiptHash: TX });
     await expect(
       waitForClaim(minedNode([], "0x0"), CALL, TX, 1_000),
     ).resolves.toEqual({ kind: "reverted", hash: TX });

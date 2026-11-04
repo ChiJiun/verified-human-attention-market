@@ -80,8 +80,11 @@ type Step =
   | { kind: "claim"; submissionId: SubmissionId }
   | { kind: "pending"; hash: Hash }
   | { kind: "paid"; hash: Hash }
-  /** Mined successfully, but its receipt shows no reward paid by this claim. */
-  | { kind: "no-claim-event"; hash: Hash }
+  /**
+   * Mined successfully, but its receipt shows no reward paid by this claim.
+   * `receiptHash` differs from `hash` when the wallet replaced the claim.
+   */
+  | { kind: "no-claim-event"; hash: Hash; receiptHash: Hash }
   /** Paid earlier (another tab, an earlier visit); no transaction was sent. */
   | { kind: "already-paid" };
 
@@ -102,6 +105,53 @@ function store<T>(key: string, value?: T | null): T | null {
     // Storage unavailable: the flow still works within this page view.
   }
   return value ?? null;
+}
+
+/**
+ * A claim mined without its RewardClaimed event. When the wallet cancels or
+ * speeds up the claim, viem returns the receipt of the transaction that
+ * replaced it (`receiptHash`): the claim itself was then never mined and
+ * paid nothing, so claiming again after a reload is safe (the contract pays
+ * each nonce, and each wallet, once per campaign). Otherwise nothing tells
+ * this page what happened, so the claim is not sent again.
+ */
+function NoClaimEvent({
+  hash,
+  receiptHash,
+}: {
+  hash: Hash;
+  receiptHash: Hash;
+}) {
+  const replaced = receiptHash.toLowerCase() !== hash.toLowerCase();
+  return (
+    <section className="card tx failed" aria-live="polite">
+      <strong>
+        The claim transaction succeeded, but no reward payment was found.
+      </strong>{" "}
+      Its receipt has no RewardClaimed event from the campaign contract for this
+      wallet, so this page cannot confirm that the reward was paid.
+      {replaced ? (
+        <>
+          <p>
+            Claim sent: <code>{hash}</code>
+          </p>
+          <p>
+            Mined in its place: <code>{receiptHash}</code>
+          </p>
+        </>
+      ) : (
+        <p>
+          <code>{hash}</code>
+        </p>
+      )}
+      <p>
+        If your wallet shows the claim as cancelled or replaced, it paid
+        nothing: reload this page and claim again. Otherwise, do not send it
+        again for now; check the transaction in your wallet and wait for its
+        status to update.
+      </p>
+    </section>
+  );
 }
 
 export default function MissionPage() {
@@ -308,7 +358,11 @@ export default function MissionPage() {
       if (outcome.kind === "paid") {
         setStep({ kind: "paid", hash });
       } else if (outcome.kind === "no-claim-event") {
-        setStep({ kind: "no-claim-event", hash });
+        setStep({
+          kind: "no-claim-event",
+          hash,
+          receiptHash: outcome.receiptHash,
+        });
       } else if (outcome.kind === "reverted") {
         setStep({ kind: "claim", submissionId: step.submissionId });
         setError("The claim transaction reverted. You can request it again.");
@@ -483,17 +537,7 @@ export default function MissionPage() {
       )}
 
       {step.kind === "no-claim-event" && (
-        <section className="card tx failed" aria-live="polite">
-          <strong>
-            The claim transaction succeeded, but no reward payment was found.
-          </strong>{" "}
-          Its receipt has no RewardClaimed event from the campaign contract for
-          this wallet, so this page cannot confirm that the reward was paid. Do
-          not send it again; check the transaction in your wallet.
-          <p>
-            <code>{step.hash}</code>
-          </p>
-        </section>
+        <NoClaimEvent hash={step.hash} receiptHash={step.receiptHash} />
       )}
 
       {step.kind === "already-paid" && (

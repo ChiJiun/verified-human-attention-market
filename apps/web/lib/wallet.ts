@@ -61,6 +61,12 @@ export type TxOutcome =
   /** No receipt yet: the transaction may still be mined. Never resend. */
   | { kind: "pending"; hash: Hash };
 
+/**
+ * Waits for a transaction's receipt. waitForClaim (lib/claim.ts) waits the
+ * same way for a claim and also checks the receipt's RewardClaimed event:
+ * keep the two in step, with the same 120 s default and any error while
+ * waiting reported as "pending", since the transaction may still be mined.
+ */
 export async function waitForTx(
   publicClient: PublicClient,
   hash: Hash,
