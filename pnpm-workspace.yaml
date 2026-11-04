@@ -19,7 +19,9 @@ overrides:
 # next 16.4.5 is the 2026-11-03 security release and was younger than pnpm's
 # default 24 h minimumReleaseAge when it was adopted. Without these
 # exact-version entries a fresh `pnpm install --frozen-lockfile` rejects the
-# lockfile until 2026-11-04T17:52Z; after that they have no effect and can go.
+# lockfile until 2026-11-04T18:02Z (24 h after the last of the ten was
+# published: next@16.4.5 at 2026-11-03T18:01:54Z, per `npm view <name>@16.4.5
+# time`); after that they have no effect and can go.
 minimumReleaseAgeExclude:
   - "@next/env@16.4.5"
   - "@next/swc-darwin-arm64@16.4.5"
