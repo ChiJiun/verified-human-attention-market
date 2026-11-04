@@ -22,6 +22,7 @@ import {
 const WALLET = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CONTRACT = "0xcccccccccccccccccccccccccccccccccccccccc";
 const ISSUED_AT = 1_791_186_300;
+const BASE_SEPOLIA = { id: 84532, name: "Base Sepolia" };
 const AUTH: Authorization = {
   campaignId: "1",
   draftRef: `0x${"11".repeat(32)}`,
@@ -31,9 +32,10 @@ const AUTH: Authorization = {
   issuedAt: ISSUED_AT,
   expiresAt: ISSUED_AT + 900,
   signature: `0x${"33".repeat(65)}`,
+  chainId: BASE_SEPOLIA.id,
   contractAddress: CONTRACT,
 };
-const CALL = claimCall(WALLET, AUTH);
+const CALL = claimCall(WALLET, AUTH, BASE_SEPOLIA);
 /** Short enough for a test; the page waits up to 15 s. */
 const FAST = { waitMs: 200, pollMs: 1 };
 
@@ -200,4 +202,34 @@ describe("the wallet's chain (#82 review)", () => {
       assertClaimChain({ getChainId: async () => 84532 }, baseSepolia),
     ).resolves.toBeUndefined();
   });
+});
+
+describe("the authorization's chain", () => {
+  it.each([
+    // The API runs on anvil while the site was built for Base Sepolia.
+    ["another supported chain", 31337],
+    // A response that does not say which chain it was signed for.
+    ["no chain at all", undefined],
+  ])(
+    "refuses an authorization for %s before anything is simulated or sent",
+    async (_case, chainId) => {
+      const auth = { ...AUTH, chainId } as Authorization;
+      // A contract address with no code on the wallet's chain: the
+      // simulation would pass and the claim would "confirm" paying nothing.
+      const { publicClient, calls } = node(() => null);
+      const sent: unknown[] = [];
+
+      const attempt = async () => {
+        const call = claimCall(WALLET, auth, BASE_SEPOLIA);
+        await simulateClaim(publicClient, call, FAST);
+        sent.push(call);
+      };
+
+      await expect(attempt()).rejects.toThrow(
+        `This claim was authorized on chain ${String(chainId)}, but this site is set up for Base Sepolia (84532), so nothing was sent.`,
+      );
+      expect(calls).toEqual([]);
+      expect(sent).toEqual([]);
+    },
+  );
 });

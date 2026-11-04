@@ -12,7 +12,7 @@ import {
   type RpContext,
 } from "@worldcoin/idkit";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatUnits, type Hash } from "viem";
+import type { Hash } from "viem";
 
 import { api, describeError } from "../../lib/api";
 import {
@@ -31,7 +31,7 @@ import {
   simulateClaim,
   type Authorization,
 } from "../../lib/claim";
-import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
+import { chain, formatUsdc } from "../../lib/config";
 import { connectWallet, waitForTx, type Wallet } from "../../lib/wallet";
 
 interface Campaign {
@@ -288,7 +288,10 @@ export default function MissionPage() {
         claimAuthorizationPath(campaignId, step.submissionId),
         { method: "POST", body: { eligibilityToken } },
       );
-      const call = claimCall(wallet.address, auth);
+      // Throws, with nothing simulated or sent, unless the API signed it for
+      // `chain`, the chain the wallet was checked against above and the one
+      // writeContract sends on.
+      const call = claimCall(wallet.address, auth, chain);
       // A claim the contract would refuse never reaches the wallet.
       if ((await simulateClaim(wallet.publicClient, call)) === "already-paid") {
         setStep({ kind: "already-paid" });
@@ -318,15 +321,12 @@ export default function MissionPage() {
   }
 
   const active = campaign?.status === "active";
-  const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
+  const wrongNetwork = wallet !== null && wallet.chainId !== chain.id;
 
   return (
     <main className="container">
       <h1>
-        Earn{" "}
-        {campaign
-          ? `${formatUnits(BigInt(campaign.rewardPerCompletion), USDC_DECIMALS)} USDC`
-          : "USDC"}
+        Earn {campaign ? formatUsdc(campaign.rewardPerCompletion) : "USDC"}
       </h1>
       {campaign && !active && (
         <p className="note">

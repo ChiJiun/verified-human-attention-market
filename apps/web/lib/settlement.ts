@@ -98,7 +98,7 @@ export function settlementButton(
 }
 
 /** How often an unknown outcome (close, refund, approve, fund) is checked. */
-export const SETTLEMENT_POLL_MS = 10_000;
+const SETTLEMENT_POLL_MS = 10_000;
 
 /**
  * After this long a transaction the wallet's node has never returned (so
@@ -203,32 +203,6 @@ export function resolveTxOutcome({
   return observation.known === false && elapsedMs >= ASSUME_DROPPED_AFTER_MS
     ? "dropped"
     : "pending";
-}
-
-/**
- * resolveTxOutcome for a close or refund: the effect is the campaign's
- * stored status (`null` when the read failed).
- */
-export function resolveSettlementTx({
-  action,
-  storedStatus,
-  observation,
-  elapsedMs,
-}: {
-  action: SettlementAction;
-  /** From a read made after the observation; null when it failed. */
-  storedStatus: string | null;
-  observation: SettlementTxObservation;
-  elapsedMs: number;
-}): SettlementTxOutcome {
-  return resolveTxOutcome({
-    effect:
-      storedStatus === null
-        ? null
-        : settlementEffectVisible(action, storedStatus),
-    observation,
-    elapsedMs,
-  });
 }
 
 /**

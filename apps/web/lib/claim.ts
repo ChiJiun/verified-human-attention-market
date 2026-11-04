@@ -15,6 +15,8 @@ export interface Authorization {
   issuedAt: number;
   expiresAt: number;
   signature: Hex;
+  /** The chain of the signature's EIP-712 domain and of `contractAddress`. */
+  chainId: number;
   contractAddress: Address;
 }
 
@@ -39,8 +41,26 @@ export function isAlreadyPaid(error: unknown): boolean {
   return name !== undefined && ALREADY_PAID_REVERTS.has(name);
 }
 
-/** The `claim` transaction for `auth`, sent from `account`. */
-export function claimCall(account: Address, auth: Authorization) {
+/**
+ * The `claim` transaction for `auth`, sent from `account` on `expected`, the
+ * chain this site is built for (the one its network check, wallet clients
+ * and `writeContract` use). An authorization the API signed for another
+ * chain throws here, before anything is simulated or sent: its contract
+ * address means nothing on `expected`, where an address without code would
+ * simulate and "confirm" a claim that pays nothing. That is a deployment
+ * whose web app and API are set up for different chains, so it is refused
+ * rather than followed.
+ */
+export function claimCall(
+  account: Address,
+  auth: Authorization,
+  expected: { id: number; name: string },
+) {
+  if (auth.chainId !== expected.id) {
+    throw new Error(
+      `This claim was authorized on chain ${String(auth.chainId)}, but this site is set up for ${expected.name} (${expected.id}), so nothing was sent. The site's network configuration needs fixing.`,
+    );
+  }
   return {
     account,
     address: auth.contractAddress,

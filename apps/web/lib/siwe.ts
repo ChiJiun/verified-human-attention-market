@@ -2,7 +2,7 @@ import type { Address, WalletClient } from "viem";
 import { createSiweMessage } from "viem/siwe";
 
 import { api, ApiError } from "./api";
-import { chainId } from "./config";
+import { chain } from "./config";
 import type { Wallet } from "./wallet";
 
 export interface Session {
@@ -20,7 +20,7 @@ export async function signInWithEthereum(
   });
   const message = createSiweMessage({
     address,
-    chainId,
+    chainId: chain.id,
     domain: window.location.host,
     uri: window.location.origin,
     version: "1",

@@ -10,7 +10,7 @@ import {
   type UnixSeconds,
 } from "@vham/shared/settlement";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatUnits, type Address, type Hash } from "viem";
+import { erc20Abi, type Address, type Hash } from "viem";
 
 import { useAdvertiserSession } from "../../lib/advertiser-session";
 import { api, ApiError, describeError } from "../../lib/api";
@@ -29,10 +29,9 @@ import {
   parseCampaignId,
   type CampaignId,
 } from "../../lib/campaign-link";
-import { chain, chainId, USDC_DECIMALS } from "../../lib/config";
+import { chain, formatUsdc } from "../../lib/config";
 import {
   allowanceCovers,
-  erc20Abi,
   FUNDING_ANYWAY_TITLES,
   FUNDING_CALLS,
   fundingButton,
@@ -131,9 +130,6 @@ type TxStatus =
   | { state: "reconciling"; label: string; hash: Hash | null }
   | { state: "done"; label: string; hash: Hash | null }
   | { state: "failed"; label: string; message: string; hash?: Hash | null };
-
-const usdc = (atomic: string) =>
-  `${formatUnits(BigInt(atomic), USDC_DECIMALS)} USDC`;
 
 type ChainView =
   | { state: "unread" }
@@ -297,7 +293,7 @@ export default function AdvertiserPage() {
   const auth = useAdvertiserSession(wallet, setError);
   const activeSession = auth.active;
 
-  const wrongNetwork = wallet !== null && wallet.chainId !== chainId;
+  const wrongNetwork = wallet !== null && wallet.chainId !== chain.id;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -621,7 +617,7 @@ export default function AdvertiserPage() {
   const switchNetwork = () =>
     run(async () => {
       if (!wallet) return;
-      await wallet.walletClient.switchChain({ id: chainId });
+      await wallet.walletClient.switchChain({ id: chain.id });
       setWallet({ ...wallet, chainId: await wallet.walletClient.getChainId() });
     });
 
@@ -1151,7 +1147,7 @@ export default function AdvertiserPage() {
               <code>{wallet.address}</code>
               <br />
               Network: {wallet.chainId} {wrongNetwork ? "⚠" : "✓"} (expected{" "}
-              {chain.name}, {chainId})
+              {chain.name}, {chain.id})
             </p>
             {wrongNetwork && (
               <button onClick={switchNetwork} disabled={busy}>
@@ -1203,7 +1199,7 @@ export default function AdvertiserPage() {
               <dt>Status</dt>
               <dd>{analytics.status}</dd>
               <dt>Planned budget</dt>
-              <dd>{usdc(analytics.plannedBudget)}</dd>
+              <dd>{formatUsdc(analytics.plannedBudget)}</dd>
               <dt>Accepted / rejected submissions</dt>
               <dd>
                 {analytics.submissions.accepted} /{" "}
@@ -1220,15 +1216,17 @@ export default function AdvertiserPage() {
               {analytics.settlement && (
                 <>
                   <dt>Funded (confirmed)</dt>
-                  <dd>{usdc(analytics.settlement.confirmed.funded)}</dd>
+                  <dd>{formatUsdc(analytics.settlement.confirmed.funded)}</dd>
                   <dt>Paid rewards</dt>
                   <dd>
-                    {usdc(analytics.settlement.confirmed.paidRewards)} (
+                    {formatUsdc(analytics.settlement.confirmed.paidRewards)} (
                     {analytics.settlement.confirmed.paidCompletions}{" "}
                     completions)
                   </dd>
                   <dt>Remaining</dt>
-                  <dd>{usdc(analytics.settlement.confirmed.remaining)}</dd>
+                  <dd>
+                    {formatUsdc(analytics.settlement.confirmed.remaining)}
+                  </dd>
                 </>
               )}
             </dl>
