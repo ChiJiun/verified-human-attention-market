@@ -19,7 +19,7 @@ export type LinkCheck =
  * unreachable (fetch rejects with a TypeError). Checking never sends a
  * transaction, so repeating it is always safe; anything else is shown.
  */
-export function linkRetryable(error: unknown): boolean {
+function linkRetryable(error: unknown): boolean {
   return error instanceof ApiError
     ? error.retryable
     : error instanceof TypeError;
