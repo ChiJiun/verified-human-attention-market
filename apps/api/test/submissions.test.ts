@@ -698,11 +698,14 @@ describe("POST /v1/campaigns/:id/submissions", () => {
   it("answers CAMPAIGN_NOT_STARTED before startAt when the contract is read live", async () => {
     // The live read refuses a campaign before its window too; its generic
     // CAMPAIGN_NOT_ACTIVE used to hide the specific code from participants.
-    const { verify, submit, setNow } = await setupOnchain();
+    const { verify, submit, setNow, rpc } = await setupOnchain();
+    // As a participant would: verified and submitting before the start.
+    setNow(new Date("2026-10-05T10:05:00.000Z"));
     const token = await verify("human-1", WALLET_A);
     const body = { eligibilityToken: token, claimant: WALLET_A };
 
-    setNow(new Date("2026-10-05T10:05:00.000Z"));
+    // Refused before any chain read: a read would answer 503 here.
+    rpc.rpcDown = true;
     const early = await submit("early", { ...body, answers: CORRECT });
     expect(early.statusCode).toBe(409);
     expect(early.json()).toMatchObject({
@@ -716,12 +719,42 @@ describe("POST /v1/campaigns/:id/submissions", () => {
       error: { code: "CAMPAIGN_NOT_STARTED" },
     });
 
+    rpc.rpcDown = false;
     setNow(new Date("2026-10-05T10:30:00.000Z"));
     const retry = await submit("retry", { ...body, answers: WRONG });
     expect(retry.json()).toMatchObject({ status: "rejected" });
     expect(
       (await submit("in-window", { ...body, answers: CORRECT })).json(),
     ).toMatchObject({ status: "accepted" });
+  });
+
+  it("refuses an indexed close and malformed answers without reading the contract", async () => {
+    const { verify, submit, campaigns, rpc } = await setupOnchain();
+    const token = await verify("human-1", WALLET_A);
+    const body = { eligibilityToken: token, claimant: WALLET_A };
+    // Any chain read would turn these into 503 CHAIN_UNAVAILABLE.
+    rpc.rpcDown = true;
+
+    const malformed = await submit("malformed", { ...body, answers: "free" });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json()).toMatchObject({
+      error: { code: "MALFORMED_ANSWERS" },
+    });
+
+    campaigns.status = "closed";
+    const closed = await submit("closed", { ...body, answers: CORRECT });
+    expect(closed.statusCode).toBe(409);
+    expect(closed.json()).toMatchObject({
+      error: { code: "CAMPAIGN_NOT_ACTIVE" },
+    });
+
+    // An indexed `active` campaign is read live, so the outage shows.
+    campaigns.status = "active";
+    const live = await submit("live", { ...body, answers: CORRECT });
+    expect(live.statusCode).toBe(503);
+    expect(live.json()).toMatchObject({
+      error: { code: "CHAIN_UNAVAILABLE" },
+    });
   });
 
   it("does not store or count malformed answers", async () => {

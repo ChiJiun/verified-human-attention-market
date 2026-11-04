@@ -133,6 +133,13 @@ The API key's address differs from `CampaignManager.authorizedSigner()`; every c
 returns 503. Usually a rotation applied on one side only. Align the API key
 with the on-chain signer. Never "fix" by disabling the check.
 
+The API reads `authorizedSigner()` while it prepares a claim, after the live
+campaign read: on the authorization route, and for a submission that passed
+the verifier's checks (an indexed `active` campaign inside its window,
+well-formed answers). A mismatch therefore raises this alert on the first
+such request, not on submissions refused before it, such as one sent before
+the campaign starts. Those requests sign nothing.
+
 ### VhamReconciliationFinding
 
 The indexer worker's reconciliation (every `RECONCILIATION_INTERVAL_MS`,
