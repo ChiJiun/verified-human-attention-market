@@ -80,7 +80,7 @@ Official references:
 | CampaignManager contract | ✅ Baseline implemented |
 | Contract test suite | ✅ Unit + fuzz + invariants |
 | JavaScript test suite | ✅ API/shared baseline |
-| CI | ✅ JavaScript + Foundry + local-chain E2E jobs; failures as annotations |
+| CI | ✅ JavaScript + Foundry + local-chain E2E jobs, production dependency audit (high and critical); failures as annotations |
 | API persistence | ✅ Campaigns, missions, eligibility, submissions (#8, #15) |
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
