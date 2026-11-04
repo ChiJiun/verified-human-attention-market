@@ -1,0 +1,4 @@
+# Shell scripts are checked out with LF on every platform. With
+# core.autocrlf=true (the Windows default) they would otherwise get CRLF, and
+# bash in WSL then fails on them ("set: pipefail: invalid option name").
+*.sh text eol=lf
