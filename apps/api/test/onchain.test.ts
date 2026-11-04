@@ -817,6 +817,8 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
         ),
       onLocked: () => steps.push("clock started"),
     };
+    // Records how long the worker would sleep before the next try.
+    const slept = (ms: number) => steps.push(`slept ${ms} ms`);
 
     // Another worker holds the lock, then stops after two waits.
     const other = await events.lockDeployment(scope);
@@ -824,15 +826,19 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const lock = await takeDeploymentLock(events, scope, {
       ...options,
       stopping: () => false,
-      sleep: async () => {
+      sleep: async (ms) => {
+        slept(ms);
         sleeps += 1;
         if (sleeps === 2) await other!.release();
       },
     });
-    // The worker logs each wait with these fields; the backoff doubles.
+    // The worker logs each wait with these fields, then sleeps as long as
+    // it logged; the backoff doubles.
     expect(steps).toEqual([
       `wait 1, 1000 ms: ${DEPLOYMENT_LOCK_HELD}`,
+      "slept 1000 ms",
       `wait 2, 2000 ms: ${DEPLOYMENT_LOCK_HELD}`,
+      "slept 2000 ms",
       "clock started",
     ]);
     expect(await lock!.isHeld()).toBe(true);
@@ -851,10 +857,13 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const retried = await takeDeploymentLock(flaky, scope, {
       ...options,
       stopping: () => false,
-      sleep: async () => {},
+      sleep: async (ms) => {
+        slept(ms);
+      },
     });
     expect(steps).toEqual([
       "wait 1, 1000 ms: database unavailable",
+      "slept 1000 ms",
       "clock started",
     ]);
     await retried!.release();
@@ -867,12 +876,16 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       await takeDeploymentLock(events, scope, {
         ...options,
         stopping: () => stopping,
-        sleep: async () => {
+        sleep: async (ms) => {
+          slept(ms);
           stopping = true;
         },
       }),
     ).toBeNull();
-    expect(steps).toEqual([`wait 1, 1000 ms: ${DEPLOYMENT_LOCK_HELD}`]);
+    expect(steps).toEqual([
+      `wait 1, 1000 ms: ${DEPLOYMENT_LOCK_HELD}`,
+      "slept 1000 ms",
+    ]);
     await held!.release();
 
     // The lock came just as the worker stopped: it is returned, so the

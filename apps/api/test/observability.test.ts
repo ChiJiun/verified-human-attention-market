@@ -329,12 +329,13 @@ describe("readiness with a chain", () => {
     }
     const events = new UnreadableCursor();
     let rpcDown = false;
+    let head = 120n;
     const metrics = new MetricsRegistry();
     const deps = chainDeps(
       {
         blockNumber: async () => {
           if (rpcDown) throw new Error("RPC unavailable");
-          return 120n;
+          return head;
         },
       },
       events,
@@ -366,13 +367,15 @@ describe("readiness with a chain", () => {
     ];
     expect(await exported()).toEqual(healthy);
 
-    // Database down: the head is read, the lag is not.
+    // Database down: the new head is read, the lag is not.
     events.unreadable = true;
+    head = 121n;
     expect(await exported()).toEqual([
-      "vham_chain_head_block 120",
+      "vham_chain_head_block 121",
       "vham_rpc_up 1",
     ]);
     events.unreadable = false;
+    head = 120n;
     expect(await exported()).toEqual(healthy);
 
     // RPC down: neither the head nor the lag holds any more.
@@ -382,32 +385,44 @@ describe("readiness with a chain", () => {
     expect(await exported()).toEqual(healthy);
   });
 
-  it("exports one whole read when a scrape and a readiness check overlap", async () => {
-    // The scrape's cursor read waits while a readiness check fails to read
-    // the RPC; then the scrape's own read finishes last.
-    let reachedCursor!: () => void;
-    const atCursor = new Promise<void>((resolve) => {
-      reachedCursor = resolve;
-    });
-    class HeldCursor extends InMemoryChainEventRepository {
-      hold: Promise<void> | null = null;
+  /**
+   * An app whose chain reads can be held: `hold(step)` makes the next RPC,
+   * cursor or halt read wait until `release()`, and `reached` resolves once
+   * it waits. The RPC answers with the head set when the read starts.
+   */
+  async function heldChainApp() {
+    type Step = "rpc" | "cursor" | "halt";
+    const holds = new Map<
+      Step,
+      { reached: () => void; released: Promise<void> }
+    >();
+    async function pass(step: Step) {
+      const hold = holds.get(step);
+      if (!hold) return;
+      holds.delete(step);
+      hold.reached();
+      await hold.released;
+    }
+    class HeldEvents extends InMemoryChainEventRepository {
       override async getCursor(scope: ChainScope) {
-        const hold = this.hold;
-        this.hold = null;
-        if (hold) {
-          reachedCursor();
-          await hold;
-        }
+        await pass("cursor");
         return super.getCursor(scope);
       }
+      override async getHalt(scope: ChainScope) {
+        await pass("halt");
+        return super.getHalt(scope);
+      }
     }
-    const events = new HeldCursor();
-    let rpcDown = false;
+    const events = new HeldEvents();
+    // null: the RPC is down.
+    const rpc: { head: bigint | null } = { head: 120n };
     const deps = chainDeps(
       {
         blockNumber: async () => {
-          if (rpcDown) throw new Error("RPC unavailable");
-          return 120n;
+          const head = rpc.head;
+          await pass("rpc");
+          if (head === null) throw new Error("RPC unavailable");
+          return head;
         },
       },
       events,
@@ -425,31 +440,88 @@ describe("readiness with a chain", () => {
       [],
     );
 
-    let release!: () => void;
-    events.hold = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const scrape = Promise.resolve(
-      app.inject({ method: "GET", url: "/metrics" }),
-    );
-    await atCursor;
-
-    rpcDown = true;
-    const ready = await app.inject({ method: "GET", url: "/health/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({ checks: { chain: "error" } });
-    rpcDown = false;
-    release();
-
-    // Not `vham_rpc_up 0` from the readiness check next to the scrape's lag.
-    expect(
+    function hold(step: Step) {
+      let reached!: () => void;
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      holds.set(step, { reached, released });
+      return { reached: waiting, release };
+    }
+    const request = (url: string) =>
+      Promise.resolve(app.inject({ method: "GET", url }));
+    const exported = async (scrape: ReturnType<typeof request>) =>
       (await scrape).body
         .split("\n")
         .filter((line) =>
           /^vham_(chain_head_block|indexer_lag_blocks|rpc_up) /.test(line),
         )
-        .sort(),
-    ).toEqual([
+        .sort();
+    // Lets the reads that hold nothing finish.
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+    return { rpc, hold, request, exported, settle };
+  }
+
+  it("exports one whole read when a scrape and a readiness check overlap", async () => {
+    const { rpc, hold, request, exported, settle } = await heldChainApp();
+
+    // A readiness check that starts while the scrape waits for its cursor,
+    // and finds the RPC down, is newer: the scrape exports it whole, not
+    // `vham_rpc_up 0` next to the scrape's own lag.
+    const cursor = hold("cursor");
+    const first = request("/metrics");
+    await cursor.reached;
+    rpc.head = null;
+    expect((await request("/health/ready")).statusCode).toBe(503);
+    cursor.release();
+    expect(await exported(first)).toEqual(["vham_rpc_up 0"]);
+
+    // A readiness check that has read a new head but not its cursor yet
+    // changes nothing: the scrape, waiting for the halt, exports its own.
+    rpc.head = 120n;
+    const halt = hold("halt");
+    const second = request("/metrics");
+    await halt.reached;
+    await settle();
+    const newer = hold("cursor");
+    rpc.head = 130n;
+    const ready = request("/health/ready");
+    await newer.reached;
+    halt.release();
+    expect(await exported(second)).toEqual([
+      "vham_chain_head_block 120",
+      "vham_indexer_lag_blocks 20",
+      "vham_rpc_up 1",
+    ]);
+    newer.release();
+    expect((await ready).json()).toMatchObject({ indexerLagBlocks: "30" });
+  });
+
+  it("never replaces a newer read with an older one that finishes later", async () => {
+    const { rpc, hold, request, exported, settle } = await heldChainApp();
+
+    // A readiness check reads head 110 and waits for its cursor; a scrape
+    // that starts later reads 120 and publishes it, then waits for the halt.
+    rpc.head = 110n;
+    const cursor = hold("cursor");
+    const ready = request("/health/ready");
+    await cursor.reached;
+    rpc.head = 120n;
+    const halt = hold("halt");
+    const scrape = request("/metrics");
+    await halt.reached;
+    await settle();
+
+    // The readiness check finishes with its own, older read...
+    cursor.release();
+    expect((await ready).json()).toMatchObject({ indexerLagBlocks: "10" });
+    // ...which does not replace the scrape's.
+    halt.release();
+    expect(await exported(scrape)).toEqual([
       "vham_chain_head_block 120",
       "vham_indexer_lag_blocks 20",
       "vham_rpc_up 1",

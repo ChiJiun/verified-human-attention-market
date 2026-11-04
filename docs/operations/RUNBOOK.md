@@ -16,7 +16,12 @@
 
 Scrape every API instance and the worker as its own target, not through a
 load balancer: counters are per process, so a scrape that alternates between
-instances sees each counter jump back and forth and reads it as resets.
+instances sees each counter jump back and forth and reads it as resets. Give
+the API a `scrape_timeout` above 15 s, its RPC client's limit (Prometheus'
+default is 10 s): a scrape that times out on a slow RPC keeps none of the
+API's series, so VhamRpcDown cannot fire. A database that hangs instead of
+failing (its queries have no time limit) fails the scrape too. No rule alerts
+on a failing target (`up == 0`) yet, so watch the API's targets.
 
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
@@ -44,7 +49,7 @@ API (`/metrics`):
 | `vham_submissions_total`                                          | outcome               | Engagement result (`accepted`, `rejected`, error codes).             |
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
-| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Read on each scrape and readiness check; a scrape exports one whole read, the latest to finish: no head or lag when it could not read the RPC, and no lag when it could not read the cursor or there is none (before the worker's first committed range, and after `reorg:recover --apply` resets the index). |
+| `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Read on each scrape and readiness check; a scrape exports one whole read, the last started of those finished (its own or a readiness check's): no head or lag when it could not read the RPC, and no lag when it could not read the cursor or there is none (before the worker's first committed range, and after `reorg:recover --apply` resets the index). |
 | `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on scrape, RPC up or not). |
 
 Worker (`INDEXER_METRICS_PORT`):
@@ -246,12 +251,18 @@ is no cursor: before the worker's first committed range, and after
 `reorg:recover --apply` resets the index, until the rebuild commits its first
 range (VhamChainHalted fires meanwhile). So on a new deployment, a worker that
 never commits a range raises neither alert while it waits for the lock, or
-while it keeps restarting within 5 minutes of taking it: check its logs and
-its scrape target. The API also exports no lag on a scrape that cannot read
-the RPC or the cursor, and each such scrape starts VhamIndexerLag's 10 minutes
-over on the API's series, or resolves it if it fires. The outage itself
-alerts: VhamRpcDown for the RPC, VhamChainHalted for the database (the halt
-cannot be read either).
+while it keeps restarting well within 5 minutes of taking it (a stopped
+worker's last clock stays until a scrape of it fails, up to one scrape
+interval): check its logs and its scrape target.
+
+The API exports no lag either when it cannot read the RPC or the cursor. A
+rule evaluation that sees such a gap starts VhamIndexerLag's 10 minutes over
+on the API's series, or resolves it if it fires. The worker's own
+`vham_indexer_lag_blocks`, from its last successful pass, stays, and the alert
+fires on it as well. Reads that fail at once alert as the outage: VhamRpcDown
+after 2 minutes of RPC failures, VhamChainHalted for the database (the halt
+cannot be read either). Short failures now and then raise neither; reads that
+hang fail the whole scrape ([scrape timeout](#signals)).
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
@@ -282,8 +293,8 @@ Any other `error` is a database failure, which the worker retries the same
 way. While it waits, the worker exports no stall clock, so VhamIndexerStalled
 does not fire for it. If the database answers, the index has a cursor and no
 other worker is indexing, VhamIndexerLag fires once the API's lag has stayed
-above 50 blocks for 10 minutes in which every scrape could read it; a database
-that does not answer shows as `database: error` in the
+above 50 blocks for 10 minutes (a failed read can start that over, see
+above); a database that does not answer shows as `database: error` in the
 API's readiness. To find the session that holds the lock, run this on the worker's
 database, with the worker's chain id and its `CAMPAIGN_MANAGER_ADDRESS` in
 lowercase in place of `84532` and `0x…`:
@@ -429,7 +440,7 @@ name, and both metrics carry the same `outcome` label. Query both:
 
 | Series that grew | Cause | Fix |
 | --- | --- | --- |
-| `vham_eligibility_verifications_total{outcome="PROVIDER_UNAVAILABLE"}` | World ID's verify endpoint is failing, or answers with an error other than 400, which a wrong `WORLD_ID_RP_ID` can cause too. | Check https://status.world.org; without an incident there, check `WORLD_ID_RP_ID` against the Developer Portal. Users get 503; retrying helps only with a provider incident. |
+| `vham_eligibility_verifications_total{outcome="PROVIDER_UNAVAILABLE"}` | World ID's verify endpoint (`https://developer.world.org`) cannot be reached within 10 s, is failing, or answers with an error other than 400, which a wrong `WORLD_ID_RP_ID` can cause too. | Check https://status.world.org and that the API can reach `developer.world.org`; without an incident or a network failure, check `WORLD_ID_RP_ID` against the Developer Portal. Users get 503; retrying helps only with a passing failure, such as an incident or a network error. |
 | `vham_world_id_requests_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | `POST /v1/campaigns/:id/world-id/request` cannot sign requests: the World ID variables are not set (startup warns `World ID is disabled: set WORLD_ID_RP_ID, RP_SIGNING_KEY and WORLD_ID_APP_ID`). | Set `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID`. |
 | `vham_eligibility_verifications_total{outcome="WORLD_ID_NOT_CONFIGURED"}` | Verification is refused before World is asked. Participants get a signed request, so the variables above are set, but `PARTICIPANT_KEY_SECRET` is not (startup warns `World ID eligibility is disabled: set PARTICIPANT_KEY_SECRET`). A client that calls verify without a signed request gets this too when the World ID variables are missing. | Set `PARTICIPANT_KEY_SECRET` (at least 32 characters), or, if startup warns `World ID is disabled`, the three World ID variables. |
 
