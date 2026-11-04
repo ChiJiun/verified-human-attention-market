@@ -10,6 +10,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # The one Foundry release every job installs. Deliberately not FOUNDRY_*:
+  # forge reads each FOUNDRY_<KEY> variable as a config override.
+  CI_FOUNDRY_VERSION: v1.8.4
+
 jobs:
   javascript:
     runs-on: ubuntu-latest
@@ -31,16 +36,16 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        # Installs the version in package.json "packageManager".
+        uses: pnpm/action-setup@v5
         with:
-          version: 12.4.2
           run_install: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -58,28 +63,18 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
-        # Failures are re-emitted as annotations (readable via the API).
+        # Failures become annotations (readable via the API). The one source is
+        # the vitest github-actions reporter (see the vitest configs): one
+        # annotation per failed test, at its file and line. When it annotates
+        # nothing (vitest stopped before reporting, or no error had a frame in
+        # the project), the end of the log is annotated instead.
         run: |
           pnpm test 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            # One annotation per failed test (GitHub keeps 10 per step).
-            python3 - <<'PY'
-          import re
-          lines = open("test.log", encoding="utf-8", errors="replace").read().splitlines()
-          lines = [re.sub(r"^\S+ test: ", "", line) for line in lines]
-          blocks, current = [], None
-          for line in lines:
-              if re.match(r"\s*FAIL\s", line):
-                  current = [line.strip()]
-                  blocks.append(current)
-              elif current is not None and len(current) < 25:
-                  current.append(line.rstrip())
-          if not blocks:
-              blocks = [lines[-40:]]
-          for block in blocks[:9]:
-              print("::error::" + "%0A".join(block)[:4000])
-          PY
+          if [ "$status" -ne 0 ] && ! grep -q '^::error file=' test.log; then
+            tail -40 test.log | sed 's/%/%25/g; s/\r//g' |
+              awk 'NR > 1 { printf "%%0A" } { printf "%s", $0 } END { print "" }' |
+              sed 's/^/::error::/'
           fi
           exit "$status"
 
@@ -126,16 +121,16 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        # Installs the version in package.json "packageManager".
+        uses: pnpm/action-setup@v5
         with:
-          version: 12.4.2
           run_install: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -146,7 +141,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.8.4
+          version: ${{ env.CI_FOUNDRY_VERSION }}
 
       - name: Build contracts
         working-directory: packages/contracts
@@ -170,25 +165,15 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
+        # Annotated like the javascript Test step: the vitest reporter
+        # (vitest.e2e.config.ts), else the end of the log.
         run: |
           pnpm --filter @vham/api test:e2e 2>&1 | tee e2e.log
           status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            python3 - <<'PY'
-          import re
-          lines = open("e2e.log", encoding="utf-8", errors="replace").read().splitlines()
-          blocks, current = [], None
-          for line in lines:
-              if re.search(r"FAIL|Error|AssertionError|expected", line):
-                  current = [line.strip()]
-                  blocks.append(current)
-              elif current is not None and len(current) < 25:
-                  current.append(line.rstrip())
-          if not blocks:
-              blocks = [lines[-40:]]
-          for block in blocks[:9]:
-              print("::error::" + "%0A".join(block)[:4000])
-          PY
+          if [ "$status" -ne 0 ] && ! grep -q '^::error file=' e2e.log; then
+            tail -40 e2e.log | sed 's/%/%25/g; s/\r//g' |
+              awk 'NR > 1 { printf "%%0A" } { printf "%s", $0 } END { print "" }' |
+              sed 's/^/::error::/'
           fi
           exit "$status"
 
@@ -206,12 +191,12 @@ jobs:
         working-directory: packages/contracts
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: v1.8.4
+          version: ${{ env.CI_FOUNDRY_VERSION }}
 
       - name: Forge format check
         run: |
