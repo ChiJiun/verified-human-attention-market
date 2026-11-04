@@ -11,6 +11,9 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { BYTES32_HEX } from "../http/validation.js";
+import { unixSeconds } from "../time.js";
+
 /**
  * World ID RP request signatures for IDKit (#12, ADR-0007).
  *
@@ -24,8 +27,8 @@ import { privateKeyToAccount } from "viem/accounts";
  *   sig     = EIP-191 personal_sign(message) as r ‖ s ‖ v (v = 27/28)
  */
 
-export const RP_SIGNATURE_VERSION = 0x01;
-export const DEFAULT_RP_SIGNATURE_TTL_SECONDS = 300;
+const RP_SIGNATURE_VERSION = 0x01;
+const DEFAULT_RP_SIGNATURE_TTL_SECONDS = 300;
 
 /** keccak256(input) >> 8 as 32 big-endian bytes (first byte always 0x00). */
 export function hashToField(input: Uint8Array): Hex {
@@ -61,7 +64,7 @@ export function createRpSigner(signingKeyHex: string) {
     ? signingKeyHex
     : `0x${signingKeyHex}`;
 
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
+  if (!BYTES32_HEX.test(key)) {
     throw new Error("RP_SIGNING_KEY must be 32 bytes of hex");
   }
 
@@ -78,7 +81,7 @@ export function createRpSigner(signingKeyHex: string) {
       random?: Uint8Array;
     }): Promise<RpSignature> {
       const nonce = hashToField(input.random ?? randomBytes(32));
-      const createdAt = Math.floor(input.now.getTime() / 1000);
+      const createdAt = unixSeconds(input.now);
       const expiresAt =
         createdAt + (input.ttlSeconds ?? DEFAULT_RP_SIGNATURE_TTL_SECONDS);
       const sig = await account.signMessage({

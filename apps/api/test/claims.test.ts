@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 import Fastify from "fastify";
 import {
@@ -10,6 +12,7 @@ import {
 
 import type { CampaignRecord } from "../src/campaigns/types.js";
 import { draftRefFor } from "../src/campaigns/onchain.js";
+import { FUNCTION_SELECTORS } from "../src/chain/abi.js";
 import type { StoredEvent } from "../src/chain/events-repository.js";
 import { InMemoryClaimRepository } from "../src/claims/repository.js";
 import { registerClaimRoutes } from "../src/claims/routes.js";
@@ -24,6 +27,7 @@ import {
 } from "../src/claims/signer.js";
 import type { EligibilityRepository } from "../src/eligibility/repository.js";
 import type { SubmissionRepository } from "../src/submissions/repository.js";
+import { encodeCampaignStruct, word } from "./support/fake-chain.js";
 
 const PRIVATE_KEY = `0x${"11".repeat(32)}`;
 const signer = createClaimSigner(PRIVATE_KEY);
@@ -81,46 +85,39 @@ function fixture() {
     async () => currentSubmission,
     async () => currentCampaign,
   );
-  const word = (value: bigint | number) =>
-    BigInt(value).toString(16).padStart(64, "0");
   const rpc = {
     call: async (_to: string, data: string) => {
       if (data.startsWith(toFunctionSelector("authorizedSigner()"))) {
         return `0x${"0".repeat(24)}${rpcSigner.slice(2)}`;
       }
-      if (data.startsWith("0x141961bc")) {
-        // campaigns(uint256)
-        return `0x${[
-          word(BigInt(`0x${"aa".repeat(20)}`)),
-          word(currentCampaign.maxCompletions * 1_000_000),
-          word(chainState.paidCompletions * 1_000_000),
-          word(chainState.rewardPerCompletion),
-          word(currentCampaign.maxCompletions),
-          word(chainState.paidCompletions),
-          word(Math.floor(START.getTime() / 1000)),
-          word(chainState.endTime),
-          word(chainState.closedAt),
-          word(chainState.closedAt === 0 ? 1 : 2),
-        ].join("")}`;
+      if (data.startsWith(FUNCTION_SELECTORS.campaigns)) {
+        return encodeCampaignStruct({
+          advertiser: ADVERTISER,
+          fundedBudget: currentCampaign.maxCompletions * 1_000_000,
+          paidRewards: chainState.paidCompletions * 1_000_000,
+          rewardPerCompletion: chainState.rewardPerCompletion,
+          maxCompletions: currentCampaign.maxCompletions,
+          paidCompletions: chainState.paidCompletions,
+          startTime: Math.floor(START.getTime() / 1000),
+          endTime: chainState.endTime,
+          closedAt: chainState.closedAt,
+          status: chainState.closedAt === 0 ? 1 : 2,
+        });
       }
-      if (
-        data.startsWith(
-          toFunctionSelector("campaignIdByDraft(address,bytes32)"),
-        )
-      ) {
+      if (data.startsWith(FUNCTION_SELECTORS.campaignIdByDraft)) {
         const askedAdvertiser = `0x${data.slice(10 + 24, 10 + 64)}`;
         const askedRef = `0x${data.slice(10 + 64, 10 + 128)}`;
-        return `0x${word(
+        return word(
           askedAdvertiser === currentCampaign.advertiserAddress &&
             askedRef === draftRefFor(currentCampaign.id)
             ? canonicalId
             : 0,
-        )}`;
+        );
       }
       if (
         data.startsWith(toFunctionSelector("claimedWallet(uint256,address)"))
       ) {
-        return `0x${word(chainState.claimed ? 1 : 0)}`;
+        return word(chainState.claimed ? 1 : 0);
       }
       throw new Error(`unexpected eth_call ${data.slice(0, 10)}`);
     },
@@ -201,6 +198,27 @@ function fixture() {
 }
 
 describe("EIP-712 claim authorization", () => {
+  it("signs with the contract's MAX_AUTHORIZATION_TTL", () => {
+    // Retention (privacy/retention.ts) and the issuance check
+    // (claims/repository.ts) derive their windows from this one constant.
+    const solidity = readFileSync(
+      new URL(
+        "../../../packages/contracts/src/CampaignManager.sol",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const declared =
+      /uint64 public constant MAX_AUTHORIZATION_TTL = (\d+) (seconds|minutes|hours);/.exec(
+        solidity,
+      );
+    expect(declared).not.toBeNull();
+    const unit = { seconds: 1, minutes: 60, hours: 3600 }[
+      declared![2] as "seconds" | "minutes" | "hours"
+    ];
+    expect(Number(declared![1]) * unit).toBe(MAX_CLAIM_TTL_SECONDS);
+  });
+
   it("matches the contract type and binds every field and domain component", async () => {
     const typeString = `ClaimAuthorization(${CLAIM_TYPES.ClaimAuthorization.map(({ type, name }) => `${type} ${name}`).join(",")})`;
     expect(typeString).toBe(

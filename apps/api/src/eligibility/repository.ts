@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
 import { eligibility } from "../db/schema.js";
+import { EVM_ADDRESS } from "../http/validation.js";
 import { PARTICIPANT_KEY_PATTERN } from "../privacy/participant-key.js";
 
 export interface EligibilityRecord {
@@ -44,8 +45,6 @@ export interface EligibilityRepository {
   getById(id: string): Promise<EligibilityRecord | null>;
 }
 
-const EVM_ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
-
 function normalize(input: NewEligibility): NewEligibility {
   const claimantAddress = input.claimantAddress.toLowerCase();
 
@@ -54,7 +53,7 @@ function normalize(input: NewEligibility): NewEligibility {
     throw new Error("participantKey must be a derived 32-byte hex key");
   }
 
-  if (!EVM_ADDRESS_PATTERN.test(claimantAddress)) {
+  if (!EVM_ADDRESS.test(claimantAddress)) {
     throw new Error("claimantAddress must be an EVM address");
   }
 

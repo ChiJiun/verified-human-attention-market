@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
+import { fail } from "../errors/catalog.js";
 import type { MetricsRegistry } from "./metrics.js";
 
 /** Business outcome metric per critical route (success or error code). */
@@ -172,7 +173,13 @@ export function registerInstrumentation(
       dependencies.metricsToken &&
       request.headers.authorization !== `Bearer ${dependencies.metricsToken}`
     ) {
-      return reply.status(401).send({ error: { code: "UNAUTHENTICATED" } });
+      return fail(
+        request,
+        reply,
+        401,
+        "UNAUTHENTICATED",
+        "A valid metrics token is required",
+      );
     }
 
     if (dependencies.collect) {

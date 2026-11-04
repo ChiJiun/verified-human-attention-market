@@ -24,6 +24,7 @@ import { JsonRpcClient } from "./chain/rpc.js";
 import { retryWithBackoff, sleepUntilAborted } from "./chain/worker-pass.js";
 import { createDatabase } from "./db/client.js";
 import { PostgresEligibilityRepository } from "./eligibility/repository.js";
+import { EVM_ADDRESS } from "./http/validation.js";
 import { PostgresModerationRepository } from "./moderation/repository.js";
 import type { ModerationMode } from "./moderation/routes.js";
 import { PostgresSubmissionRepository } from "./submissions/repository.js";
@@ -117,7 +118,7 @@ const addressList = (name: string) =>
     .map((value) => value.trim().toLowerCase())
     .filter((value) => value.length > 0)
     .map((value) => {
-      if (!/^0x[0-9a-f]{40}$/.test(value)) {
+      if (!EVM_ADDRESS.test(value)) {
         throw new Error(`${name} must be comma-separated 0x addresses`);
       }
       return value;

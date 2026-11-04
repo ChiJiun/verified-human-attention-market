@@ -13,7 +13,8 @@ import type { Address, Hex } from "viem";
 
 import type { DbExecutor, PersistenceScope } from "../db/client.js";
 import { campaigns, submissions } from "../db/schema.js";
-import type { SignedClaim } from "./signer.js";
+import { DAY_MS, fromUnixSeconds, unixSeconds } from "../time.js";
+import { MAX_CLAIM_TTL_SECONDS, type SignedClaim } from "./signer.js";
 
 export class ClaimIssueError extends Error {
   constructor(
@@ -58,8 +59,6 @@ export interface ClaimIssueInput {
   dailyLimit?: { limitAtomic: bigint; rewardAtomic: bigint } | null;
 }
 
-export const DAY_MS = 24 * 60 * 60_000;
-
 export interface ClaimIssueResult {
   claim: SignedClaim;
   created: boolean;
@@ -102,8 +101,8 @@ function storedClaim(row: typeof submissions.$inferSelect): SignedClaim | null {
       claimant: row.claimantAddress as Address,
       amount: 0n, // Filled with the campaign reward below.
       nonce: row.claimNonce as Hex,
-      issuedAt: BigInt(Math.floor(row.claimIssuedAt.getTime() / 1000)),
-      expiresAt: BigInt(Math.floor(row.claimExpiresAt.getTime() / 1000)),
+      issuedAt: BigInt(unixSeconds(row.claimIssuedAt)),
+      expiresAt: BigInt(unixSeconds(row.claimExpiresAt)),
     },
     signature: row.claimSignature as Hex,
     chainId: row.claimChainId,
@@ -289,10 +288,10 @@ export class PostgresClaimRepository implements ClaimRepository {
         claim.chainId !== campaign.chainId ||
         claim.contractAddress.toLowerCase() !==
           campaign.onchainContractAddress ||
-        claim.payload.issuedAt >
-          BigInt(Math.floor(input.now.getTime() / 1000)) ||
+        claim.payload.issuedAt > BigInt(unixSeconds(input.now)) ||
         claim.payload.expiresAt <= claim.payload.issuedAt ||
-        claim.payload.expiresAt - claim.payload.issuedAt > 900n
+        claim.payload.expiresAt - claim.payload.issuedAt >
+          BigInt(MAX_CLAIM_TTL_SECONDS)
       ) {
         throw new Error("Claim signer returned an invalid authorization");
       }
@@ -304,8 +303,8 @@ export class PostgresClaimRepository implements ClaimRepository {
           claimContractAddress: claim.contractAddress.toLowerCase(),
           claimChainId: claim.chainId,
           claimOnchainCampaignId: claim.payload.campaignId.toString(),
-          claimIssuedAt: new Date(Number(claim.payload.issuedAt) * 1000),
-          claimExpiresAt: new Date(Number(claim.payload.expiresAt) * 1000),
+          claimIssuedAt: fromUnixSeconds(claim.payload.issuedAt),
+          claimExpiresAt: fromUnixSeconds(claim.payload.expiresAt),
           updatedAt: input.now,
         })
         .where(eq(submissions.id, input.submissionId));

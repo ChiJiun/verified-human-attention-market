@@ -11,7 +11,7 @@ export interface PayoutAnomalyConfig {
   global: number;
 }
 
-export const DEFAULT_PAYOUT_ANOMALY_CONFIG: PayoutAnomalyConfig = {
+const DEFAULT_PAYOUT_ANOMALY_CONFIG: PayoutAnomalyConfig = {
   windowMs: 5 * 60_000,
   perCampaign: 10,
   global: 50,

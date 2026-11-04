@@ -37,7 +37,7 @@ export type ReportReason = (typeof REPORT_REASONS)[number];
 export type ReportStatus = "open" | "dismissed" | "actioned";
 
 /** Allowed status transitions. Anything else is INVALID_TRANSITION. */
-export const TRANSITIONS: Record<
+const TRANSITIONS: Record<
   StatusAction,
   { from: readonly ModerationStatus[]; to: ModerationStatus }
 > = {

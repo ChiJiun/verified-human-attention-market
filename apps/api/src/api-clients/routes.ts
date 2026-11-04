@@ -42,7 +42,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   maxClientPerMinute: 6_000,
 };
 
-export const MAX_ACTIVE_CLIENTS_PER_ADVERTISER = 10;
+const MAX_ACTIVE_CLIENTS_PER_ADVERTISER = 10;
 
 const API_KEY = /^vhamk_(test|live)_[A-Za-z0-9_-]{43}$/;
 /** Routes an API key may call, with the scope each needs. */
@@ -66,7 +66,7 @@ const SENSITIVE_ROUTES = new Set([
 
 const EXEMPT_PREFIXES = ["/health/", "/metrics"];
 
-export const hashApiKey = (key: string) =>
+const hashApiKey = (key: string) =>
   createHash("sha256").update(key).digest("hex");
 
 export function apiClientSession(
