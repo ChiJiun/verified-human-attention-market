@@ -54,6 +54,30 @@ Worker (`INDEXER_METRICS_PORT`):
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
+Counter series that a rule in [alerts.yml](alerts.yml) watches with `increase()` are
+exported at 0 from startup (`apps/api/src/observability/alerted-series.ts`).
+Prometheus derives `increase()` from the samples it scrapes, so an event counts
+only once Prometheus holds an earlier sample of the series within the rule's
+range: that 0, or the value from before a restart. Without the zeros, the
+first signer mismatch, signer outage, daily limit or payout anomaly would not
+alert, and VhamWorldIdUnavailable would not count the first failed
+verification. Every `increase()` rule keeps these gaps:
+
+- Events before Prometheus first scrapes a newly started API or worker are not
+  counted, unless a sample from before that start is still within the range.
+- VhamReorgBeyondConfirmations: the worker's `reorg_beyond_confirmations`
+  series starts at 0 too, but the worker exits right after counting a deep
+  reorg, so the alert fires only if a scrape lands in between. Rely on
+  VhamChainHalted, which the API raises for as long as the halt lasts.
+- VhamServerErrors: `vham_http_requests_total` is not listed, so that its
+  series (one per route, method and status) exist only once they occur. The
+  5xx responses a new series counts before its first scrape are not seen as
+  an increase, whenever that series first appears: a burst of errors on routes
+  or statuses with none so far can pass without this warning. Check the logs
+  for `"level":50` when 5xx responses are reported.
+
+`alert-series.test.ts` checks the list against the rules.
+
 `vham_claim_authorizations_total` counts each call of the claim service, whichever
 route made it: acceptance in `POST .../submissions` (a refusal there answers
 503/409 and records nothing), a `POST .../submissions` replay (a refusal answers
@@ -137,8 +161,9 @@ The API reads `authorizedSigner()` while it prepares a claim, after the live
 campaign read: on the authorization route, on a replay of an accepted
 submission (which reads its authorization again), and for a new submission
 that passed the verifier's campaign and answer-shape checks (an indexed
-`active` campaign inside its window, well-formed answers, right or wrong).
-A mismatch therefore raises this alert on the first such request, not on
+`active` campaign inside its window, well-formed answers, whatever they score).
+A mismatch therefore raises this alert on the first such request once
+Prometheus has scraped the API (the series starts at 0), not on
 submissions refused before it, such as one sent before the campaign starts.
 Those requests sign nothing.
 
@@ -330,7 +355,9 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 
 World ID's verify endpoint is failing or not configured. Check
 https://status.world.org and `WORLD_ID_RP_ID`. Users get 503 and can retry; no
-eligibility is recorded on failure.
+eligibility is recorded on failure. The rule counts each outcome separately,
+and `increase()` extrapolates to the whole range, so it can fire on the third
+failure of one outcome.
 
 ### VhamServerErrors
 
