@@ -7,6 +7,7 @@ import type {
   ChainEventRepository,
   ChainHalt,
   ChainScope,
+  DeploymentLock,
 } from "./events-repository.js";
 import { indexOnce, type IndexerConfig } from "./indexer.js";
 import { verifyRecovery } from "./reorg-recovery.js";
@@ -162,6 +163,46 @@ export async function retryWithBackoff<T>(
   }
 
   return null;
+}
+
+/** Another session holds the deployment lock (the worker waits for it). */
+export const DEPLOYMENT_LOCK_HELD =
+  "another indexer worker or `reorg:recover --apply` holds this deployment";
+
+/**
+ * Waits for the deployment lock (#77): one worker per deployment, never next
+ * to `reorg:recover --apply`. Every failure is retried, a database error as
+ * well as a lock that another session holds (DEPLOYMENT_LOCK_HELD). Once the
+ * lock is held, `onLocked` starts the stall clock: a worker waiting for the
+ * lock is not stalled, another one runs. Returns null without calling it if
+ * the worker is stopping, also when the lock came just as it stopped.
+ */
+export async function takeDeploymentLock(
+  events: Pick<ChainEventRepository, "lockDeployment">,
+  scope: ChainScope,
+  options: {
+    stopping: () => boolean;
+    onWaiting: (attempt: number, error: unknown, retryInMs: number) => void;
+    onLocked: () => void;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<DeploymentLock | null> {
+  const lock = await retryWithBackoff(
+    async () => {
+      const held = await events.lockDeployment(scope);
+      if (!held) throw new Error(DEPLOYMENT_LOCK_HELD);
+      return held;
+    },
+    {
+      retryable: () => true,
+      stopping: options.stopping,
+      onFailure: options.onWaiting,
+      sleep: options.sleep,
+    },
+  );
+
+  if (lock && !options.stopping()) options.onLocked();
+  return lock;
 }
 
 /**

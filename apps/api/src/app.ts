@@ -207,20 +207,30 @@ export function buildApp(dependencies: AppDependencies = {}) {
   async function chainStatus() {
     if (!chain) return null;
 
+    // A value is exported only as read in this call: without the RPC or the
+    // database, the last head and lag no longer hold.
     let head: bigint;
     try {
       head = await chain.rpc.blockNumber();
     } catch (error) {
       rpcUp.set(0);
+      chainHead.remove();
+      indexerLag.remove();
       throw error;
     }
     rpcUp.set(1);
     chainHead.set(Number(head));
 
-    const cursor = await chain.events.getCursor({
-      chainId: chain.chain.chainId,
-      contractAddress: chain.chain.contractAddress,
-    });
+    let cursor: Awaited<ReturnType<typeof chain.events.getCursor>>;
+    try {
+      cursor = await chain.events.getCursor({
+        chainId: chain.chain.chainId,
+        contractAddress: chain.chain.contractAddress,
+      });
+    } catch (error) {
+      indexerLag.remove();
+      throw error;
+    }
     const lag = cursor ? head - cursor.latestConfirmedBlock : null;
     // No cursor: the worker has committed nothing yet, or `reorg:recover
     // --apply` reset the index. Then no lag is exported, not the last one.

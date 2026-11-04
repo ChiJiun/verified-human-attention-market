@@ -533,8 +533,11 @@ never URLs, hosts or error messages:
 }
 ```
 
-`indexerLagBlocks` is `null` before the indexer's first pass and absent without
-a chain. Lag does not fail readiness (the API still serves); it is alerted on.
+`indexerLagBlocks` is `null` while there is no index cursor: before the
+indexer commits its first range, and after `reorg:recover --apply` resets the
+index. It is absent without a chain, and when the chain head or the cursor
+cannot be read (then `chain` is `error`). Lag does not fail readiness (the API
+still serves); it is alerted on.
 
 `chainHalted` is `true` while a deep-reorg halt is recorded (ADR-0011) and
 absent without a chain or when the halt cannot be read (then `database` is

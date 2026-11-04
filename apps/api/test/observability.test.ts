@@ -319,6 +319,69 @@ describe("readiness with a chain", () => {
     expect(await lagLines()).toEqual([]);
   });
 
+  it("drops the head and lag it cannot read now, instead of keeping old ones", async () => {
+    class UnreadableCursor extends InMemoryChainEventRepository {
+      unreadable = false;
+      override async getCursor(scope: ChainScope) {
+        if (this.unreadable) throw new Error("database unavailable");
+        return super.getCursor(scope);
+      }
+    }
+    const events = new UnreadableCursor();
+    let rpcDown = false;
+    const metrics = new MetricsRegistry();
+    const deps = chainDeps(
+      {
+        blockNumber: async () => {
+          if (rpcDown) throw new Error("RPC unavailable");
+          return 120n;
+        },
+      },
+      events,
+    );
+    const app = buildApp({ metrics, chain: deps });
+    closers.push(app);
+    await events.commitConfirmedRange(
+      deps.chain,
+      {
+        from: 1n,
+        to: 100n,
+        toBlockHash: `0x${"ab".repeat(32)}`,
+        expectedCursor: null,
+      },
+      [],
+    );
+    const exported = async () =>
+      (await app.inject({ method: "GET", url: "/metrics" })).body
+        .split("\n")
+        .filter((line) =>
+          /^vham_(chain_head_block|indexer_lag_blocks|rpc_up) /.test(line),
+        )
+        .sort();
+
+    const healthy = [
+      "vham_chain_head_block 120",
+      "vham_indexer_lag_blocks 20",
+      "vham_rpc_up 1",
+    ];
+    expect(await exported()).toEqual(healthy);
+
+    // Database down: the head is read, the lag is not.
+    events.unreadable = true;
+    expect(await exported()).toEqual([
+      "vham_chain_head_block 120",
+      "vham_rpc_up 1",
+    ]);
+    events.unreadable = false;
+    expect(await exported()).toEqual(healthy);
+
+    // RPC down: neither the head nor the lag holds any more.
+    rpcDown = true;
+    expect(await exported()).toEqual(["vham_rpc_up 0"]);
+    rpcDown = false;
+    expect(await exported()).toEqual(healthy);
+  });
+
   it("reports a deep-reorg halt without failing readiness (#77)", async () => {
     const metrics = new MetricsRegistry();
     const deps = chainDeps({ blockNumber: async () => 120n });

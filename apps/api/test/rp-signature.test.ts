@@ -241,9 +241,12 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
 
   it("fails closed when World ID is not configured", async () => {
     const unsigned = await setup(null);
+    // The route reads no body; one is sent so the log check below can see
+    // whether it would be logged.
     const response = await unsigned.app.inject({
       method: "POST",
       url: `/v1/campaigns/${unsigned.id}/world-id/request`,
+      payload: { note: "body-marker-1f4e" },
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({
@@ -281,6 +284,7 @@ describe("POST /v1/campaigns/:id/world-id/request", () => {
       "statusCode",
       "time",
     ]);
+    expect(JSON.stringify(unsigned.logs())).not.toContain("body-marker-1f4e");
     const missing = await unsigned.app.inject({
       method: "POST",
       url: "/v1/campaigns/00000000-0000-4000-8000-000000000999/world-id/request",
