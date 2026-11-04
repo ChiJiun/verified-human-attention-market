@@ -382,7 +382,7 @@ export class InMemoryClaimRepository implements ClaimRepository {
       const onchainCampaignId = BigInt(campaign.onchainCampaignId);
       const contractAddress = campaign.onchainContractAddress?.toLowerCase();
       const unexpired = (claim: SignedClaim) =>
-        Number(claim.payload.expiresAt) * 1000 > input.now.getTime();
+        claim.payload.expiresAt > BigInt(unixSeconds(input.now));
       // Signed for the link the campaign has now (see isBoundTo).
       const bound = (claim: SignedClaim) =>
         claim.payload.campaignId === onchainCampaignId &&
@@ -415,7 +415,9 @@ export class InMemoryClaimRepository implements ClaimRepository {
         throw new ClaimIssueError("CAMPAIGN_CAP_REACHED");
       }
       if (input.dailyLimit) {
-        const since = BigInt(Math.floor((input.now.getTime() - DAY_MS) / 1000));
+        const since = BigInt(
+          unixSeconds(new Date(input.now.getTime() - DAY_MS)),
+        );
         const issued = [...this.records.entries()]
           .filter(
             ([submissionId, record]) =>

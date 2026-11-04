@@ -25,6 +25,7 @@ import { MetricsRegistry } from "./observability/metrics.js";
 import { applyRetention } from "./privacy/retention.js";
 import { PostgresClaimRepository } from "./claims/repository.js";
 import { checkReconciliation } from "./reconciliation/check.js";
+import { unixSeconds } from "./time.js";
 
 /**
  * Long-running chain indexer process (issue #17).
@@ -350,7 +351,7 @@ while (!stopping) {
 
     gauges.violations.set(statuses.accountingViolations.length);
     gauges.ambiguous.set(autoLinked.ambiguous.length);
-    gauges.lastSuccess.set(Math.floor(Date.now() / 1000));
+    gauges.lastSuccess.set(unixSeconds(new Date()));
     gauges.inconsistentStreak.set(0);
     inconsistentStreak = 0;
     passes.inc({ result: "success" });

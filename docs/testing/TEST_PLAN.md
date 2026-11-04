@@ -59,7 +59,7 @@ At minimum:
 - World ID verification failure and the wallet-bound signal (relayed proof refused, salt required, only `proof_of_human`, `signal_hash` as `0x` hex, World's refusal codes logged) [`world-id.test.ts`, `eligibility.test.ts`, `rp-signature.test.ts`, `e2e/poc.e2e.ts`]; `signalHash` equals the installed `@worldcoin/idkit-core` `hashSignal` on random signals, at the version the web's IDKit resolves [`world-id-signal.test.ts`]; one World ID configuration for the verifier, the request route and the startup warnings [`world-id-config.test.ts`]; `signalSalt` redaction [`observability.test.ts`];
 - engagement rejection [`verifier.test.ts`, `submissions.test.ts`];
 - signer failure and signer mismatch [`claims.test.ts`, `remote-signer.test.ts`; acceptance rolled back when signing fails: `submissions.test.ts`, `postgres.integration.test.ts`];
-- claim issuance cap, reissue, deep-reorg relink [`claims.test.ts`, `postgres.integration.test.ts`];
+- claim issuance cap, reissue, deep-reorg relink [`claims.test.ts`, `postgres.integration.test.ts`]; a stored authorization is replayed until the millisecond before its `expiresAt` and reissued from then on [`test/support/claim-contract.ts`, both claim repositories]; a signer authorization that outlives `MAX_CLAIM_TTL_SECONDS` is refused and nothing is stored [`postgres.integration.test.ts`]; the deployed `MAX_AUTHORIZATION_TTL` equals `MAX_CLAIM_TTL_SECONDS` [`e2e/poc.e2e.ts`];
 - a paid wallet (live `claimedWallet` or a confirmed payout of the stored nonce) gets no authorization, before and after the stored one expires (#82): `409 ALREADY_CLAIMED` from the authorization route and `claim` `{ "status": "claimed", "code": "ALREADY_CLAIMED" }` on a submissions replay [`claims.test.ts`, `submissions.test.ts`, `test/support/claim-contract.ts` run against both claim repositories, `e2e/poc.e2e.ts` after the real claim];
 - on-chain linking, live campaign checks, status sync, auto-link, recovery [`onchain.test.ts`];
 - indexer (batches, provider failure, shallow/deep reorg, halt) [`chain-indexer.test.ts` + `support/indexer-contract.ts`, run against both repositories];
@@ -119,6 +119,7 @@ Implementation PRs should not merge if:
 - API unit/integration tests fail;
 - typecheck fails;
 - lint fails;
+- a production dependency has a high or critical advisory (`pnpm audit --prod --audit-level high`, CI job `audit`);
 - generated schema/ABI changes are unreviewed.
 
 # Mainnet Beta Gate

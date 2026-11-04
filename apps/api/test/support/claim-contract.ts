@@ -95,6 +95,21 @@ export function defineClaimRepositoryContract(harness: () => ClaimHarness) {
     expect(signatures()).toBe(1);
   });
 
+  it("replays until the millisecond before expiresAt and reissues from expiresAt on", async () => {
+    const { issue, signatures } = await participant();
+    const first = await issue();
+    const expiresAtMs = Number(first.claim.payload.expiresAt) * 1000;
+
+    const lastReplay = await issue({ now: new Date(expiresAtMs - 1) });
+    expect(lastReplay.created).toBe(false);
+    expect(lastReplay.claim.signature).toBe(first.claim.signature);
+
+    const reissued = await issue({ now: new Date(expiresAtMs) });
+    expect(reissued.created).toBe(true);
+    expect(reissued.claim.payload.nonce).not.toBe(first.claim.payload.nonce);
+    expect(signatures()).toBe(2);
+  });
+
   it("answers ALREADY_CLAIMED, not the stored authorization, once the wallet was paid (#82)", async () => {
     const { claims, campaign, claimant, issue, signatures } =
       await participant();

@@ -24,7 +24,7 @@ const legacyIdkitPresetMessage =
   'IDKit 4.4.0 presets can return World ID 3.0 proofs: proofOfHuman, passport, mnc and identityCheck force allow_legacy_proofs: true, and the *Legacy presets return 3.0 proofs only. ADR-0007 accepts only World ID 4.0 proofs. Use constraints={CredentialRequest(...)}, for example CredentialRequest("proof_of_human"), with allow_legacy_proofs={false}.';
 
 const browserSafeSharedMessage =
-  "The web imports only the @vham/shared subpath modules, so they must not import zod or the root index (which imports zod): both would ship zod to the browser. Build zod schemas in the API from the guards these modules export.";
+  "The web imports only the @vham/shared subpath modules, never the root index, which re-exports them. No shared module may import zod, which would ship it to the browser, and a subpath module must not import the root index, which would be a cycle. Build zod schemas in the API from the guards these modules export.";
 
 export default tseslint.config(
   {
@@ -93,7 +93,6 @@ export default tseslint.config(
   },
   {
     files: ["packages/shared/src/**/*.ts"],
-    ignores: ["packages/shared/src/index.ts"],
     rules: {
       "no-restricted-imports": [
         "error",

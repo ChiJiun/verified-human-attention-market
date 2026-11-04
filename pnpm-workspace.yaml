@@ -10,8 +10,11 @@ allowBuilds:
 overrides:
   # viem 2.38.6 pins ws 8.18.3 (GHSA-96hv-2xvq-fx4p, GHSA-58qx-3vcg-4xpx);
   # viem 2.54.2 and later pin 8.21.0. The project never opens a WebSocket
-  # transport. The range stops matching once viem is upgraded: drop it then.
-  "ws@<8.21.0": 8.21.3
+  # transport. The selector starts at 8.0.0 so that a ws 7.x dependency is
+  # not moved across a major. Any other dependency whose ws range overlaps
+  # 8.0.0-8.20.x (^8.0.0, say) is pinned to 8.21.3 too, so remove the
+  # override when viem is upgraded rather than wait for it to stop matching.
+  "ws@>=8.0.0 <8.21.0": 8.21.3
 
 # next 16.4.5 is the 2026-11-03 security release and was younger than pnpm's
 # default 24 h minimumReleaseAge when it was adopted. Without these
