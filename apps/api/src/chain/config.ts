@@ -1,7 +1,7 @@
 import { getSupportedChain, SUPPORTED_CHAINS } from "@vham/shared/chains";
 
 import { FUNCTION_SELECTORS } from "./abi.js";
-import { EVM_ADDRESS } from "../http/validation.js";
+import { BYTES32_HEX, EVM_ADDRESS } from "../http/validation.js";
 
 /**
  * Contract/chain configuration validated at API startup (issue #19).
@@ -289,10 +289,7 @@ async function probeCampaignIdByDraft(
     return "unsupported";
   }
 
-  if (
-    typeof body?.result !== "string" ||
-    !/^0x[0-9a-fA-F]{64}$/.test(body.result)
-  ) {
+  if (typeof body?.result !== "string" || !BYTES32_HEX.test(body.result)) {
     throw unavailable("returned malformed data");
   }
 

@@ -11,6 +11,7 @@ import type {
   ChainScope,
 } from "../chain/events-repository.js";
 import { RpcError, type BlockRef, type ChainRpc } from "../chain/rpc.js";
+import { unixSeconds } from "../time.js";
 import {
   CampaignLinkConflictError,
   type CampaignRepository,
@@ -138,8 +139,6 @@ export async function readOnchainCampaign(
   };
 }
 
-const unixSeconds = (date: Date) => Math.floor(date.getTime() / 1000);
-
 /** True when the on-chain campaign has exactly the draft's economics. */
 export function matchesDraft(
   draft: CampaignRecord,
@@ -195,7 +194,7 @@ export async function checkLiveCampaign(
       return { state: "mismatch" };
     }
 
-    const nowSeconds = Math.floor(now.getTime() / 1000);
+    const nowSeconds = unixSeconds(now);
     const remaining =
       BigInt(onchain.fundedBudget) - BigInt(onchain.paidRewards);
     const payable =

@@ -498,8 +498,15 @@ describe("POST /v1/campaigns/:id/onchain", () => {
 
     const reverted = createOnchain(2, id);
     chain.revertedTxs.add(reverted);
-    expect((await link(id, reverted)).json()).toMatchObject({
-      error: { code: "TX_REVERTED" },
+    const revertedLink = await link(id, reverted);
+    // The catalog error body, like every other error response.
+    expect(revertedLink.json()).toEqual({
+      error: {
+        code: "TX_REVERTED",
+        message: "On-chain campaign could not be linked",
+        requestId: revertedLink.headers["x-request-id"],
+        retryable: false,
+      },
     });
   });
 

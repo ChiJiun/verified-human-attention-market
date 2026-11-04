@@ -8,10 +8,12 @@ import { InMemoryApiClientRepository } from "../src/api-clients/repository.js";
 import { FixedWindowRateLimiter } from "../src/api-clients/rate-limit.js";
 import type { RateLimitConfig } from "../src/api-clients/routes.js";
 import { buildApp } from "../src/app.js";
-import type { Authenticate } from "../src/auth/siwe.js";
 import { ERROR_CATALOG } from "../src/errors/catalog.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
-import { TEST_ADVERTISER as ADVERTISER } from "./support/auth.js";
+import {
+  bearerSession,
+  TEST_ADVERTISER as ADVERTISER,
+} from "./support/auth.js";
 import { campaignInput } from "./support/campaign.js";
 
 const OTHER = "0x" + "5a".repeat(20);
@@ -25,19 +27,7 @@ afterEach(async () => {
 });
 
 /** Test-only SIWE stand-in: "Bearer siwe-<address>". */
-const siwe: Authenticate = async (request) => {
-  const match = /^Bearer siwe-(0x[0-9a-f]{40})$/.exec(
-    request.headers.authorization ?? "",
-  );
-  return match
-    ? {
-        sessionId: "00000000-0000-4000-8000-000000000001",
-        address: match[1]!,
-        chainId: 84532,
-        expiresAt: new Date("2100-01-01T00:00:00.000Z"),
-      }
-    : null;
-};
+const siwe = bearerSession({ prefix: "siwe-" });
 
 const as = (address: string) => ({ authorization: `Bearer siwe-${address}` });
 const withKey = (key: string) => ({ authorization: `Bearer ${key}` });

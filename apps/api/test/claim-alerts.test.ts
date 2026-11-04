@@ -1,11 +1,9 @@
-import { toFunctionSelector } from "viem";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { draftRefFor } from "../src/campaigns/onchain.js";
 import { InMemoryCampaignRepository } from "../src/campaigns/repository.js";
 import { InMemoryChainEventRepository } from "../src/chain/events-repository.js";
-import { RpcError, type BlockRef } from "../src/chain/rpc.js";
 import {
   createClaimSigner,
   SignerUnavailableError,
@@ -23,25 +21,6 @@ const apps: ReturnType<typeof buildApp>[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
-
-class SignerChain extends FakeChain {
-  onchainSigner: string | null = null;
-
-  override async call(
-    to: string,
-    data: string,
-    block?: BlockRef,
-  ): Promise<string> {
-    if (data.startsWith(toFunctionSelector("authorizedSigner()"))) {
-      if (this.onchainSigner === null) throw new RpcError("down");
-      return `0x${"0".repeat(24)}${this.onchainSigner.slice(2).toLowerCase()}`;
-    }
-    if (data.startsWith(toFunctionSelector("claimedWallet(uint256,address)"))) {
-      return `0x${"0".repeat(64)}`;
-    }
-    return super.call(to, data, block);
-  }
-}
 
 const SALT = "claim-alerts-secret-0123456789abcdef";
 const SIGNAL_SALT = `0x${"33".repeat(32)}`;
@@ -71,8 +50,8 @@ async function setup(options: {
 }) {
   const logs: LogLine[] = [];
   let now = new Date("2026-10-05T10:00:00.000Z");
-  const rpc = new SignerChain(CONTRACT);
-  rpc.onchainSigner = options.onchainSigner;
+  const rpc = new FakeChain(CONTRACT);
+  rpc.signer = options.onchainSigner;
   const campaigns = new InMemoryCampaignRepository();
   const events = new InMemoryChainEventRepository();
   const app = buildApp({
@@ -240,7 +219,7 @@ describe("alerts see authorization outcomes on every route (#89)", () => {
     const s = await setup({ claimSigner: REAL, onchainSigner: REAL.address });
     const first = await s.participate(5);
     expect(first.submitted.statusCode).toBe(201);
-    s.rpc.onchainSigner = OTHER_SIGNER;
+    s.rpc.signer = OTHER_SIGNER;
     s.setNow(new Date("2026-10-05T10:46:00.000Z"));
 
     const replay = await first.submit();
@@ -316,7 +295,7 @@ describe("authorization failures are logged with the request id (#89)", () => {
   it("logs a refused re-authorization on a replay that answers 200", async () => {
     const s = await setup({ claimSigner: REAL, onchainSigner: REAL.address });
     const first = await s.participate(12);
-    s.rpc.onchainSigner = OTHER_SIGNER;
+    s.rpc.signer = OTHER_SIGNER;
     s.setNow(new Date("2026-10-05T10:46:00.000Z"));
 
     const replay = await first.submit();
@@ -468,7 +447,7 @@ describe("authorization failures are logged with the request id (#89)", () => {
     }>().claim.authorization.signature;
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
     expect((await first.submit()).statusCode).toBe(200);
-    s.rpc.onchainSigner = OTHER_SIGNER;
+    s.rpc.signer = OTHER_SIGNER;
     s.setNow(new Date("2026-10-05T10:46:00.000Z"));
     await first.submit();
     await s.authorize(idOf(first.submitted), first.eligibilityToken);

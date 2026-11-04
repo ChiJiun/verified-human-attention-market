@@ -11,7 +11,9 @@ import {
 import type { ChainEventRepository } from "../chain/events-repository.js";
 import type { ChainRpc } from "../chain/rpc.js";
 import type { EligibilityRepository } from "../eligibility/repository.js";
+import { BYTES32_HEX } from "../http/validation.js";
 import type { SubmissionRepository } from "../submissions/repository.js";
+import { unixSeconds } from "../time.js";
 import { readClaimedWallet } from "./chain-state.js";
 import {
   ClaimIssueError,
@@ -138,7 +140,7 @@ export async function prepareClaim(
   let onchainSigner: string;
   try {
     const word = await chain.rpc.call(chain.contractAddress, SIGNER_SELECTOR);
-    if (!/^0x[0-9a-fA-F]{64}$/.test(word)) {
+    if (!BYTES32_HEX.test(word)) {
       throw new Error("Malformed authorizedSigner result");
     }
     onchainSigner = `0x${word.slice(-40)}`.toLowerCase();
@@ -189,7 +191,7 @@ export async function prepareClaim(
 
   const { onchain } = live;
   const onchainCampaignId = campaign.onchainCampaignId;
-  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const nowSeconds = unixSeconds(now);
 
   const terms: ClaimTerms = {
     campaignId: campaign.id,

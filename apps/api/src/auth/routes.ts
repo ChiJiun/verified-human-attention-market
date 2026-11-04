@@ -144,7 +144,7 @@ export async function registerAuthRoutes(
   });
 }
 
-export function unauthorized(request: FastifyRequest, reply: FastifyReply) {
+function unauthorized(request: FastifyRequest, reply: FastifyReply) {
   const { credential } = presentedCredentials(request.headers);
 
   if (

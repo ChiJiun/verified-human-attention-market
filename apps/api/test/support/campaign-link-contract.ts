@@ -8,6 +8,7 @@ import {
   hashMissionDefinition,
   toMissionDefinition,
 } from "../../src/missions/schemas.js";
+import { campaignInput } from "./campaign.js";
 
 const NOW = new Date("2026-10-05T10:00:00.000Z");
 
@@ -20,19 +21,10 @@ function freshContract(): { stored: string; checksummed: string } {
 
 async function createDraft(campaigns: CampaignRepository): Promise<string> {
   const id = randomUUID();
-  const definition = toMissionDefinition("https://example.com/link", {
-    questions: [
-      {
-        id: "q1",
-        prompt: "Pick a",
-        choices: [
-          { id: "a", label: "A" },
-          { id: "b", label: "B" },
-        ],
-      },
-    ],
-    answerKey: { q1: "a" },
-  });
+  const definition = toMissionDefinition(
+    "https://example.com/link",
+    campaignInput().mission,
+  );
 
   await campaigns.createIdempotent({
     id,
