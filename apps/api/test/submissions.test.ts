@@ -695,7 +695,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     });
   });
 
-  it("answers CAMPAIGN_NOT_STARTED before startAt when the contract is read live", async () => {
+  it("answers CAMPAIGN_NOT_STARTED before startAt with a chain configured, without a contract call", async () => {
     // The live read refuses a campaign before its window too; its generic
     // CAMPAIGN_NOT_ACTIVE used to hide the specific code from participants.
     const { verify, submit, setNow, rpc } = await setupOnchain();
@@ -703,9 +703,8 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     setNow(new Date("2026-10-05T10:05:00.000Z"));
     const token = await verify("human-1", WALLET_A);
     const body = { eligibilityToken: token, claimant: WALLET_A };
+    const callsBefore = rpc.ethCalls;
 
-    // Refused before any chain read: a read would answer 503 here.
-    rpc.rpcDown = true;
     const early = await submit("early", { ...body, answers: CORRECT });
     expect(early.statusCode).toBe(409);
     expect(early.json()).toMatchObject({
@@ -718,22 +717,24 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     expect(earlyWrong.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_STARTED" },
     });
+    // Neither request sent an eth_call, awaited or not.
+    expect(rpc.ethCalls).toBe(callsBefore);
 
-    rpc.rpcDown = false;
     setNow(new Date("2026-10-05T10:30:00.000Z"));
     const retry = await submit("retry", { ...body, answers: WRONG });
     expect(retry.json()).toMatchObject({ status: "rejected" });
     expect(
       (await submit("in-window", { ...body, answers: CORRECT })).json(),
     ).toMatchObject({ status: "accepted" });
+    // Inside the window the contract is read live.
+    expect(rpc.ethCalls).toBeGreaterThan(callsBefore);
   });
 
-  it("refuses an indexed close and malformed answers without reading the contract", async () => {
+  it("refuses an indexed close and malformed answers without a contract call", async () => {
     const { verify, submit, campaigns, rpc } = await setupOnchain();
     const token = await verify("human-1", WALLET_A);
     const body = { eligibilityToken: token, claimant: WALLET_A };
-    // Any chain read would turn these into 503 CHAIN_UNAVAILABLE.
-    rpc.rpcDown = true;
+    const callsBefore = rpc.ethCalls;
 
     const malformed = await submit("malformed", { ...body, answers: "free" });
     expect(malformed.statusCode).toBe(400);
@@ -747,14 +748,15 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     expect(closed.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
+    // Neither request sent an eth_call, awaited or not.
+    expect(rpc.ethCalls).toBe(callsBefore);
 
-    // An indexed `active` campaign is read live, so the outage shows.
+    // An indexed `active` campaign is read live before it is accepted.
     campaigns.status = "active";
     const live = await submit("live", { ...body, answers: CORRECT });
-    expect(live.statusCode).toBe(503);
-    expect(live.json()).toMatchObject({
-      error: { code: "CHAIN_UNAVAILABLE" },
-    });
+    expect(live.statusCode).toBe(201);
+    expect(live.json()).toMatchObject({ status: "accepted" });
+    expect(rpc.ethCalls).toBeGreaterThan(callsBefore);
   });
 
   it("does not store or count malformed answers", async () => {

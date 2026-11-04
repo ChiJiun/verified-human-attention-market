@@ -27,9 +27,9 @@ sequenceDiagram
     U->>API: POST submissions(eligibilityToken, claimant, answers)
     API->>API: idempotency replay, eligibility, duplicate-human and attempt checks
     API->>V: evaluate mission (indexed campaign, answers)
-    V-->>API: pass / reject (a closed, not-started or ended campaign and malformed answers return here, unrecorded)
+    V-->>API: pass / reject (a campaign not indexed active or not started yet, and malformed answers, return here unrecorded)
     API->>C: eth_call: live campaign state (before anything is recorded)
-    API->>API: record the result; an acceptance is signed in the same DB transaction
+    API->>API: record the result (an acceptance is signed in the same DB transaction)
     API->>S: sign bounded ClaimAuthorization
     S-->>API: EIP-712 signature
     API-->>U: accepted + authorization + signature

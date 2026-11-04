@@ -351,7 +351,7 @@ Engagement verifier rejection codes (deterministic, see `apps/api/src/missions/v
 Implemented flow (`apps/api/src/submissions/service.ts`):
 
 0. `400 INVALID_IDEMPOTENCY_KEY` without a valid header, `400 INVALID_SUBMISSION` for a malformed body, `404 CAMPAIGN_NOT_FOUND` / `MISSION_NOT_FOUND`, `409 CAMPAIGN_NOT_ACTIVE` when the campaign is linked on a retired deployment, `503 CHAIN_HALTED` during a deep-reorg halt.
-1. Same `Idempotency-Key` + same request returns the stored outcome, even after the campaign ends. A changed request returns `409 IDEMPOTENCY_CONFLICT`.
+1. Same `Idempotency-Key` + same request returns the stored outcome, even after the campaign ends. The replay is answered before the campaign lookup and the retired-deployment and chain-halt checks of step 0. An accepted replay reads its authorization again (see Claims), so during a halt it answers `200` with the claim `pending_authorization` and the code `CHAIN_HALTED`. A changed request returns `409 IDEMPOTENCY_CONFLICT`.
 2. The eligibility token must belong to this campaign **and** the claimant wallet bound during World ID verification (`403 INVALID_ELIGIBILITY`, `403 ELIGIBILITY_EXPIRED`).
 3. One accepted completion per human (`409 ALREADY_COMPLETED`), and at most **2 attempts** per human per campaign (`429 ATTEMPT_LIMIT_REACHED`), so the multiple-choice check cannot be brute-forced by retrying.
 4. The deterministic verifier checks the indexed campaign and the shape of the answers. `CAMPAIGN_NOT_ACTIVE` / `CAMPAIGN_NOT_STARTED` / `CAMPAIGN_ENDED` (409) and `MALFORMED_ANSWERS` (400) return here, before any chain read. They are not stored and do not count as attempts.

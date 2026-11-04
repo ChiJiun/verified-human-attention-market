@@ -138,6 +138,8 @@ export class FakeChain implements ChainRpc {
   receiptsCalls = 0;
   /** Simulates an unreachable provider for receipts / calls. */
   rpcDown = false;
+  /** eth_call requests, counted when sent (also while `rpcDown`). */
+  ethCalls = 0;
   readonly revertedTxs = new Set<string>();
   /**
    * On-chain `campaignIdByDraft(advertiser, draftRef)` storage, keyed
@@ -375,6 +377,7 @@ export class FakeChain implements ChainRpc {
   }
 
   async call(to: string, data: string, at?: BlockRef): Promise<string> {
+    this.ethCalls += 1;
     if (this.rpcDown) {
       throw new RpcError("simulated provider outage");
     }
