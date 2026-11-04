@@ -382,6 +382,80 @@ describe("readiness with a chain", () => {
     expect(await exported()).toEqual(healthy);
   });
 
+  it("exports one whole read when a scrape and a readiness check overlap", async () => {
+    // The scrape's cursor read waits while a readiness check fails to read
+    // the RPC; then the scrape's own read finishes last.
+    let reachedCursor!: () => void;
+    const atCursor = new Promise<void>((resolve) => {
+      reachedCursor = resolve;
+    });
+    class HeldCursor extends InMemoryChainEventRepository {
+      hold: Promise<void> | null = null;
+      override async getCursor(scope: ChainScope) {
+        const hold = this.hold;
+        this.hold = null;
+        if (hold) {
+          reachedCursor();
+          await hold;
+        }
+        return super.getCursor(scope);
+      }
+    }
+    const events = new HeldCursor();
+    let rpcDown = false;
+    const deps = chainDeps(
+      {
+        blockNumber: async () => {
+          if (rpcDown) throw new Error("RPC unavailable");
+          return 120n;
+        },
+      },
+      events,
+    );
+    const app = buildApp({ metrics: new MetricsRegistry(), chain: deps });
+    closers.push(app);
+    await events.commitConfirmedRange(
+      deps.chain,
+      {
+        from: 1n,
+        to: 100n,
+        toBlockHash: `0x${"ab".repeat(32)}`,
+        expectedCursor: null,
+      },
+      [],
+    );
+
+    let release!: () => void;
+    events.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scrape = Promise.resolve(
+      app.inject({ method: "GET", url: "/metrics" }),
+    );
+    await atCursor;
+
+    rpcDown = true;
+    const ready = await app.inject({ method: "GET", url: "/health/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({ checks: { chain: "error" } });
+    rpcDown = false;
+    release();
+
+    // Not `vham_rpc_up 0` from the readiness check next to the scrape's lag.
+    expect(
+      (await scrape).body
+        .split("\n")
+        .filter((line) =>
+          /^vham_(chain_head_block|indexer_lag_blocks|rpc_up) /.test(line),
+        )
+        .sort(),
+    ).toEqual([
+      "vham_chain_head_block 120",
+      "vham_indexer_lag_blocks 20",
+      "vham_rpc_up 1",
+    ]);
+  });
+
   it("reports a deep-reorg halt without failing readiness (#77)", async () => {
     const metrics = new MetricsRegistry();
     const deps = chainDeps({ blockNumber: async () => 120n });

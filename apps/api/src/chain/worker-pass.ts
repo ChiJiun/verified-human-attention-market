@@ -174,8 +174,9 @@ export const DEPLOYMENT_LOCK_HELD =
  * to `reorg:recover --apply`. Every failure is retried, a database error as
  * well as a lock that another session holds (DEPLOYMENT_LOCK_HELD). Once the
  * lock is held, `onLocked` starts the stall clock: a worker waiting for the
- * lock is not stalled, another one runs. Returns null without calling it if
- * the worker is stopping, also when the lock came just as it stopped.
+ * lock is not stalled, another one runs. A worker that is stopping gets no
+ * `onLocked`: null if it stopped while waiting, or the lock, for it to
+ * release, if the lock came just as it stopped.
  */
 export async function takeDeploymentLock(
   events: Pick<ChainEventRepository, "lockDeployment">,

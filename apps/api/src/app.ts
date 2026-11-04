@@ -203,23 +203,23 @@ export function buildApp(dependencies: AppDependencies = {}) {
     "1 while a reorg beyond the confirmation depth halts the deployment",
   );
 
-  /** Head and confirmed-cursor lag; throws when the RPC is unreachable. */
+  /**
+   * Head and confirmed-cursor lag; throws when the RPC or the cursor cannot
+   * be read. Scrapes and readiness checks both call it, at the same time too,
+   * so the gauges change only once its reads are done, all in one step: a
+   * scrape exports one whole read, the latest to finish, never the head of
+   * one and the lag of another.
+   */
   async function chainStatus() {
     if (!chain) return null;
 
-    // A value is exported only as read in this call: without the RPC or the
-    // database, the last head and lag no longer hold.
     let head: bigint;
     try {
       head = await chain.rpc.blockNumber();
     } catch (error) {
-      rpcUp.set(0);
-      chainHead.remove();
-      indexerLag.remove();
+      publishChainRead(null, null);
       throw error;
     }
-    rpcUp.set(1);
-    chainHead.set(Number(head));
 
     let cursor: Awaited<ReturnType<typeof chain.events.getCursor>>;
     try {
@@ -228,15 +228,27 @@ export function buildApp(dependencies: AppDependencies = {}) {
         contractAddress: chain.chain.contractAddress,
       });
     } catch (error) {
-      indexerLag.remove();
+      publishChainRead(head, null);
       throw error;
     }
-    const lag = cursor ? head - cursor.latestConfirmedBlock : null;
     // No cursor: the worker has committed nothing yet, or `reorg:recover
     // --apply` reset the index. Then no lag is exported, not the last one.
+    const lag = cursor ? head - cursor.latestConfirmedBlock : null;
+    publishChainRead(head, lag);
+    return { head, lag };
+  }
+
+  /**
+   * Sets the chain gauges from one read. A value that was not read is
+   * removed: without the RPC or the cursor, the last head and lag no longer
+   * hold. `head` is null when the RPC could not be read.
+   */
+  function publishChainRead(head: bigint | null, lag: bigint | null) {
+    rpcUp.set(head === null ? 0 : 1);
+    if (head === null) chainHead.remove();
+    else chainHead.set(Number(head));
     if (lag === null) indexerLag.remove();
     else indexerLag.set(Number(lag));
-    return { head, lag };
   }
 
   /**
