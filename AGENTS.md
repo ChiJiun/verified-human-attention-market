@@ -55,7 +55,7 @@ The long-term product may become **Verified Human Attention as an API**, but the
 
 `docs/SDLC_STATUS.md` is the single status page (phases, ADR status, review gates); GitHub issues and CI are authoritative over both files. Implementation and testing are active, and the only deployment is the Base Sepolia testnet with no real funds. Do **not** restart planning from zero.
 
-On 2026-11-03 the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87, #88, #90, #92, #93) reached `main` through #94, which resolved the conflicts between those PRs. The same day #75, #76, #77, #78, #82, #86, #102 and #103 were fixed in #96–#107 (see `docs/SDLC_STATUS.md`). Next, in dependency order:
+On 2026-11-02 (UTC, GitHub's `mergedAt`) the M1 review stack (#61–#63, #66, #68, #79, #81, #83–#85, #87, #88, #90, #92, #93) reached `main` through #94, which resolved the conflicts between those PRs. The same day #75, #76, #77, #78, #82, #86, #102 and #103 were fixed in #96–#107. On 2026-11-04 #109–#116 followed: the web app claims only on its configured chain and shows a claim as paid only with its `RewardClaimed` event, dependencies were patched (Next 16.4.5) with a CI audit job that also runs daily, the pages got DOM tests (#104), and review follow-ups were applied. `docs/SDLC_STATUS.md` lists each PR. Next, in dependency order:
 
 1. **Owner gate before the redeploy**: decide issue #80 (`CampaignManager` cleanup; a recommendation is in the issue), because the redeploy is the next on-chain change.
 2. **Redeploy to Base Sepolia (ADR-0011)**: `createCampaign` takes a `draftRef`, so the 2026-10-14 contract is incompatible. Follow the migration steps in `docs/deployment/TESTNET.md` and the runbook `docs/deployment/BASE_SEPOLIA_RERUN.md`, deploy, and re-run the flow. The deploy needs the owner's keys and the World App scan needs the owner's phone. Then close M1 (#12, #13). #71 closes only after the #13 swap test passes as ADR-0007 describes.
@@ -152,7 +152,7 @@ Current intent:
 │  └─ api/          # Fastify + PostgreSQL/Drizzle API, indexer worker
 ├─ packages/
 │  ├─ contracts/    # Solidity + Foundry, deployment records, ABI export
-│  └─ shared/       # browser-safe types, chain list, canonical ABI
+│  └─ shared/       # browser-safe types, canonical ABI, chain list, deployment/settlement/World ID signal helpers
 ├─ scripts/db/      # backup/restore drill
 └─ .github/
    └─ workflows/
@@ -172,7 +172,7 @@ D:\Code\GitHub Desktop\verified-human-attention-market
 
 Current baseline:
 
-- Node.js 24+
+- Node.js 24+ (root `engines`: `>=24.0.0`). The web app's DOM tests run in jsdom 30, whose `engines` needs `^24.15.0` on the Node 24 line, so run `pnpm test` on Node 24.15 or newer.
 - pnpm 12.4.2
 - Foundry v1.8.4
 - Solidity 0.8.30

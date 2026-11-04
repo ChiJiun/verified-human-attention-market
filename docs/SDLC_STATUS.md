@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-03
+> Last reviewed: 2026-11-04. Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -79,8 +79,8 @@ Official references:
 | Implementation skeleton | ✅ Monorepo scaffold |
 | CampaignManager contract | ✅ Baseline implemented |
 | Contract test suite | ✅ Unit + fuzz + invariants |
-| JavaScript test suite | ✅ API/shared baseline |
-| CI | ✅ JavaScript + Foundry + local-chain E2E jobs, production dependency audit (high and critical); failures as annotations |
+| JavaScript test suite | ✅ API, shared, and web (unit tests plus DOM tests of the mission and advertiser pages, #104) |
+| CI | ✅ JavaScript + Foundry + local-chain E2E jobs, production dependency audit (high and critical) on every push and pull request and daily on `main`; failures as annotations |
 | API persistence | ✅ Campaigns, missions, eligibility, submissions (#8, #15) |
 | Engagement verifier | ✅ Deterministic comprehension check (#15) |
 | Submission endpoint | ✅ Eligibility + verifier + persistence, 2-attempt cap |
@@ -97,7 +97,7 @@ Official references:
 | Public API contract | ✅ Scoped API keys, rate limits, retryable error model, versioning (#26, API_CONTRACT.md) |
 | Production-readiness gate | 🟡 Reconciliation, backup/restore drill, incident process (#29); external review + named on-call pending |
 | Quality signals | ✅ Campaign-scoped reason codes, fraud-adjusted analytics; cross-campaign reputation deferred (#25, ADR-0009) |
-| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69). Unknown approve, fund, close and refund outcomes resolve without a reload, linking resumes after a transient 503, and a paid wallet sees "already paid" without a transaction (#78, #82, #86, #103) |
+| Web flows | ✅ Advertiser create/fund (#11) and participant verify/answer/claim with the IDKit widget (#12); a lost RPC response, a retry or a second tab can never create a second campaign, because `createCampaign` is idempotent per draft (ADR-0011, #13). The advertiser page closes a campaign and refunds its unused budget with the advertiser's own wallet, offering each only when `CampaignManager` accepts it (#69). Unknown approve, fund, close and refund outcomes resolve without a reload, linking resumes after a transient 503, and a paid wallet sees "already paid" without a transaction (#78, #82, #86, #103). The mission page claims only on the chain the site is configured for, refuses a contract address without code, and shows a claim as paid only when its receipt has the claim's `RewardClaimed` event (#110, #115) |
 | End-to-end POC | 🟡 Local anvil e2e in CI covers a lost RPC response, a concurrent resend and a same-parameter creation for another draft (ADR-0011). Base Sepolia: the v1 contract run on 2026-10-14 is complete (`docs/DEMO.md`); the run on the ADR-0011 contract is pending (#13) |
 | World ID integration | ✅ Backend verification, RP signing and IDKit widget; a real production proof verified on Base Sepolia (ADR-0007, #9, #12). Only World ID 4.0 proofs are accepted (#74, PR #79); the 2026-10-14 proof may have been a 3.0 proof, so the re-run repeats it |
 | Testnet deployment | 🟡 v1 `CampaignManager` (`0x12cc…DFEc`, 2026-10-14) ran the full flow with a real World ID proof; it is incompatible with ADR-0011 and retired. Redeploy and re-run pending (#13) |
@@ -113,7 +113,7 @@ Official references:
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
 - Base Sepolia run on 2026-10-14 (v1 contract, before ADR-0011) with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
 
-## M1 review stack (merged 2026-11-03)
+## M1 review stack (merged 2026-11-02 UTC)
 
 The PRs below reached `main` through #94, merged in the order their bases imply, with the conflicts between them resolved and CI (javascript with PostgreSQL, solidity, e2e) green. The stacked PRs were closed with a pointer to #94.
 
@@ -140,9 +140,11 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues: #80 and #70 are owner decisions (#80 has a recommendation in the issue, 2026-11-03); #74 and #71 wait for the #13 re-run; #104 (DOM tests for the web pages) adds dev dependencies and is left for the owner; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand).
+Open issues on 2026-11-04 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
 
-## Follow-ups merged 2026-11-03
+Recommended to the owner: the repository is public, and on 2026-11-04 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
+
+## Follow-ups merged 2026-11-02 (UTC)
 
 Each was reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e).
 
@@ -158,12 +160,28 @@ Each was reviewed by a separate agent before merging, with the review recorded o
 | #106 | #102 | Bloom-flagged blocks are proven complete from their receipts before a range commits |
 | #107 | #103 | Unknown Approve and Fund outcomes resolve without a reload |
 
+## Follow-ups merged 2026-11-04
+
+Each was reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e, and `audit` from #114 on).
+
+| PR | Closes | What changed |
+| --- | --- | --- |
+| #109 | — | Docs reconciled with the code and GitHub state; the re-run runbook asks for the newest green `main` and checks for the fixes after #94 |
+| #110 | — | The mission page claims only on the chain the site is configured for, and an unsupported `NEXT_PUBLIC_CHAIN_ID` fails fast instead of falling back to Base Sepolia |
+| #111 | — | The API's remaining duplicated constants, patterns and fixtures are folded into one source each; one claim TTL constant; the `/metrics` 401 uses the catalog error shape |
+| #112 | — | CI actions run on Node 24, and each test failure is annotated once |
+| #113 | — | Dependency security patches (`next` 16.4.5, `fastify` 5.12.8, `zod` 4.6.7, a `ws` override, `fast-uri`, `vite`), so `pnpm audit --prod` is clean; the unused zod schemas leave `@vham/shared` |
+| #114 | — | CI `audit` job for high and critical production advisories, third-party actions pinned by SHA, an annotation fallback, and tests of the claim TTL and expiry boundary |
+| #115 | #104 | DOM tests for the mission and advertiser pages (jsdom); a claim shows as paid only with its `RewardClaimed` event, and a claim to an address without code is refused |
+| #116 | — | Review follow-ups: a cancelled or replaced claim shows the hash mined in its place and can be claimed again after a reload; a daily `Dependency audit` workflow; `*.sh` checked out with LF; both claim repositories refuse a bad signer authorization through one `assertSignedFor` check |
+
 ## Next SDLC Actions
 
 1. Owner answers #80 (a recommendation is in the issue).
 2. Redeploy `CampaignManager` (ADR-0011) to Base Sepolia, run the migration, and repeat the full flow (`docs/deployment/BASE_SEPOLIA_RERUN.md`); then close M1 (#12, #13) and, if the swap test passes, #71.
 3. Decide ADR-0010 (passive accrual, World ID at login and withdrawal) and run the #22 privacy review it requires.
 4. Production readiness for real funds stays gated by #29 (external security review, named on-call).
+5. Owner turns on Dependabot alerts, secret scanning and push protection (the recommendation under the open issues above).
 
 ---
 
