@@ -54,6 +54,15 @@ Worker (`INDEXER_METRICS_PORT`):
 | `vham_reconciliation_accounting_violations`                                          | Must always be 0.                                         |
 | `vham_reconciliation_ambiguous_campaigns`                                            | On-chain campaigns needing a manual `POST /onchain` link. |
 
+Counter series that a rule in [alerts.yml](alerts.yml) watches with `increase()` are
+exported at 0 from startup (`apps/api/src/observability/alerted-series.ts`).
+Prometheus sees no increase in a series whose first sample is already 1, so
+without that the first signer mismatch, payout anomaly or deep reorg would not
+alert, and the World ID rule would need one more failed verification.
+`vham_http_requests_total` is the exception: its series carry the route, so
+they cannot be listed ahead, and its 5xx rule alerts only above 10.
+`alert-series.test.ts` checks the list against the rules.
+
 `vham_claim_authorizations_total` counts each call of the claim service, whichever
 route made it: acceptance in `POST .../submissions` (a refusal there answers
 503/409 and records nothing), a `POST .../submissions` replay (a refusal answers
@@ -137,8 +146,9 @@ The API reads `authorizedSigner()` while it prepares a claim, after the live
 campaign read: on the authorization route, on a replay of an accepted
 submission (which reads its authorization again), and for a new submission
 that passed the verifier's campaign and answer-shape checks (an indexed
-`active` campaign inside its window, well-formed answers, right or wrong).
-A mismatch therefore raises this alert on the first such request, not on
+`active` campaign inside its window, well-formed answers, whatever they score).
+A mismatch therefore raises this alert on the first such request once
+Prometheus has scraped the API (the series starts at 0), not on
 submissions refused before it, such as one sent before the campaign starts.
 Those requests sign nothing.
 

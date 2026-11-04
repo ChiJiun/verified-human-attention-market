@@ -161,6 +161,7 @@ async function setupOnchain(claimSigner: ClaimSigner | null = null) {
   const contractAddress = `0x${"c1".repeat(20)}`;
   const rpc = new FakeChain(contractAddress);
   rpc.signer = claimSigner?.address ?? null;
+  const events = new InMemoryChainEventRepository();
   const s = await setup(
     {
       rpc,
@@ -169,7 +170,7 @@ async function setupOnchain(claimSigner: ClaimSigner | null = null) {
         contractAddress,
         usdcAddress: `0x${"d1".repeat(20)}`,
       },
-      events: new InMemoryChainEventRepository(),
+      events,
       now: () => new Date("2026-10-05T10:30:00.000Z"),
     },
     claimSigner,
@@ -195,7 +196,8 @@ async function setupOnchain(claimSigner: ClaimSigner | null = null) {
     startTime: Date.parse(campaignPayload.startAt) / 1000,
     endTime: Date.parse(campaignPayload.endAt) / 1000,
   });
-  return { ...s, rpc };
+  const scope = { chainId: 84532, contractAddress };
+  return { ...s, rpc, events, scope };
 }
 
 function signedFor(claimant: string): SignedClaim {
@@ -543,6 +545,34 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     }
   });
 
+  it("replays an acceptance during a chain halt with 200 and claim code CHAIN_HALTED", async () => {
+    const { verify, submit, events, scope } = await setupOnchain(
+      createClaimSigner(`0x${"11".repeat(32)}`),
+    );
+    const eligibilityToken = await verify("human-1", WALLET_A);
+    const body = { eligibilityToken, claimant: WALLET_A, answers: CORRECT };
+    const accepted = await submit("halted", body);
+    expect(accepted.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "authorized" },
+    });
+
+    await events.haltForReorg(scope, 5n, new Date("2026-10-05T10:31:00.000Z"));
+    // The replay is answered before the halt check of a new submission, and
+    // reading its authorization again refuses during the halt.
+    const replay = await submit("halted", body);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({
+      status: "accepted",
+      claim: { status: "pending_authorization", code: "CHAIN_HALTED" },
+    });
+
+    // A new submission is refused outright.
+    const fresh = await submit("after-halt", body);
+    expect(fresh.statusCode).toBe(503);
+    expect(fresh.json()).toMatchObject({ error: { code: "CHAIN_HALTED" } });
+  });
+
   it("replays the original outcome for the same idempotency key", async () => {
     const { verify, submit, setNow } = await setup();
     const token = await verify("human-1", WALLET_A);
@@ -717,7 +747,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     expect(earlyWrong.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_STARTED" },
     });
-    // Neither request sent an eth_call, awaited or not.
+    // Neither request sent an eth_call while it was handled.
     expect(rpc.ethCalls).toBe(callsBefore);
 
     setNow(new Date("2026-10-05T10:30:00.000Z"));
@@ -748,7 +778,7 @@ describe("POST /v1/campaigns/:id/submissions", () => {
     expect(closed.json()).toMatchObject({
       error: { code: "CAMPAIGN_NOT_ACTIVE" },
     });
-    // Neither request sent an eth_call, awaited or not.
+    // Neither request sent an eth_call while it was handled.
     expect(rpc.ethCalls).toBe(callsBefore);
 
     // An indexed `active` campaign is read live before it is accepted.

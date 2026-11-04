@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { fail } from "../errors/catalog.js";
+import { ALERTED_COUNTER_SERIES } from "./alerted-series.js";
 import type { MetricsRegistry } from "./metrics.js";
 
 /** Business outcome metric per critical route (success or error code). */
@@ -125,6 +126,12 @@ export function registerInstrumentation(
     "vham_http_requests_total",
     "HTTP requests by route, method and status",
   );
+  // Outcome counters are otherwise created by their route's first response.
+  // One that an alert watches exists from the start, so that response's
+  // outcome already counts as an increase (alerted-series.ts).
+  for (const { name, help } of Object.values(OUTCOME_METRICS)) {
+    if (ALERTED_COUNTER_SERIES[name]) metrics.counter(name, help);
+  }
 
   app.addHook("onSend", async (request: FastifyRequest, reply, payload) => {
     reply.header("x-request-id", request.id);

@@ -3,6 +3,8 @@
  * 0.0.4). No dependency; counters and gauges with string labels only.
  */
 
+import { ALERTED_COUNTER_SERIES } from "./alerted-series.js";
+
 type Labels = Record<string, string>;
 
 interface Series {
@@ -53,6 +55,14 @@ export class MetricsRegistry {
 
   counter(name: string, help: string) {
     const metric = this.metric(name, help, "counter");
+    // Series an alert rule watches with increase() start at 0, so their
+    // first event shows as an increase (alerted-series.ts).
+    for (const labels of ALERTED_COUNTER_SERIES[name] ?? []) {
+      const key = labelKey(labels);
+      if (!metric.series.has(key)) {
+        metric.series.set(key, { labels: { ...labels }, value: 0 });
+      }
+    }
     return {
       inc: (labels: Labels = {}, amount = 1) => {
         const key = labelKey(labels);

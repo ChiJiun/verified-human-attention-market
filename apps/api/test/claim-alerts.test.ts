@@ -146,12 +146,16 @@ async function setup(options: {
       payload: { eligibilityToken },
     });
 
+  /**
+   * The series counted so far. The ones an alert watches are exported at 0
+   * from the start (alert-series.test.ts covers that), so 0 is skipped here.
+   */
   async function series(name: string): Promise<Record<string, number>> {
     const response = await app.inject({ method: "GET", url: "/metrics" });
     const result: Record<string, number> = {};
     for (const line of response.body.split("\n")) {
       const match = line.match(new RegExp(`^${name}\\{(.+)\\} (\\d+)$`));
-      if (match) result[match[1]!] = Number(match[2]);
+      if (match && Number(match[2]) > 0) result[match[1]!] = Number(match[2]);
     }
     return result;
   }
