@@ -110,6 +110,10 @@ export interface AppDependencies {
   /** HMAC secret for participant keys; eligibility fails closed without it. */
   participantKeySecret?: string | null;
   chainId?: number;
+  /**
+   * This app's own registry: its chain and halt gauges keep their reads in
+   * order only within one app, so two apps must not share a registry.
+   */
   metrics?: MetricsRegistry;
   /** Bearer token for GET /metrics; null or absent = unauthenticated. */
   metricsToken?: string | null;
@@ -127,6 +131,26 @@ export interface AppDependencies {
   now?: () => Date;
   /** Receives the JSON log lines; turns logging on under NODE_ENV=test. */
   logStream?: { write(line: string): void };
+}
+
+/**
+ * Orders reads that may overlap, such as a scrape's and a readiness check's:
+ * each is numbered when it starts, and its result is published only if no
+ * read that started later has been. So of the reads that have finished, the
+ * last started is the one published, and an older read that finishes later
+ * changes nothing.
+ */
+function orderedReads() {
+  let started = 0;
+  let published = 0;
+  return {
+    start: () => ++started,
+    publish(read: number, set: () => void) {
+      if (read < published) return;
+      published = read;
+      set();
+    },
+  };
 }
 
 export function buildApp(dependencies: AppDependencies = {}) {
@@ -203,21 +227,20 @@ export function buildApp(dependencies: AppDependencies = {}) {
     "1 while a reorg beyond the confirmation depth halts the deployment",
   );
 
-  /** Reads of chainStatus() in the order they started, and the last published. */
-  let chainReadsStarted = 0;
-  let chainReadPublished = 0;
+  const chainReads = orderedReads();
+  const haltReads = orderedReads();
 
   /**
    * Head and confirmed-cursor lag; throws when the RPC or the cursor cannot
    * be read. Scrapes and readiness checks both call it, at the same time too,
    * so the gauges change only once its reads are done, all in one step, and
-   * only if no read that started later has changed them: a scrape exports
-   * one whole read, the newest to have finished, never the head of one and
-   * the lag of another, nor an older read over a newer one.
+   * only if no read that started later has changed them (orderedReads): a
+   * scrape exports one whole read, the last started of those finished, never
+   * the head of one and the lag of another.
    */
   async function chainStatus() {
     if (!chain) return null;
-    const read = ++chainReadsStarted;
+    const read = chainReads.start();
 
     let head: bigint;
     try {
@@ -255,33 +278,37 @@ export function buildApp(dependencies: AppDependencies = {}) {
     head: bigint | null,
     lag: bigint | null,
   ) {
-    if (read < chainReadPublished) return;
-    chainReadPublished = read;
-    rpcUp.set(head === null ? 0 : 1);
-    if (head === null) chainHead.remove();
-    else chainHead.set(Number(head));
-    if (lag === null) indexerLag.remove();
-    else indexerLag.set(Number(lag));
+    chainReads.publish(read, () => {
+      rpcUp.set(head === null ? 0 : 1);
+      if (head === null) chainHead.remove();
+      else chainHead.set(Number(head));
+      if (lag === null) indexerLag.remove();
+      else indexerLag.set(Number(lag));
+    });
   }
 
   /**
    * Whether a deep-reorg halt is recorded (ADR-0011). A gauge, so the alert
    * holds for as long as the halt does, whichever scrape sees it (#77).
    * Fails closed: when the halt cannot be read the gauge is 1, never a stale
-   * 0 or a missing series (RUNBOOK: VhamChainHalted).
+   * 0 or a missing series (RUNBOOK: VhamChainHalted). Reads are ordered like
+   * chainStatus()'s: a read that started later and has finished, such as a
+   * readiness check's, replaces a failed read's 1, and an older read that
+   * finishes later changes nothing.
    */
   async function haltStatus() {
     if (!chain) return null;
+    const read = haltReads.start();
 
     try {
       const halt = await chain.events.getHalt({
         chainId: chain.chain.chainId,
         contractAddress: chain.chain.contractAddress,
       });
-      haltedGauge.set(halt ? 1 : 0);
+      haltReads.publish(read, () => haltedGauge.set(halt ? 1 : 0));
       return halt !== null;
     } catch (error) {
-      haltedGauge.set(1);
+      haltReads.publish(read, () => haltedGauge.set(1));
       throw error;
     }
   }

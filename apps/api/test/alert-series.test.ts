@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import { z } from "zod";
 
 import { buildApp } from "../src/app.js";
 import { ERROR_CATALOG } from "../src/errors/catalog.js";
@@ -11,69 +13,6 @@ import {
 } from "../src/observability/alerted-series.js";
 import { MetricsRegistry } from "../src/observability/metrics.js";
 import { PayoutAnomalyDetector } from "../src/observability/payout-anomaly.js";
-
-/** Column of a line's key, after its indentation and any `- `. */
-function keyColumn(line: string) {
-  return line.search(/[^\s-]/);
-}
-
-/** Where a YAML scalar may start: a quote there opens a quoted scalar. */
-const SCALAR_START = /(?:^\s*(?:-\s+)*|:\s+|[[{,]\s*)$/;
-
-/**
- * The lines of a YAML file, each without its comment, as YAML drops them: a
- * `#` at the start of a line or after whitespace, outside a quoted scalar
- * and outside the content of a block scalar (`>-`, `|`), which is kept as
- * it is. A quote opens a quoted scalar only where a scalar starts;
- * elsewhere, as in `it's` or `{a="b"}`, it is plain text. A quoted scalar
- * may span lines; `\"` and `''` escape its quote. `content` marks a line
- * that starts inside a block scalar or a quoted scalar: text, not keys.
- */
-function yamlLines(text: string) {
-  let quote: string | null = null;
-  let blockColumn: number | null = null;
-  return text.split("\n").map((line) => {
-    if (blockColumn !== null) {
-      if (line.trim() === "" || keyColumn(line) > blockColumn) {
-        return { text: line, content: true };
-      }
-      blockColumn = null;
-    }
-    const content = quote !== null;
-    let kept = line;
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index]!;
-      if (quote) {
-        if (quote === '"' && char === "\\") index += 1;
-        else if (quote === "'" && line.startsWith("''", index)) index += 1;
-        else if (char === quote) quote = null;
-      } else if (char === '"' || char === "'") {
-        if (SCALAR_START.test(line.slice(0, index))) quote = char;
-      } else if (char === "#" && (index === 0 || /\s/.test(line[index - 1]!))) {
-        kept = line.slice(0, index);
-        break;
-      }
-    }
-    if (quote === null && /:\s+[>|][-+0-9]*\s*$/.test(kept)) {
-      blockColumn = keyColumn(line);
-    }
-    return { text: kept, content };
-  });
-}
-
-/** A YAML file without its comments (yamlLines). */
-function withoutComments(text: string) {
-  return yamlLines(text)
-    .map((line) => line.text)
-    .join("\n");
-}
-
-/** The lines of a YAML file that may hold keys: not scalar content. */
-function keyLines(text: string) {
-  return yamlLines(text)
-    .filter((line) => !line.content)
-    .map((line) => line.text);
-}
 
 /**
  * A file of this repository with `\n` line ends: a Windows checkout may have
@@ -86,74 +25,32 @@ function repositoryText(path: string) {
   ).replace(/\r\n/g, "\n");
 }
 
-const RULES_FILE = repositoryText("docs/operations/alerts.yml");
-const RULES = withoutComments(RULES_FILE);
-
-const EXPR_KEY = /^\s*(?:-\s+)*expr:/;
+/**
+ * What these checks read of a rule file: every rule is an alert with an
+ * expression and a runbook link. Keys left out here are not checked.
+ */
+const RuleFile = z.object({
+  groups: z.array(
+    z.object({
+      rules: z.array(
+        z.object({
+          alert: z.string(),
+          expr: z.string(),
+          annotations: z.object({ runbook: z.string() }),
+        }),
+      ),
+    }),
+  ),
+});
 
 /**
- * The item lines of every `key:` list of a YAML file, such as `rules:`. The
- * key must be written plainly with a block sequence below it (the selector
- * test checks that each item is a block mapping): a quoted key, or a flow
- * sequence or mapping, would hide its keys from the line-based checks here.
- * Items may sit at the key's indentation; scalar content is skipped.
+ * The alert rules as Prometheus reads them: comments dropped, quoting,
+ * folding, anchors, tags and merge keys (`<<`) resolved, duplicate keys
+ * refused.
  */
-function sequenceItems(text: string, key: string) {
-  const lines = keyLines(text);
-  const items: string[] = [];
-  lines.forEach((line, index) => {
-    const spelled = new RegExp(`^\\s*(?:-\\s+)*["']?${key}["']?\\s*:`);
-    if (!spelled.test(line)) return;
-    if (!new RegExp(`^\\s*(?:-\\s+)*${key}:\\s*$`).test(line)) {
-      throw new Error(`Write \`${key}:\` with a list below: ${line.trim()}`);
-    }
-    const keyIndent = keyColumn(line);
-    let itemIndent: number | null = null;
-    for (const next of lines.slice(index + 1)) {
-      if (next.trim() === "") continue;
-      const indent = next.search(/\S/);
-      const item = next.trimStart().startsWith("-");
-      if (indent < keyIndent || (indent === keyIndent && !item)) break;
-      itemIndent ??= indent;
-      if (indent === itemIndent) items.push(next.trimEnd());
-    }
-  });
-  return items;
-}
-
-/**
- * Where an `expr` value may start, on its key's line: a block scalar (`>-`,
- * `|`), a plain value starting as PromQL may (a name, a number, `(`, a
- * sign, the `:` of a recording rule name), or one quoted on that line, `\"`
- * and `''` escaped. The next lines of a quoted value may sit at any
- * indentation, where exprLines would not look, so fold long ones with `>-`.
- */
-const EXPR_VALUE =
-  /^(?:[>|][-+0-9]*|[\w(:.+-].*|"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')$/;
-
-/**
- * Every line of every `expr` value: block, plain, or quoted on one line (the
- * selector test checks EXPR_VALUE). Prometheus reads a `#` in
- * an expression as a PromQL comment that hides the rest of its line. In a
- * quoted or block value YAML keeps the `#`, so this parser would still see
- * what Prometheus does not; in a plain value YAML drops it as a comment. So
- * no `expr` line may hold one: put comments above the rule.
- */
-function exprLines(text: string) {
-  const lines = text.split("\n");
-  // An `expr:` inside scalar content, such as a description, is no key.
-  const content = yamlLines(text).map((line) => line.content);
-  const found: string[] = [];
-  lines.forEach((line, index) => {
-    if (content[index] || !EXPR_KEY.test(line)) return;
-    found.push(line);
-    for (const next of lines.slice(index + 1)) {
-      if (next.trim() !== "" && keyColumn(next) <= keyColumn(line)) break;
-      found.push(next);
-    }
-  });
-  return found;
-}
+const RULES = RuleFile.parse(
+  parse(repositoryText("docs/operations/alerts.yml"), { merge: true }),
+).groups.flatMap((group) => group.rules);
 
 /** GitHub's anchor for the text of a Markdown heading. */
 function slugOf(heading: string) {
@@ -243,9 +140,9 @@ afterEach(async () => {
 
 /** Every `increase(metric{matchers}[range])` in the alert rules. */
 function increaseSelectors() {
-  return [
-    ...RULES.matchAll(/\bincrease\(\s*(\w+)\s*(?:\{([^}]*)\})?\s*\[/g),
-  ].map(([, metric, matchers]) => ({
+  return RULES.flatMap(({ expr }) => [
+    ...expr.matchAll(/\bincrease\(\s*(\w+)\s*(?:\{([^}]*)\})?\s*\[/g),
+  ]).map(([, metric, matchers]) => ({
     metric: metric!,
     // Spaces between matchers go, those inside a label value stay.
     matchers: (matchers ?? "").replace(/\s+(?=(?:[^"]*"[^"]*")*[^"]*$)/g, ""),
@@ -274,6 +171,12 @@ function seriesLine(metric: string, labels: Record<string, string>) {
 
 describe("series watched by increase() alert rules", () => {
   it("lists every counter series an increase() rule needs", () => {
+    // Prometheus reads a `#` in an expression as a PromQL comment that hides
+    // the rest of its line, which the selectors below would still see. So no
+    // expression may hold one, not even in a label value: put comments in
+    // YAML, above the rule.
+    for (const { alert, expr } of RULES) expect(expr, alert).not.toContain("#");
+
     const selectors = increaseSelectors();
     // Guards the parsing above: the rules hold at least these.
     expect(selectors.map((selector) => selector.metric)).toEqual(
@@ -291,35 +194,10 @@ describe("series watched by increase() alert rules", () => {
     // fails here (so does a range over a gauge, such as avg_over_time(): add
     // it here when one is needed). A comparison with `offset` has no range
     // and is not checked.
-    const ranges = [...RULES.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g)];
+    const ranges = RULES.flatMap(({ expr }) => [
+      ...expr.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g),
+    ]);
     expect(selectors).toHaveLength(ranges.length);
-    // Groups and rules are block mappings in block sequences, with plain
-    // keys, so every key starts a line, where these checks look: flow style,
-    // and quoted, explicit (`? `) or merge (`<<:`) keys fail here. Every rule
-    // is an alert with an `expr` key whose value starts on its line
-    // (EXPR_VALUE), no `expr` line holds a `#` (exprLines), and the folded
-    // World ID rule's second line is found, which guards the search.
-    const keyed = keyLines(RULES_FILE);
-    for (const line of keyed) {
-      expect(line).not.toMatch(/^\s*(?:-\s+)*(?:["'?]|<<)/);
-    }
-    const BLOCK_MAPPING = /^\s*-\s+[\w-]+:(?:\s|$)/;
-    for (const group of sequenceItems(RULES_FILE, "groups")) {
-      expect(group).toMatch(BLOCK_MAPPING);
-    }
-    const alerts = sequenceItems(RULES_FILE, "rules");
-    for (const alert of alerts) expect(alert).toMatch(BLOCK_MAPPING);
-    expect(
-      keyed.filter((line) => /^\s*(?:-\s+)*alert:/.test(line)),
-    ).toHaveLength(alerts.length);
-    const expressions = exprLines(RULES_FILE);
-    const keys = expressions.filter((line) => EXPR_KEY.test(line));
-    expect(keys).toHaveLength(alerts.length);
-    for (const line of keys) {
-      expect(line.replace(EXPR_KEY, "").trim(), line).toMatch(EXPR_VALUE);
-    }
-    expect(expressions.join("\n")).toContain("or increase(vham_world_id");
-    for (const line of expressions) expect(line).not.toContain("#");
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -340,13 +218,54 @@ describe("series watched by increase() alert rules", () => {
     const slugs = anchorsOf(repositoryText("docs/operations/RUNBOOK.md"));
     // Guards the heading parser: `VhamIndexerLag / VhamIndexerStalled`.
     expect(slugs).toContain("vhamindexerlag--vhamindexerstalled");
-    const alerts = sequenceItems(RULES_FILE, "rules");
-    const anchors = [
-      ...RULES.matchAll(/runbook:\s*docs\/operations\/RUNBOOK\.md#(\S+)/g),
-    ].map(([, anchor]) => anchor!);
-    expect(alerts.length).toBeGreaterThan(0);
-    expect(anchors).toHaveLength(alerts.length);
-    for (const anchor of anchors) expect(slugs, anchor).toContain(anchor);
+    expect(RULES.length).toBeGreaterThan(0);
+    for (const { alert, annotations } of RULES) {
+      const anchor = /^docs\/operations\/RUNBOOK\.md#(\S+)$/.exec(
+        annotations.runbook,
+      )?.[1];
+      expect(anchor, alert).toBeDefined();
+      expect(slugs, alert).toContain(anchor);
+    }
+  });
+
+  it("finds GitHub's anchors only where GitHub makes them", () => {
+    const markdown = [
+      "# Runbook",
+      "### VhamIndexerLag / VhamIndexerStalled",
+      "### VhamRpcDown <!-- note -->",
+      "### [Linked](https://example.com) heading ###",
+      "## Repeated",
+      "## Repeated",
+      "```sh",
+      "# in a fence",
+      "~~~",
+      "# still in the fence: only its own marker closes it",
+      "```bash",
+      "# still in the fence: only a bare marker closes it",
+      "```",
+      "````md",
+      "```",
+      "# still in the fence: only a marker as long closes it",
+      "````",
+      "<!-- a comment block",
+      "## Commented out",
+      "-->",
+      "<!-- a whole comment on one line -->",
+      "Text with an unclosed <!-- inline comment",
+      "## After the text",
+      "   ### Indented by three",
+      "    ### Indented by four: code",
+    ].join("\n");
+    expect([...anchorsOf(markdown)]).toEqual([
+      "runbook",
+      "vhamindexerlag--vhamindexerstalled",
+      "vhamrpcdown-",
+      "linked-heading",
+      "repeated",
+      "repeated-1",
+      "after-the-text",
+      "indented-by-three",
+    ]);
   });
 
   it("lists outcome codes that exist and every payout anomaly scope", () => {
