@@ -389,7 +389,8 @@ describe("readiness with a chain", () => {
    * An app whose chain reads can be held: `hold(step)` makes the next RPC,
    * cursor or halt read wait until `release()`, and `reached` resolves once
    * it waits. The RPC answers with the head set when the read starts, and a
-   * cursor read fails if `db.cursorDown` was set when it started.
+   * cursor or halt read fails if `db.cursorDown` or `db.haltDown` was set
+   * when it started.
    */
   async function heldChainApp() {
     type Step = "rpc" | "cursor" | "halt";
@@ -404,7 +405,7 @@ describe("readiness with a chain", () => {
       hold.reached();
       await hold.released;
     }
-    const db = { cursorDown: false };
+    const db = { cursorDown: false, haltDown: false };
     class HeldEvents extends InMemoryChainEventRepository {
       override async getCursor(scope: ChainScope) {
         const down = db.cursorDown;
@@ -413,7 +414,9 @@ describe("readiness with a chain", () => {
         return super.getCursor(scope);
       }
       override async getHalt(scope: ChainScope) {
+        const down = db.haltDown;
         await pass("halt");
+        if (down) throw new Error("database unavailable");
         return super.getHalt(scope);
       }
     }
@@ -465,9 +468,13 @@ describe("readiness with a chain", () => {
           /^vham_(chain_head_block|indexer_lag_blocks|rpc_up) /.test(line),
         )
         .sort();
+    const halted = async (scrape: ReturnType<typeof request>) =>
+      (await scrape).body
+        .split("\n")
+        .filter((line) => line.startsWith("vham_chain_halted "));
     // Lets the reads that hold nothing finish.
     const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
-    return { rpc, db, hold, request, exported, settle };
+    return { rpc, db, hold, request, exported, halted, settle };
   }
 
   it("exports one whole read when a scrape and a readiness check overlap", async () => {
@@ -593,6 +600,43 @@ describe("readiness with a chain", () => {
     ]);
     newer.release();
     expect((await ready).json()).toMatchObject({ indexerLagBlocks: "30" });
+  });
+
+  it("never replaces a newer halt read with an older one that finishes later", async () => {
+    const { db, hold, request, halted, settle } = await heldChainApp();
+
+    // A readiness check whose halt read fails waits before it finishes; a
+    // scrape that starts later reads no halt, then waits for its cursor.
+    db.haltDown = true;
+    const slowFailure = hold("halt");
+    const failing = request("/health/ready");
+    await slowFailure.reached;
+    db.haltDown = false;
+    const cursor = hold("cursor");
+    const scrape = request("/metrics");
+    await cursor.reached;
+    await settle();
+    // The older failure does not put the scrape's 0 back to 1...
+    slowFailure.release();
+    expect((await failing).json()).toMatchObject({
+      checks: { database: "error" },
+    });
+    cursor.release();
+    expect(await halted(scrape)).toEqual(["vham_chain_halted 0"]);
+
+    // ...and an older success does not clear a newer failure's 1.
+    const slowSuccess = hold("halt");
+    const succeeding = request("/health/ready");
+    await slowSuccess.reached;
+    db.haltDown = true;
+    const second = hold("cursor");
+    const failedScrape = request("/metrics");
+    await second.reached;
+    await settle();
+    slowSuccess.release();
+    expect((await succeeding).json()).toMatchObject({ chainHalted: false });
+    second.release();
+    expect(await halted(failedScrape)).toEqual(["vham_chain_halted 1"]);
   });
 
   it("reports a deep-reorg halt without failing readiness (#77)", async () => {

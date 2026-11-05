@@ -21,10 +21,15 @@ the API a `scrape_timeout` of at least 20 s, so a scrape outlasts its RPC
 client's 15 s limit with room for the database reads, and a `scrape_interval`
 no shorter (Prometheus refuses a timeout above the interval; its default
 timeout is 10 s). A scrape that times out keeps none of the API's series, so
-with a shorter timeout a slow RPC raises no VhamRpcDown. A database that
-hangs instead of failing (its queries have no time limit) fails the scrape
-whatever the timeout. No rule alerts on a failing target (`up == 0`) yet, so
-watch the API's targets.
+with a shorter timeout a slow RPC raises neither VhamRpcDown nor, while a
+halt is recorded, VhamChainHalted. A database read that hangs instead of
+failing can outlast any scrape timeout: a query has no time limit (only
+opening a new connection gives up, after postgres.js's 30 s
+`connect_timeout`). That includes a database host that drops packets, the
+usual kind of unreachable: scrapes then fail as a whole, the API exports no
+series, and no rule fires.
+No rule alerts on a failing target (`up == 0`) yet, so watch the API's
+targets.
 
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
@@ -53,7 +58,7 @@ API (`/metrics`):
 | `vham_claim_authorizations_total`                                 | outcome               | Every attempt: `success` or a refusal code (`SIGNER_MISMATCH`, …).      |
 | `vham_payout_anomalies_total`                                     | scope                 | Bursts of newly signed authorizations (campaign / global).           |
 | `vham_rpc_up`, `vham_chain_head_block`, `vham_indexer_lag_blocks` | —                     | Read on each scrape and readiness check; a scrape exports one whole read, the last started of those finished (its own, another scrape's or a readiness check's): no head or lag when it could not read the RPC, and no lag when it could not read the cursor or there is none (before the worker's first committed range, and after `reorg:recover --apply` resets the index). |
-| `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on each scrape and readiness check, RPC up or not). |
+| `vham_chain_halted`                                               | —                     | 1 while a deep-reorg halt is recorded, or while it cannot be read (read on each scrape and readiness check, RPC up or not; like the row above, a scrape exports the last started of the reads that finished). |
 
 Worker (`INDEXER_METRICS_PORT`):
 
@@ -263,12 +268,15 @@ rule evaluation that sees such a gap starts VhamIndexerLag's 10 minutes over
 on the API's series, or resolves it if it fires. The worker's own
 `vham_indexer_lag_blocks` stays at its last successful pass, and fires the
 alert as well while it is above 50. A failing RPC raises VhamRpcDown once it
-has failed for 2 minutes, so short RPC failures now and then raise nothing. A
-failing database raises VhamChainHalted at the first rule evaluation after a
-scrape that cannot read the halt, and it clears once a scrape can again;
-readiness answers `database: error` meanwhile
-([VhamChainHalted](#vhamchainhalted)). A read that hangs fails the whole
-scrape instead ([scrape timeout](#signals)).
+has failed for 2 minutes, so short RPC failures now and then raise no
+VhamRpcDown (their 503s still count towards
+[VhamServerErrors](#vhamservererrors)). A database that fails its queries
+fails the halt read too: a rule evaluation that sees a scrape's 1 from such a
+read raises VhamChainHalted at once (no `for`), and a read that starts later and
+succeeds clears it, so a failure that ends between two rule evaluations may
+raise nothing. Readiness answers `database: error` meanwhile
+([VhamChainHalted](#vhamchainhalted)). A database read that hangs fails the
+whole scrape instead ([scrape timeout](#signals)).
 
 Check worker logs (`indexer pass failed; retrying` with backoff up to 60 s) and
 RPC health ([request cost](#indexer-request-cost)). Raise
@@ -300,8 +308,9 @@ way. While it waits, the worker exports no stall clock, so VhamIndexerStalled
 does not fire for it. If the database answers, the index has a cursor and no
 other worker is indexing, VhamIndexerLag fires once the API's lag has stayed
 above 50 blocks for 10 minutes (a failed read can start that over, see
-above); a database that does not answer shows as `database: error` in the
-API's readiness. To find the session that holds the lock, run this on the worker's
+above). A database that fails its queries shows as `database: error` in the
+API's readiness; one that hangs leaves readiness without an answer, so the
+load balancer's health check times out. To find the session that holds the lock, run this on the worker's
 database, with the worker's chain id and its `CAMPAIGN_MANAGER_ADDRESS` in
 lowercase in place of `84532` and `0x…`:
 
@@ -366,11 +375,15 @@ instance can still serve sign-in, drafts, analytics and a retryable
 `CHAIN_HALTED` to participants, and a 503 would make the load balancer drop
 every API instance at once. Alert on the gauge, not on readiness.
 
-The gauge fails closed: it is also 1 while the API cannot read the halt
-(database unreachable), including on an instance that started during a
-database outage, so a failed read never leaves a stale 0 or no series (a
-scrape that fails as a whole, on a database that hangs, keeps no series at
-all: see [Signals](#signals)). That
+The gauge fails closed: it is also 1 while the API's halt reads fail (the
+database refuses connections or fails the query), including on an instance
+that started during a database outage, so a failed read never leaves a stale
+0 or no series. Scrapes and readiness checks both read the halt, and the
+gauge holds the last started of the reads that finished: a read that started
+later and succeeded replaces a failed read's 1, and an older read that
+finishes later changes nothing. A database that hangs, or a host that drops
+packets, fails the scrape as a whole instead, which keeps no series at all
+(see [Signals](#signals)). That
 page is right, not noise: every participation route reads the halt first, so
 participation fails then too. Readiness tells the two apart: a database
 outage answers 503 with `"database": "error"` and no `chainHalted` field; a
@@ -440,6 +453,14 @@ if this happens more than once.
 
 Readiness returns 503 and claim issuance returns `CHAIN_UNAVAILABLE`. Check the
 RPC provider status and credentials (never paste RPC URLs with keys into issues).
+
+Scrapes and readiness checks both read the RPC, and `vham_rpc_up` holds the
+last started of the reads that finished ([Metrics](#metrics)). A read that
+starts after another and succeeds before that one gives up (15 s) hides its
+failure, so the alert fires on an RPC that keeps failing for 2 minutes but
+can miss one that only times out now and then. Those timeouts still answer
+503 to readiness and claims, which count towards
+[VhamServerErrors](#vhamservererrors).
 
 ### VhamWorldIdUnavailable
 

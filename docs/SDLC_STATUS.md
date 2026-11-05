@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-04 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
+> Last reviewed: 2026-11-05 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -140,9 +140,9 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues on 2026-11-04 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
+Open issues on 2026-11-05 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
 
-Recommended to the owner: the repository is public, and on 2026-11-04 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
+Recommended to the owner: the repository is public, and on 2026-11-05 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
 
 ## Follow-ups merged 2026-11-02 (UTC)
 
@@ -181,6 +181,14 @@ Each was reviewed by a separate agent before merging, with the review recorded o
 | #122 | — | Review follow-ups to #121: the API exports the chain head and indexer lag only as read, so an RPC outage drops both and a database outage the lag, instead of keeping old values; the worker's wait for the deployment lock and the stall clock it starts are one tested function. The runbook and API spec state when the lag is absent, that on a new deployment a worker that never commits a range raises neither indexer alert, and how to select the API's lag by `job`; the World ID section names `WORLD_ID_RP_ID` again for provider errors. The alert tests read files with LF line ends, so code fences are recognised on a Windows checkout too |
 | #123 | — | Review follow-ups to #122: a scrape exports one whole read of the chain head and indexer lag, also while a readiness check reads at the same time. The runbook states that a scrape that cannot read the RPC or the cursor can start VhamIndexerLag's 10 minutes over, that a worker restarting within 5 minutes of taking the lock raises no stall, how to tell the API's lag from the worker's, and that a retry does not help a wrong `WORLD_ID_RP_ID`. The lock test checks each wait's attempt and backoff. The alert tests require block-style rules and an `expr` that starts on its key's line, and no longer fail valid annotation templates or inline HTML comments |
 | #124 | — | Review follow-ups to #123: an older chain read that finishes after a newer one no longer replaces it in the gauges, and tests cover overlaps of a scrape and a readiness check on every path, an older read that succeeds or fails after a newer one, and the cursor-failure path. The runbook asks for an API `scrape_timeout` of at least 20 s, since a scrape that times out raises neither VhamRpcDown nor VhamChainHalted, and says when a failed read restarts VhamIndexerLag, that a failing database pages through VhamChainHalted at once, and that a network error also counts as `PROVIDER_UNAVAILABLE`. The lock test checks the slept backoff. The alert tests skip scalar content when they look for keys, accept more PromQL starts and any first key in a group or rule, refuse quoted, explicit and merge keys, and give a heading with an inline HTML comment GitHub's anchor |
+
+## Follow-ups merged 2026-11-05 (UTC)
+
+Reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e and `audit`).
+
+| PR | Closes | What changed |
+| --- | --- | --- |
+| #125 | — | Review follow-ups to #124: the halt gauge orders its reads like the chain gauges, so an older halt read that finishes after a newer one no longer replaces it (one `orderedReads()` helper serves both). The alert tests parse `alerts.yml` with the `yaml` package, a new dev dependency of the API, instead of a hand-written line parser, so they read the rules as Prometheus does; the runbook anchor parser has a fixture test. The runbook states that only a database read can hang a scrape (a host that drops packets included), when a failed halt read raises VhamChainHalted, that a database that hangs leaves readiness without an answer, and that VhamRpcDown can miss an RPC that only times out now and then |
 
 ## Next SDLC Actions
 
