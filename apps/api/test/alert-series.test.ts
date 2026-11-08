@@ -26,17 +26,28 @@ function repositoryText(path: string) {
 }
 
 /**
- * What these checks read of a rule file: every rule is an alert with an
- * expression and a runbook link. Keys left out here are not checked.
+ * A rule file with the keys of Prometheus's rule format (`model/rulefmt`),
+ * which refuses any other, so a misspelt key fails here as it fails there.
+ * Every rule is an alert (`metadata` is for recording rules only) with an
+ * expression and a runbook link; values the checks below do not read are
+ * left to Prometheus.
  */
-const RuleFile = z.object({
+const RuleFile = z.strictObject({
   groups: z.array(
-    z.object({
+    z.strictObject({
+      name: z.unknown().optional(),
+      interval: z.unknown().optional(),
+      query_offset: z.unknown().optional(),
+      limit: z.unknown().optional(),
+      labels: z.unknown().optional(),
       rules: z.array(
-        z.object({
+        z.strictObject({
           alert: z.string(),
           expr: z.string(),
-          annotations: z.object({ runbook: z.string() }),
+          for: z.unknown().optional(),
+          keep_firing_for: z.unknown().optional(),
+          labels: z.unknown().optional(),
+          annotations: z.object({ runbook: z.string() }).catchall(z.unknown()),
         }),
       ),
     }),
@@ -44,9 +55,12 @@ const RuleFile = z.object({
 });
 
 /**
- * The alert rules as Prometheus reads them: comments dropped, quoting,
- * folding, anchors, tags and merge keys (`<<`) resolved, duplicate keys
- * refused.
+ * The alert rules, parsed: comments dropped; quoting, folding, escapes,
+ * anchors, tags and merge keys (`<<`) resolved; duplicate keys refused. The
+ * checks read the expressions Prometheus evaluates. This parser is not
+ * Prometheus's (Go yaml.v3), and some files only Prometheus refuses still
+ * pass here, such as one with a repeated `<<` key or an escape only YAML 1.2
+ * knows; `promtool check rules` is not run.
  */
 const RULES = RuleFile.parse(
   parse(repositoryText("docs/operations/alerts.yml"), { merge: true }),
@@ -149,6 +163,19 @@ function increaseSelectors() {
   }));
 }
 
+/**
+ * How many ranges and subqueries (`[10m]`, `[300]`, `[5m:1m]`) a PromQL
+ * expression holds: each `[` outside a string, so one inside a label value
+ * such as `=~"api[0-9]"` does not count.
+ */
+function rangesOf(expr: string) {
+  const outsideStrings = expr.replace(
+    /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`/g,
+    '""',
+  );
+  return [...outsideStrings.matchAll(/\[/g)].length;
+}
+
 /** The label sets a selector needs: `k="v"` or a literal `k=~"a|b"`. */
 function labelSetsOf(matchers: string): Record<string, string>[] {
   if (matchers === "") return [];
@@ -188,16 +215,14 @@ describe("series watched by increase() alert rules", () => {
         "vham_indexer_passes_total",
       ]),
     );
-    // Every range selector (`[10m]`) in the rules belongs to an increase()
-    // parsed above. rate(), changes() or delta() would miss a first sample the
-    // same way, so a rule using one, or an increase() the pattern cannot read,
-    // fails here (so does a range over a gauge, such as avg_over_time(): add
-    // it here when one is needed). A comparison with `offset` has no range
-    // and is not checked.
-    const ranges = RULES.flatMap(({ expr }) => [
-      ...expr.matchAll(/\[\s*\d+(?:ms|[smhdwy])/g),
-    ]);
-    expect(selectors).toHaveLength(ranges.length);
+    // Every range or subquery in the rules (rangesOf) belongs to an
+    // increase() parsed above. rate(), changes() or delta() would miss a
+    // first sample the same way, so a rule using one, or an increase() the
+    // pattern cannot read, fails here (so does a range over a gauge, such as
+    // avg_over_time(): add it here when one is needed). A comparison with
+    // `offset` has no range and is not checked.
+    const ranges = RULES.reduce((count, { expr }) => count + rangesOf(expr), 0);
+    expect(selectors).toHaveLength(ranges);
 
     for (const { metric, matchers } of selectors) {
       const selector = `${metric}{${matchers}}`;
@@ -212,6 +237,36 @@ describe("series watched by increase() alert rules", () => {
         expect(listed, selector).toContainEqual(labels);
       }
     }
+  });
+
+  it("refuses a rule file with a key Prometheus's rule format does not know", () => {
+    const rule = { alert: "A", expr: "up == 0", annotations: { runbook: "r" } };
+    const fileWith = (group: object) => ({ groups: [group] });
+    const accepted = (file: object) => RuleFile.safeParse(file).success;
+    expect(accepted(fileWith({ name: "g", rules: [rule] }))).toBe(true);
+    // A misspelt key, as Prometheus refuses it (KnownFields).
+    expect(
+      accepted(fileWith({ name: "g", rules: [{ ...rule, lables: {} }] })),
+    ).toBe(false);
+    expect(
+      accepted(fileWith({ name: "g", intervall: "1m", rules: [rule] })),
+    ).toBe(false);
+    expect(
+      accepted({ ...fileWith({ name: "g", rules: [rule] }), extra: 1 }),
+    ).toBe(false);
+    // Recording-rule keys: every rule here is an alert.
+    expect(
+      accepted(fileWith({ name: "g", rules: [{ ...rule, metadata: {} }] })),
+    ).toBe(false);
+    expect(
+      accepted(fileWith({ name: "g", rules: [{ record: "r", expr: "up" }] })),
+    ).toBe(false);
+  });
+
+  it("counts every range and subquery, and no `[` inside a string", () => {
+    expect(rangesOf("increase(x[10m]) + rate(y[300]) + delta(z[1.5])")).toBe(3);
+    expect(rangesOf("max_over_time(x[5m:1m]) > 0")).toBe(1);
+    expect(rangesOf("x{job=~\"api[0-9]\"} + y{a='['} == 0")).toBe(0);
   });
 
   it("links every alert to a heading of the runbook", () => {

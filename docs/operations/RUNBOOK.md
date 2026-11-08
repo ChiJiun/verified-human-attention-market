@@ -23,13 +23,17 @@ no shorter (Prometheus refuses a timeout above the interval; its default
 timeout is 10 s). A scrape that times out keeps none of the API's series, so
 with a shorter timeout a slow RPC raises neither VhamRpcDown nor, while a
 halt is recorded, VhamChainHalted. A database read that hangs instead of
-failing can outlast any scrape timeout: a query has no time limit (only
-opening a new connection gives up, after postgres.js's 30 s
-`connect_timeout`). That includes a database host that drops packets, the
-usual kind of unreachable: scrapes then fail as a whole, the API exports no
-series, and no rule fires.
-No rule alerts on a failing target (`up == 0`) yet, so watch the API's
-targets.
+failing can outlast the scrape timeout: a query has no time limit, and only
+opening a new connection gives up, after postgres.js's `connect_timeout`
+(30 s by default; `?connect_timeout=` in `DATABASE_URL` or
+`PGCONNECT_TIMEOUT` changes it, and the operating system may give up
+sooner). A database host that drops packets makes reads hang. A read on an
+open connection hangs the scrape, which then fails as a whole, and the API's
+rules see no series. A read that has to open a connection gives up instead,
+so when every read of a scrape gives up before the `scrape_timeout`, the
+scrape completes with `vham_chain_halted` at 1. The worker's
+VhamIndexerStalled can still fire, 5 minutes after its last successful pass. No rule alerts on a failing target (`up == 0`) yet, so
+watch the API's targets.
 
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
@@ -382,8 +386,8 @@ that started during a database outage, so a failed read never leaves a stale
 gauge holds the last started of the reads that finished: a read that started
 later and succeeded replaces a failed read's 1, and an older read that
 finishes later changes nothing. A database that hangs, or a host that drops
-packets, fails the scrape as a whole instead, which keeps no series at all
-(see [Signals](#signals)). That
+packets, can fail the scrape as a whole instead, which keeps no series at
+all ([Signals](#signals) says when). That
 page is right, not noise: every participation route reads the halt first, so
 participation fails then too. Readiness tells the two apart: a database
 outage answers 503 with `"database": "error"` and no `chainHalted` field; a
@@ -457,9 +461,15 @@ RPC provider status and credentials (never paste RPC URLs with keys into issues)
 Scrapes and readiness checks both read the RPC, and `vham_rpc_up` holds the
 last started of the reads that finished ([Metrics](#metrics)). A read that
 starts after another and succeeds before that one gives up (15 s) hides its
-failure, so the alert fires on an RPC that keeps failing for 2 minutes but
-can miss one that only times out now and then. Those timeouts still answer
-503 to readiness and claims, which count towards
+failure, and readiness checks, which a load balancer runs every few seconds,
+keep starting reads. So the alert fires on an RPC that keeps failing for 2
+minutes, but can miss one that fails on some reads and not on others: each
+rule evaluation that sees 1 starts the 2 minutes over. The requests that read
+the chain still fail on those reads: readiness answers 503, claim
+authorization (`POST .../authorization`) and a new submission answer 503
+`CHAIN_UNAVAILABLE` (a replayed submission answers 200, with the code in
+`claim.code`), and linking (`POST .../onchain`) answers 503
+`RPC_UNAVAILABLE`. These 503s count towards
 [VhamServerErrors](#vhamservererrors).
 
 ### VhamWorldIdUnavailable
