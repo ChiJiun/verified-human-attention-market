@@ -112,7 +112,8 @@ export interface AppDependencies {
   chainId?: number;
   /**
    * This app's own registry: its chain and halt gauges keep their reads in
-   * order only within one app, so two apps must not share a registry.
+   * order only within one app, so buildApp refuses a registry that another
+   * open app uses (it is free again once that app closes).
    */
   metrics?: MetricsRegistry;
   /** Bearer token for GET /metrics; null or absent = unauthenticated. */
@@ -152,6 +153,13 @@ function orderedReads() {
     },
   };
 }
+
+/**
+ * Registries that an open app uses. Each app orders its own reads
+ * (orderedReads), and a registry returns the gauge it already holds by name,
+ * so two apps on one registry would write the same gauges out of order.
+ */
+const registriesInUse = new WeakSet<MetricsRegistry>();
 
 export function buildApp(dependencies: AppDependencies = {}) {
   // Same rule as INDEXER_CONFIRMATIONS: 0 would link unconfirmed creations.
@@ -215,6 +223,15 @@ export function buildApp(dependencies: AppDependencies = {}) {
     dependencies.apiClientRepository ?? new InMemoryApiClientRepository();
   const chain = dependencies.chain ?? null;
   const metrics = dependencies.metrics ?? new MetricsRegistry();
+  if (registriesInUse.has(metrics)) {
+    throw new Error(
+      "metrics registry is used by another open app; give each app its own",
+    );
+  }
+  registriesInUse.add(metrics);
+  app.addHook("onClose", async () => {
+    registriesInUse.delete(metrics);
+  });
 
   const indexerLag = metrics.gauge(
     "vham_indexer_lag_blocks",
@@ -290,11 +307,12 @@ export function buildApp(dependencies: AppDependencies = {}) {
   /**
    * Whether a deep-reorg halt is recorded (ADR-0011). A gauge, so the alert
    * holds for as long as the halt does, whichever scrape sees it (#77).
-   * Fails closed: when the halt cannot be read the gauge is 1, never a stale
-   * 0 or a missing series (RUNBOOK: VhamChainHalted). Reads are ordered like
-   * chainStatus()'s: a read that started later and has finished, such as a
-   * readiness check's, replaces a failed read's 1, and an older read that
-   * finishes later changes nothing.
+   * Fails closed: a read that cannot read the halt sets the gauge to 1, never
+   * a stale 0 or a missing series (RUNBOOK: VhamChainHalted), unless a read
+   * that started later has already set it. Reads are ordered like
+   * chainStatus()'s (orderedReads): a read that started later and has
+   * finished, such as a readiness check's, replaces a failed read's 1, and
+   * an older read that finishes later changes nothing.
    */
   async function haltStatus() {
     if (!chain) return null;

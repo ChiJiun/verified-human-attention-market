@@ -189,6 +189,23 @@ describe("GET /metrics", () => {
     expect(response.headers["content-type"]).toContain("text/plain");
     expect(response.body).toContain("# TYPE vham_http_requests_total counter");
   });
+
+  it("refuses a registry another open app uses, and frees it on close", async () => {
+    // Each app orders its own chain and halt reads; two on one registry
+    // would write the same gauges out of order.
+    const metrics = new MetricsRegistry();
+    const first = buildApp({ metrics });
+    closers.push(first);
+    expect(() => buildApp({ metrics })).toThrow(/used by another open app/);
+
+    // Closed without ever being ready: the registry is free again.
+    await first.close();
+    const second = buildApp({ metrics });
+    closers.push(second);
+    expect(
+      (await second.inject({ method: "GET", url: "/metrics" })).statusCode,
+    ).toBe(200);
+  });
 });
 
 describe("payout anomaly alert", () => {
