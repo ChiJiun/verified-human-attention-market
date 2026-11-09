@@ -27,13 +27,22 @@ failing can outlast the scrape timeout: a query has no time limit, and only
 opening a new connection gives up, after postgres.js's `connect_timeout`
 (30 s by default; `?connect_timeout=` in `DATABASE_URL` or
 `PGCONNECT_TIMEOUT` changes it, and the operating system may give up
-sooner). A database host that drops packets makes reads hang. A read on an
-open connection hangs the scrape, which then fails as a whole, and the API's
-rules see no series. A read that has to open a connection gives up instead,
-so when every read of a scrape gives up before the `scrape_timeout`, the
-scrape completes with `vham_chain_halted` at 1. The worker's
-VhamIndexerStalled can still fire, 5 minutes after its last successful pass. No rule alerts on a failing target (`up == 0`) yet, so
-watch the API's targets.
+sooner). A database host that drops packets makes reads hang. A read sent on
+an open connection hangs, whether that connection was idle or still waiting
+for an earlier query (the pool sends a read there when it has neither an idle
+connection nor room to open one). Such a read fails the scrape as a whole:
+the API's gauges, so VhamRpcDown and VhamChainHalted, have no series, and its
+`increase()` rules see only the samples from before. A read that has to open
+a connection gives up instead. When every read of a scrape gives up before
+the `scrape_timeout`, the scrape completes with `vham_chain_halted` at 1;
+that needs a `scrape_timeout` above `connect_timeout`, which is 30 s by
+default. The worker's VhamIndexerStalled can still fire, 5 minutes after its
+last successful pass, while the worker keeps running. A lock check that gives
+up stops the worker, and a restarted one raises nothing until it holds the
+lock: see
+[VhamIndexerLag / VhamIndexerStalled](#vhamindexerlag--vhamindexerstalled).
+No rule alerts on a failing target (`up == 0`) yet, so watch the API's
+targets.
 
 Correlation: send `x-request-id` from the web app or proxy; the API reuses it
 (when it matches `[A-Za-z0-9._-]{8,128}`), logs it as `requestId` and echoes it
@@ -468,8 +477,8 @@ rule evaluation that sees 1 starts the 2 minutes over. The requests that read
 the chain still fail on those reads: readiness answers 503, claim
 authorization (`POST .../authorization`) and a new submission answer 503
 `CHAIN_UNAVAILABLE` (a replayed submission answers 200, with the code in
-`claim.code`), and linking (`POST .../onchain`) answers 503
-`RPC_UNAVAILABLE`. These 503s count towards
+`claim.code`), and linking (`POST .../onchain`) and publishing
+(`POST .../publish`) answer 503 `RPC_UNAVAILABLE`. These 503s count towards
 [VhamServerErrors](#vhamservererrors).
 
 ### VhamWorldIdUnavailable
