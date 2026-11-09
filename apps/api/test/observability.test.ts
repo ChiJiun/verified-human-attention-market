@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import {
@@ -200,6 +200,35 @@ describe("GET /metrics", () => {
 
     // Closed without ever being ready: the registry is free again.
     await first.close();
+    const second = buildApp({ metrics });
+    closers.push(second);
+    expect(
+      (await second.inject({ method: "GET", url: "/metrics" })).statusCode,
+    ).toBe(200);
+  });
+
+  it("leaves the registry free when building the app throws", () => {
+    const metrics = new MetricsRegistry();
+    // Fails after the registry check, before the app is returned.
+    vi.spyOn(metrics, "gauge").mockImplementationOnce(() => {
+      throw new Error("build failed");
+    });
+    expect(() => buildApp({ metrics })).toThrow("build failed");
+
+    const app = buildApp({ metrics });
+    closers.push(app);
+  });
+
+  it("frees the registry on close even when closing the database fails", async () => {
+    const metrics = new MetricsRegistry();
+    const first = buildApp({
+      metrics,
+      close: async () => {
+        throw new Error("database close failed");
+      },
+    });
+    await expect(first.close()).rejects.toThrow("database close failed");
+
     const second = buildApp({ metrics });
     closers.push(second);
     expect(

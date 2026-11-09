@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-08 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
+> Last reviewed: 2026-11-09 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -140,9 +140,9 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues on 2026-11-08 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
+Open issues on 2026-11-09 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
 
-Recommended to the owner: the repository is public, and on 2026-11-08 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
+Recommended to the owner: the repository is public, and on 2026-11-09 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
 
 ## Follow-ups merged 2026-11-02 (UTC)
 
@@ -197,6 +197,14 @@ Reviewed by a separate agent before merging, with the review recorded on the PR,
 | PR | Closes | What changed |
 | --- | --- | --- |
 | #126 | — | Review follow-ups to #125: the API refuses a metrics registry that another open app uses, since each app orders its own reads. The alert tests allow only the keys of Prometheus's rule format and count every range or subquery, unit-less ones included. The lockfile resolves vitest once for all packages. The runbook says when a database host that drops packets fails the whole scrape and when the scrape completes with `vham_chain_halted` at 1, that `connect_timeout` is a 30 s default, how VhamRpcDown can miss an RPC that fails on some reads and not others, and which requests answer 503 meanwhile |
+
+## Follow-ups merged 2026-11-09 (UTC)
+
+Reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e and `audit`).
+
+| PR | Closes | What changed |
+| --- | --- | --- |
+| #127 | — | Review follow-ups to #126: the API marks a metrics registry as in use only once the app is built, and frees it before the database closes, so a build that throws or a database close that fails leaves it free; tests pin both. The alert tests accept a rule file that uses every key of the rule format and count no `[` inside a raw string or after an escaped quote, and their comment names the files Prometheus accepts that fail here. The runbook adds publishing to the requests that answer 503 while the RPC fails, and says that a read sent on a busy connection hangs too, that a scrape completes with `vham_chain_halted` at 1 only with a `scrape_timeout` above `connect_timeout`, that `increase()` rules still see the samples from before a failed scrape, and when VhamIndexerStalled cannot fire |
 
 ## Next SDLC Actions
 

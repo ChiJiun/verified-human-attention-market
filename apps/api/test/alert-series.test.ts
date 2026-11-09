@@ -57,10 +57,14 @@ const RuleFile = z.strictObject({
 /**
  * The alert rules, parsed: comments dropped; quoting, folding, escapes,
  * anchors, tags and merge keys (`<<`) resolved; duplicate keys refused. The
- * checks read the expressions Prometheus evaluates. This parser is not
- * Prometheus's (Go yaml.v3), and some files only Prometheus refuses still
- * pass here, such as one with a repeated `<<` key or an escape only YAML 1.2
- * knows; `promtool check rules` is not run.
+ * checks read the expressions Prometheus evaluates. This parser and the
+ * schema above are not Prometheus's (Go yaml.v3 and `rulefmt`), and they
+ * differ both ways. Some files only Prometheus refuses still pass here, such
+ * as one with a repeated `<<` key or an escape only YAML 1.2 knows (`\/`).
+ * Some files Prometheus accepts fail here, which errs on the safe side: a
+ * `\'` escape in double quotes, an alert name that is not a string, a group
+ * without `rules`, or an alert with an empty `record` or a null `metadata`.
+ * `promtool check rules` is not run.
  */
 const RULES = RuleFile.parse(
   parse(repositoryText("docs/operations/alerts.yml"), { merge: true }),
@@ -239,11 +243,32 @@ describe("series watched by increase() alert rules", () => {
     }
   });
 
-  it("refuses a rule file with a key Prometheus's rule format does not know", () => {
+  it("accepts the keys of Prometheus's rule format and refuses any other", () => {
     const rule = { alert: "A", expr: "up == 0", annotations: { runbook: "r" } };
     const fileWith = (group: object) => ({ groups: [group] });
     const accepted = (file: object) => RuleFile.safeParse(file).success;
     expect(accepted(fileWith({ name: "g", rules: [rule] }))).toBe(true);
+    // Every key the rule format allows in a group and in an alerting rule.
+    expect(
+      accepted(
+        fileWith({
+          name: "g",
+          interval: "1m",
+          query_offset: "30s",
+          limit: 10,
+          labels: { team: "ops" },
+          rules: [
+            {
+              ...rule,
+              for: "2m",
+              keep_firing_for: "5m",
+              labels: { severity: "page" },
+              annotations: { runbook: "r", summary: "s" },
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
     // A misspelt key, as Prometheus refuses it (KnownFields).
     expect(
       accepted(fileWith({ name: "g", rules: [{ ...rule, lables: {} }] })),
@@ -267,6 +292,10 @@ describe("series watched by increase() alert rules", () => {
     expect(rangesOf("increase(x[10m]) + rate(y[300]) + delta(z[1.5])")).toBe(3);
     expect(rangesOf("max_over_time(x[5m:1m]) > 0")).toBe(1);
     expect(rangesOf("x{job=~\"api[0-9]\"} + y{a='['} == 0")).toBe(0);
+    // A raw string, and strings that hold their own escaped quote.
+    expect(rangesOf("x{a=`[`} == 0")).toBe(0);
+    expect(rangesOf('x{a="\\"["} == 0')).toBe(0);
+    expect(rangesOf("x{a='\\'['} == 0")).toBe(0);
   });
 
   it("links every alert to a heading of the runbook", () => {

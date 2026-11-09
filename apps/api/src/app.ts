@@ -113,7 +113,9 @@ export interface AppDependencies {
   /**
    * This app's own registry: its chain and halt gauges keep their reads in
    * order only within one app, so buildApp refuses a registry that another
-   * open app uses (it is free again once that app closes).
+   * open app uses. It is free again once that app closes, but a scrape or
+   * readiness check still in flight then can set the gauges when its reads
+   * finish: reuse a registry only once none is in flight.
    */
   metrics?: MetricsRegistry;
   /** Bearer token for GET /metrics; null or absent = unauthenticated. */
@@ -228,10 +230,6 @@ export function buildApp(dependencies: AppDependencies = {}) {
       "metrics registry is used by another open app; give each app its own",
     );
   }
-  registriesInUse.add(metrics);
-  app.addHook("onClose", async () => {
-    registriesInUse.delete(metrics);
-  });
 
   const indexerLag = metrics.gauge(
     "vham_indexer_lag_blocks",
@@ -542,6 +540,14 @@ export function buildApp(dependencies: AppDependencies = {}) {
       await dependencies.close?.();
     });
   }
+
+  // Marked only at the end, so a build that throws leaves the registry free.
+  // onClose hooks run last added first, so this one frees it before
+  // dependencies.close runs, whether that fails or not.
+  registriesInUse.add(metrics);
+  app.addHook("onClose", async () => {
+    registriesInUse.delete(metrics);
+  });
 
   return app;
 }
