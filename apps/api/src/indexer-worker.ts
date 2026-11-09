@@ -14,6 +14,7 @@ import {
 } from "./chain/indexer.js";
 import {
   ChainHaltedError,
+  readHaltWithRetry,
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
@@ -227,7 +228,21 @@ const RECOVERY_ACTION =
 
 // A recorded deep reorg must be recovered first (ADR-0011). After
 // `reorg:recover --apply` the worker rebuilds; the halt stays until verified.
-const existingHalt = await repository.getHalt(scope);
+// A database that cannot be read yet is retried, like the lock below.
+const startupHalt = await readHaltWithRetry(repository, scope, {
+  stopping: () => stopping,
+  sleep,
+  onFailure: (attempt, error, retryInMs) =>
+    log("warn", "startup halt read failed; retrying", {
+      attempt,
+      error: errorMessage(error),
+      retryInMs,
+    }),
+});
+if (startupHalt === null) {
+  process.exit(0);
+}
+const existingHalt = startupHalt.halt;
 if (existingHalt?.recoveryAppliedAt) {
   log("warn", "rebuilding the index after reorg recovery", {
     block: existingHalt.block.toString(),

@@ -21,6 +21,30 @@ afterEach(async () => {
   await Promise.all(closers.splice(0).map((app) => app.close()));
 });
 
+/**
+ * A registry that counts the metrics it is asked for and throws on call
+ * `failAt` instead, as a build that fails there would.
+ */
+function failingRegistry(failAt = Infinity) {
+  const metrics = new MetricsRegistry();
+  let calls = 0;
+  const count = () => {
+    calls += 1;
+    if (calls === failAt) throw new Error("build failed");
+  };
+  const gauge = metrics.gauge.bind(metrics);
+  const counter = metrics.counter.bind(metrics);
+  vi.spyOn(metrics, "gauge").mockImplementation((name, help) => {
+    count();
+    return gauge(name, help);
+  });
+  vi.spyOn(metrics, "counter").mockImplementation((name, help) => {
+    count();
+    return counter(name, help);
+  });
+  return { metrics, calls: () => calls };
+}
+
 const AUTHORIZATION_ROUTE =
   "/v1/campaigns/:id/submissions/:submissionId/authorization";
 const CAMPAIGN = "11111111-1111-4111-8111-111111111111";
@@ -208,15 +232,32 @@ describe("GET /metrics", () => {
   });
 
   it("leaves the registry free when building the app throws", () => {
-    const metrics = new MetricsRegistry();
-    // Fails after the registry check, before the app is returned.
-    vi.spyOn(metrics, "gauge").mockImplementationOnce(() => {
-      throw new Error("build failed");
-    });
-    expect(() => buildApp({ metrics })).toThrow("build failed");
+    // A build asks for its first metric right after the registry check and
+    // for its last in registerInstrumentation, late in the build.
+    const probe = failingRegistry();
+    closers.push(buildApp({ metrics: probe.metrics }));
+    const last = probe.calls();
+    expect(last).toBeGreaterThan(4);
 
-    const app = buildApp({ metrics });
-    closers.push(app);
+    for (const failAt of [1, last]) {
+      const { metrics } = failingRegistry(failAt);
+      expect(() => buildApp({ metrics })).toThrow("build failed");
+      closers.push(buildApp({ metrics }));
+    }
+  });
+
+  it("frees the registry before the dependencies close", async () => {
+    const metrics = new MetricsRegistry();
+    const reused: ReturnType<typeof buildApp>[] = [];
+    const first = buildApp({
+      metrics,
+      close: async () => {
+        reused.push(buildApp({ metrics }));
+      },
+    });
+    await first.close();
+    expect(reused).toHaveLength(1);
+    closers.push(...reused);
   });
 
   it("frees the registry on close even when closing the database fails", async () => {

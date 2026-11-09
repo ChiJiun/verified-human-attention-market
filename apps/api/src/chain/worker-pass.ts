@@ -165,6 +165,29 @@ export async function retryWithBackoff<T>(
   return null;
 }
 
+/**
+ * Reads the deployment's halt when the worker starts, retrying a database
+ * failure with backoff like the deployment lock instead of exiting (which
+ * would crash-loop under a supervisor). The halt, or null for none, comes
+ * wrapped; null if the worker is stopping first.
+ */
+export async function readHaltWithRetry(
+  events: Pick<ChainEventRepository, "getHalt">,
+  scope: ChainScope,
+  options: {
+    stopping: () => boolean;
+    onFailure: (attempt: number, error: unknown, retryInMs: number) => void;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<{ halt: ChainHalt | null } | null> {
+  return retryWithBackoff(async () => ({ halt: await events.getHalt(scope) }), {
+    retryable: () => true,
+    stopping: options.stopping,
+    onFailure: options.onFailure,
+    sleep: options.sleep,
+  });
+}
+
 /** Another session holds the deployment lock (the worker waits for it). */
 export const DEPLOYMENT_LOCK_HELD =
   "another indexer worker or `reorg:recover --apply` holds this deployment";

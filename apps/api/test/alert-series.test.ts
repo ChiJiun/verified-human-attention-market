@@ -61,10 +61,12 @@ const RuleFile = z.strictObject({
  * schema above are not Prometheus's (Go yaml.v3 and `rulefmt`), and they
  * differ both ways. Some files only Prometheus refuses still pass here, such
  * as one with a repeated `<<` key or an escape only YAML 1.2 knows (`\/`).
- * Some files Prometheus accepts fail here, which errs on the safe side: a
- * `\'` escape in double quotes, an alert name that is not a string, a group
- * without `rules`, or an alert with an empty `record` or a null `metadata`.
- * `promtool check rules` is not run.
+ * Some files Prometheus accepts fail here, which errs on the safe side, such
+ * as one with a `\'` escape in double quotes, more than one YAML document
+ * (Prometheus reads the first), no `groups`, a group without `rules`, an
+ * alert name or expression that is a number or boolean, an alert with an
+ * empty `record` or a null `metadata`, or an alert without a runbook link
+ * (required here on purpose). `promtool check rules` is not run.
  */
 const RULES = RuleFile.parse(
   parse(repositoryText("docs/operations/alerts.yml"), { merge: true }),
@@ -286,6 +288,14 @@ describe("series watched by increase() alert rules", () => {
     expect(
       accepted(fileWith({ name: "g", rules: [{ record: "r", expr: "up" }] })),
     ).toBe(false);
+    // `record` next to `alert`, even empty: Prometheus refuses a rule with
+    // both, and an empty one is refused here too.
+    expect(
+      accepted(fileWith({ name: "g", rules: [{ ...rule, record: "r" }] })),
+    ).toBe(false);
+    expect(
+      accepted(fileWith({ name: "g", rules: [{ ...rule, record: "" }] })),
+    ).toBe(false);
   });
 
   it("counts every range and subquery, and no `[` inside a string", () => {
@@ -296,6 +306,8 @@ describe("series watched by increase() alert rules", () => {
     expect(rangesOf("x{a=`[`} == 0")).toBe(0);
     expect(rangesOf('x{a="\\"["} == 0')).toBe(0);
     expect(rangesOf("x{a='\\'['} == 0")).toBe(0);
+    // Strings on both sides of a range: each string ends at its own quote.
+    expect(rangesOf('increase(x{a="1"}[5m]) > y{b="2"}')).toBe(1);
   });
 
   it("links every alert to a heading of the runbook", () => {

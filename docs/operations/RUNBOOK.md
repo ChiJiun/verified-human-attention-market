@@ -30,16 +30,20 @@ opening a new connection gives up, after postgres.js's `connect_timeout`
 sooner). A database host that drops packets makes reads hang. A read sent on
 an open connection hangs, whether that connection was idle or still waiting
 for an earlier query (the pool sends a read there when it has neither an idle
-connection nor room to open one). Such a read fails the scrape as a whole:
-the API's gauges, so VhamRpcDown and VhamChainHalted, have no series, and its
-`increase()` rules see only the samples from before. A read that has to open
-a connection gives up instead. When every read of a scrape gives up before
-the `scrape_timeout`, the scrape completes with `vham_chain_halted` at 1;
-that needs a `scrape_timeout` above `connect_timeout`, which is 30 s by
-default. The worker's VhamIndexerStalled can still fire, 5 minutes after its
-last successful pass, while the worker keeps running. A lock check that gives
-up stops the worker, and a restarted one raises nothing until it holds the
-lock: see
+connection nor room to open one). Such a read fails the scrape as a whole.
+The API's gauges then have no series: VhamRpcDown and VhamChainHalted see
+nothing from that instance, and VhamIndexerLag's 10 minutes start over on the
+API's series, or it resolves there if it fires (the worker's series is not
+affected). The API's `increase()` rules see only the samples from before. A
+read that has to open a connection gives up instead, after `connect_timeout`;
+one that finds every connection still opening waits for one of them to give
+up first, so it can take twice that or longer. When every read of a scrape
+gives up before the `scrape_timeout`, the scrape completes with
+`vham_chain_halted` at 1; that needs at least a `scrape_timeout` above
+`connect_timeout`, which is 30 s by default. The worker's VhamIndexerStalled
+can still fire, 5 minutes after its last successful pass, while the worker
+keeps running. A lock check that gives up stops the worker, and a restarted
+one raises nothing until it holds the lock: see
 [VhamIndexerLag / VhamIndexerStalled](#vhamindexerlag--vhamindexerstalled).
 No rule alerts on a failing target (`up == 0`) yet, so watch the API's
 targets.
@@ -317,7 +321,10 @@ holds this deployment`` means another database session holds it: usually a
 running worker or an `--apply` on the same deployment, but it can be a session
 left behind, such as a connection whose end the server has not noticed yet.
 Any other `error` is a database failure, which the worker retries the same
-way. While it waits, the worker exports no stall clock, so VhamIndexerStalled
+way. Before it waits for the lock, the worker reads the deployment's halt,
+and it retries a database it cannot read yet the same way
+(`startup halt read failed; retrying`) instead of exiting. While it waits
+for either, the worker exports no stall clock, so VhamIndexerStalled
 does not fire for it. If the database answers, the index has a cursor and no
 other worker is indexing, VhamIndexerLag fires once the API's lag has stayed
 above 50 blocks for 10 minutes (a failed read can start that over, see
@@ -339,10 +346,14 @@ WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
 If it is neither a running worker nor a running `--apply`, end it with
 `SELECT pg_terminate_backend(<pid>)`; the waiting worker then takes the lock.
 A worker that logs `deployment lock lost; stopping` exits with code 1 so its
-supervisor restarts it: its database session ended (restart, failover,
-network, `idle_session_timeout`) and the server released the lock with it.
-If it repeats, check that `DATABASE_URL` is a direct or session-mode
-connection ([Running the built API](#running-the-built-api)).
+supervisor restarts it. Either its database session ended (restart,
+failover, network, `idle_session_timeout`) and the server released the lock
+with it (`reason` is `not held`), or its check could not reach the database
+(`reason` is the error). The session may still be alive then, and the server
+keeps the lock until it notices the session ended, so the restarted worker
+waits for it as described above. If it repeats, check that `DATABASE_URL` is
+a direct or session-mode connection
+([Running the built API](#running-the-built-api)).
 
 ### VhamIndexerInconsistentReads
 
@@ -479,7 +490,11 @@ authorization (`POST .../authorization`) and a new submission answer 503
 `CHAIN_UNAVAILABLE` (a replayed submission answers 200, with the code in
 `claim.code`), and linking (`POST .../onchain`) and publishing
 (`POST .../publish`) answer 503 `RPC_UNAVAILABLE`. These 503s count towards
-[VhamServerErrors](#vhamservererrors).
+[VhamServerErrors](#vhamservererrors). Sign-in (`POST /v1/auth/verify`)
+reads the chain too, to check a smart-contract wallet's signature: such a
+wallet gets 401 `INVALID_SIGNATURE` meanwhile, and other wallets still sign
+in once the RPC gives up, which takes about 40 s while it hangs (viem's 10 s
+timeout, tried 4 times).
 
 ### VhamWorldIdUnavailable
 
@@ -506,7 +521,12 @@ deploy, check the API's startup warnings, which name what is missing.
 ### VhamServerErrors
 
 Group `vham_http_requests_total{status=~"5.."}` by route, then search logs for
-`"level":50` with that route's `requestId`s.
+`"level":50` with that route's `requestId`s. Readiness (`/health/ready`) logs
+no error for its 503s: request it, and its `checks` say which failed
+(`database` or `chain`; see [VhamRpcDown](#vhamrpcdown)). A load balancer that
+routes on readiness takes every instance out at once during such an outage,
+so requests the API could still serve, such as drafts and analytics while
+only the RPC fails, stop reaching it and its counters.
 
 ## Running the built API
 

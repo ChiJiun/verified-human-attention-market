@@ -27,6 +27,7 @@ import {
 import {
   ChainHaltedError,
   DEPLOYMENT_LOCK_HELD,
+  readHaltWithRetry,
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
@@ -803,6 +804,67 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     ).rejects.toThrow(/does not match/);
     expect(
       await retryWithBackoff(flaky, { ...options, stopping: () => true }),
+    ).toBeNull();
+  });
+
+  it("reads the halt at startup, retrying a database failure", async () => {
+    const scope = { chainId: 84532, contractAddress: CONTRACT };
+    const events = new InMemoryChainEventRepository();
+    const failures: string[] = [];
+    const options = {
+      onFailure: (attempt: number, error: unknown, retryInMs: number) =>
+        failures.push(
+          `${attempt}, ${retryInMs} ms: ${(error as Error).message}`,
+        ),
+      sleep: async () => {},
+    };
+    let calls = 0;
+    const flaky = {
+      getHalt: async (target: typeof scope) => {
+        calls += 1;
+        if (calls < 3) throw new Error("database unavailable");
+        return events.getHalt(target);
+      },
+    };
+
+    // No halt, read on the third try; the worker logs each failure.
+    expect(
+      await readHaltWithRetry(flaky, scope, {
+        ...options,
+        stopping: () => false,
+      }),
+    ).toEqual({ halt: null });
+    expect(failures).toEqual([
+      "1, 1000 ms: database unavailable",
+      "2, 2000 ms: database unavailable",
+    ]);
+
+    // A recorded halt comes back as it is.
+    await events.haltForReorg(scope, 42n, new Date());
+    const read = await readHaltWithRetry(events, scope, {
+      ...options,
+      stopping: () => false,
+    });
+    expect(read?.halt?.block).toBe(42n);
+
+    // Stopped while the database is down: null, which is not "no halt".
+    let stopping = false;
+    expect(
+      await readHaltWithRetry(
+        {
+          getHalt: async () => {
+            throw new Error("database unavailable");
+          },
+        },
+        scope,
+        {
+          ...options,
+          stopping: () => stopping,
+          sleep: async () => {
+            stopping = true;
+          },
+        },
+      ),
     ).toBeNull();
   });
 
