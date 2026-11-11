@@ -1,42 +1,60 @@
-# Demo：本機端到端 POC
+# Demo: the full flow on a local chain
 
-這份文件說明如何在本機跑完整的經濟流程 demo（issue #13），以及各個元件的單獨指令。
+[English](DEMO.md) | [繁體中文](DEMO.zh-TW.md)
 
-Demo 會用**真的**本機鏈（anvil）、**真的**編譯後 `CampaignManager` 合約、真的 PostgreSQL 和真的 API，跑完下面這條流程：
+This guide runs the whole economic loop on your machine, first as one scripted test and then by hand in a browser. It also records the Base Sepolia run of 2026-10-14.
+
+The demo uses a real local chain (anvil), the compiled `CampaignManager` contract, a real PostgreSQL database and the real API:
 
 ```text
-廣告主 SIWE 登入 → 建立草稿 campaign（含理解測驗）
-→ 鏈上 createCampaign → API 驗證交易後連結
-→ approve + fundCampaign → indexer 確認後 campaign 變 active
-→ 使用者 World ID 資格驗證（模擬）→ 作答通過
-→ 後端簽 EIP-712 授權 → 使用者鏈上 claim 領到 1 USDC
-→ 重複 claim 被合約拒絕 → 對帳數字與鏈上一致
-→ 廣告主 close（之後不再產生新負債）→ 等待期過後 refund 9 USDC
-→ analytics 顯示 settled，金額完全對得上
+Advertiser signs in with Ethereum → creates a draft campaign with a comprehension check
+→ createCampaign on-chain → the API verifies the transaction and links the draft
+→ approve + fundCampaign → the indexer confirms it and the campaign becomes active
+→ participant passes World ID (simulated) → answers the check
+→ the backend signs an EIP-712 authorization → the participant claims 1 USDC on-chain
+→ a second claim is refused by the contract → the API's figures match the chain
+→ the advertiser closes the campaign (no new liability after that)
+→ after the waiting period, refunds the unused budget
+→ analytics show "settled" and every amount adds up
 ```
 
-唯一模擬的是 **World ID**：真的 World ID 需要 World App 和 Developer Portal 的 app。測試用的 USDC 是 mock token。
+Only **World ID** is simulated locally, because a real proof needs the World App and a Developer Portal app. The local USDC is a mock token.
+
+The amounts depend on the run. The scripted test funds 10 USDC, pays two participants (the second is accepted before the close and claims after it) and refunds 8 USDC. The browser demo, with one participant, refunds 9 USDC.
+
+Contents:
+
+- [Tools](#tools)
+- [Scripted demo: the end-to-end test](#scripted-demo-the-end-to-end-test) (a few minutes)
+- [Browser demo: advertiser and participant pages](#browser-demo-advertiser-and-participant-pages) (about 15 minutes, plus the wait for the start time)
+- [With a real World ID](#with-a-real-world-id)
+- [Base Sepolia](#base-sepolia), with [the run of 2026-10-14](#the-base-sepolia-run-of-2026-10-14)
+- [Other commands](#other-commands)
+- [How the advertiser page handles slow or replaced transactions](#how-the-advertiser-page-handles-slow-or-replaced-transactions)
+- [API quick reference](#api-quick-reference)
 
 ---
 
-## 需要的工具
+## Tools
 
-| 工具 | 版本 | 備註 |
+| Tool | Version | Note |
 | --- | --- | --- |
-| Node.js | 24+ | |
-| pnpm | 12.4.2 | `corepack enable` 後會依 `packageManager` 自動使用 |
-| Foundry（forge、anvil） | v1.8.4 | Windows 請裝在 WSL 裡 |
-| PostgreSQL | 16 | 用 Docker 最簡單 |
+| Node.js | 24.15 or newer | |
+| pnpm | 12.4.2 | `corepack enable` picks the version in `packageManager` |
+| Foundry (forge, anvil, cast) | v1.8.4 | On Windows, install it inside WSL |
+| PostgreSQL | 16 or newer | Docker is the simplest way; a native install works too |
 
 ---
 
-## 一鍵 demo（建議）
+## Scripted demo: the end-to-end test
 
-### macOS / Linux / WSL
+This runs the loop above as one test, with no browser. The test adds a second participant and failure drills: a lost RPC response, a resend of the same draft, a pause and a signer rotation. CI runs the same test on every push and pull request (the `e2e` job in `.github/workflows/ci.yml`).
 
-開三個終端機。
+### macOS, Linux or WSL
 
-**終端機 1：PostgreSQL**
+Use three terminals.
+
+**Terminal 1: PostgreSQL**
 
 ```bash
 docker run --rm --name vham-pg -p 5432:5432 \
@@ -44,13 +62,13 @@ docker run --rm --name vham-pg -p 5432:5432 \
   postgres:16-alpine
 ```
 
-**終端機 2：本機鏈**
+**Terminal 2: local chain**
 
 ```bash
 anvil
 ```
 
-**終端機 3：編譯合約並跑 demo**
+**Terminal 3: build the contract and run the test**
 
 ```bash
 pnpm install
@@ -61,13 +79,13 @@ export E2E_RPC_URL=http://127.0.0.1:8545
 pnpm --filter @vham/api test:e2e
 ```
 
-### Windows（PowerShell + WSL 裡的 Foundry）
+### Windows (PowerShell, with Foundry in WSL)
 
-- **PostgreSQL：** 用 Docker Desktop 跑上面同一行 `docker run`。
-- **anvil：** 在 WSL 終端機執行 `anvil`。WSL2 會把 `127.0.0.1:8545` 轉發給 Windows。
-- **合約：** 在 WSL 裡執行 `cd packages/contracts && forge build`。產生的 `out/` 資料夾就在 repo 裡，Windows 端看得到。
+- **PostgreSQL:** run the `docker run` command above on one line in Docker Desktop's terminal, or use any PostgreSQL you can reach and put its URL in `TEST_DATABASE_URL`.
+- **anvil:** run `anvil` in a WSL terminal. WSL2 forwards `127.0.0.1:8545` to Windows.
+- **Contract:** run `cd packages/contracts && forge build` in WSL. The `out/` folder it writes is inside the repository, so Windows sees it.
 
-最後在 PowerShell 執行：
+Then, in PowerShell:
 
 ```powershell
 pnpm install
@@ -76,157 +94,62 @@ $env:E2E_RPC_URL = "http://127.0.0.1:8545"
 pnpm --filter @vham/api test:e2e
 ```
 
-### 預期結果
+### Expected result
 
 ```text
-✓ e2e/poc.e2e.ts > POC economic loop on a local chain > runs create → fund → verify → claim → close → refund with matching accounting
-Test Files  1 passed (1)
+ ✓ e2e/poc.e2e.ts (1 test)
+   ✓ POC economic loop on a local chain (1)
+     ✓ runs create → fund → verify → claim → close → refund with matching accounting
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
 ```
 
-注意事項：
-
-- 每次執行都會清空 `vham_e2e` 資料庫的資料表，所以請用專用的資料庫，**不要**指到開發用的資料庫。
-- anvil 的時間會被 demo 往前調。要重跑的話，建議先重啟 anvil。
-- 沒有設定 `TEST_DATABASE_URL` 時，demo 會直接 skip，不會失敗。
-
-CI 的 `e2e` job 每次 push 都會跑同一個 demo，設定見 `.github/workflows/ci.yml`。
+- Each run empties the tables of the `vham_e2e` database. Use a database kept for this, **not** your development database.
+- The test moves anvil's clock forward. Restart anvil before you run it again.
+- Without `TEST_DATABASE_URL` the test is skipped, not failed.
+- Without `forge build` the test cannot read the contract from `packages/contracts/out/`.
 
 ---
 
-## 其他指令
+## Browser demo: advertiser and participant pages
 
-### 全部檢查（commit 前，對應 AGENTS.md §8 / §9）
+Here you act as the advertiser and as the participant with a browser wallet: the advertiser creates and funds a campaign, the participant answers and claims. World ID is simulated: `WORLD_ID_MODE=simulated` works only on a local anvil chain (chain 31337), and the API refuses to start with it on any other chain.
 
-```bash
-pnpm install
-pnpm typecheck
-pnpm test          # 單元 + 整合測試；有 TEST_DATABASE_URL 時也會跑 PostgreSQL 測試
-pnpm lint
-pnpm build
-pnpm format:check
+The accounts below are the **public test accounts** anvil prints when it starts. Everyone knows their private keys. Use them only on your machine and never on a real network.
 
-cd packages/contracts
-forge fmt --check
-forge build --sizes
-forge test -vv
-```
+| Role | Account | Address | Private key |
+| --- | --- | --- | --- |
+| Deployer | anvil #0 | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` | in the deploy command below |
+| Claim signer | anvil #1 | `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` | in the environment block below |
+| Advertiser (import into the browser wallet) | anvil #2 | `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` | `0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a` |
+| Participant (import as a second account) | anvil #3 | `0x90F79bf6EB2c4f870365E785982E1f101E93b906` | `0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6` |
 
-### 只跑 PostgreSQL 整合測試
+### Start the services
 
 ```bash
-export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
-pnpm --filter @vham/api exec vitest run postgres
-```
-
-### 啟動 API 與 indexer（連到已部署的合約）
-
-```bash
-cp .env.example .env    # 依註解填入；不要 commit .env
-set -a; source .env; set +a        # 載入 .env；API 和 indexer 不會自己讀它
-pnpm --filter @vham/api db:migrate
-pnpm --filter @vham/api dev        # API，預設 http://localhost:3001
-pnpm --filter @vham/api indexer    # 另開一個終端機（同樣先載入 .env）：鏈上事件索引 + campaign 狀態同步
-```
-
-API 和 indexer 只從環境變數讀設定。沒載入 `.env`、shell 裡也沒有 `DATABASE_URL` 時，`db:migrate` 會直接失敗（`DATABASE_URL is required for migrations`）。每個執行 API 或 indexer 的終端機都要先載入：bash/zsh 用上面的 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
-
-各組環境變數的作用：
-
-- **鏈上設定**（`EVM_RPC_URL`、`USDC_ADDRESS`、`CAMPAIGN_MANAGER_ADDRESS`、`CAMPAIGN_MANAGER_DEPLOY_BLOCK`）：只要填了，就必須填完整，而且 API 啟動時會驗證鏈 ID 和合約程式碼。
-- **`SIWE_DOMAIN`**：沒設定時無法登入，廣告主相關端點一律回 401。
-- **`WORLD_ID_RP_ID` + `RP_SIGNING_KEY` + `WORLD_ID_APP_ID` + `PARTICIPANT_KEY_SECRET`**：前三個要一起設定；都沒設定時，資格驗證一律回 503；只設定一部分或格式錯誤時，API 拒絕啟動。
-- **`CLAIM_SIGNER_PRIVATE_KEY`**（或正式環境的 `CLAIM_SIGNER_URL` + `CLAIM_SIGNER_ADDRESS`，ADR-0008）：沒設定時不會簽授權。簽署位址必須等於合約的 `authorizedSigner`，也不能是部署者的私鑰；明文私鑰只允許在 anvil 與 Base Sepolia 使用。
-- **審核（#24）**：預設 `MODERATION_MODE=review`，新 campaign 要由 `OPERATOR_ADDRESSES` 裡的錢包核准（或廣告主在 `ADVERTISER_ALLOWLIST`）才能發佈、作答。`MODERATION_MODE=open` 只能在本機 anvil 使用。詳見 [docs/operations/MODERATION.md](operations/MODERATION.md)。
-
-### 廣告主前端（#11）
-
-```bash
-# API 端（.env）：SIWE_DOMAIN 必須等於前端網址的 host
-SIWE_DOMAIN=localhost:3000
-
-# 前端
-export API_URL=http://localhost:3001        # Next 把 /api/* 轉發到這裡
-export NEXT_PUBLIC_CHAIN_ID=84532           # 本機 anvil 用 31337
-pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
-```
-
-登入後的 session 放在 `HttpOnly`、`Secure` 的 cookie 裡（#72）。已確認 Chromium 會保留 `http://localhost` 與 `http://127.0.0.1` 設定的這個 cookie；其他瀏覽器沒有驗證過。瀏覽器沒有保留 cookie 時，登入會直接顯示原因，這時請改用 Chromium，或改用 `next dev --experimental-https`。
-
-頁面流程：
-
-1. 連接瀏覽器錢包；網路不對時會顯示切換按鈕。
-2. 用 Sign-In with Ethereum 登入。重新整理後 session 仍在；沒連錢包時，頁面顯示「Signed in as …」和「Sign out」。「Disconnect」會先登出再中斷錢包；登出失敗時兩者都保留，可以再按一次。
-3. 填寫 campaign（獎勵用十進位 USDC 輸入，內部以整數 atomic units 換算），並設計 1–3 題理解測驗。
-4. 按「Create on-chain」送出 createCampaign，API 驗證交易後完成連結。
-5. 按「Approve & fund」核准並入金。錢包給 CampaignManager 的 USDC 額度（allowance）已經達到預算時，按鈕顯示為「Fund campaign」，只送入金。
-6. indexer 確認後，狀態變成 active，頁面會顯示預算與成效。
-7. 想提早結束時按「Close campaign」。關閉後 API 不再發新的領取授權，已發出的授權在到期前仍可在鏈上領取。結束前最後一分鐘不提供這個按鈕，因為交易可能在結束後才上鏈而 revert。
-8. 退款要等到「關閉時間（沒關閉則是結束時間）加 15 分鐘」之後，因為已發出的授權最多還有效 15 分鐘，合約等它們全部過期才放行。這段時間頁面顯示開放時間、倒數和原因。時間到了按「Refund unused budget」，狀態變成 `settled`，未用完的預算回到廣告主錢包。
-
-合約被 owner 暫停時，頁面說明退款要等解除暫停；「Close campaign」不受暫停影響。兩個按鈕送出前都會重新讀鏈並模擬交易，被合約拒絕時直接顯示 custom error 名稱（例如 `RefundNotAvailable`），不會自動重送。
-
-關閉或退款的交易在等待時間（2 分鐘）內沒有收據時，卡片顯示「還在確認中」，該按鈕先隱藏；頁面每 10 秒查一次收據、錢包帳號的 nonce 與 campaign 狀態，不必重新整理（#86）：
-
-- 收據到了，或鏈上狀態已經是動作的結果（關閉後 `closed`、退款後 `settled`，例如錢包加速後由替代交易完成），卡片改成完成，按鈕依鏈上狀態更新。
-- 收據顯示 revert，或同一個 nonce 已被另一筆交易用掉（在錢包取消），且重新讀到的 campaign 沒有變化，卡片說明原因，按鈕在鏈上仍允許時重新出現。
-- 錢包的 RPC 可能由不同後端回答，所以要連續兩次檢查得到同一個結論才算數；之後鏈上若仍出現動作的結果，顯示失敗的卡片也會改成完成。
-- 交易只要曾經查到過（知道它的 nonce），在那個 nonce 被用掉之前就一直算「還在確認」，因為它隨時可能上鏈。從來沒查到過、超過 10 分鐘仍查不到的交易，視為可能根本沒送出：一般按鈕仍隱藏，改為提供另外的「Close campaign anyway」／「Refund unused budget anyway」並附警告。再按之前請先看錢包的活動紀錄；重送前仍會模擬，若原交易其實已上鏈，模擬會失敗而不送出，兩筆都還沒上鏈時第二筆只會 revert 並耗 gas。
-
-核准（Approve USDC）與入金（Fund campaign）的交易沒有收據時，依同樣的規則處理（#103）：卡片顯示「還在確認中」，入金按鈕先隱藏，頁面每 10 秒查一次收據、nonce，以及交易要造成的結果，不必重新整理。
-
-- 核准的結果是 allowance（owner 為廣告主、spender 為 CampaignManager）達到預算，也就是 rewardPerCompletion × maxCompletions（atomic units，整數計算）。看到後卡片改成完成，按鈕改為「Fund campaign」，按下後才送入金，頁面不會自動送出。
-- 核准的收據一到（即使是之後檢查才查到），按鈕就會回來，不必等 allowance 達到預算。同一個錢包對 CampaignManager 只有一個 allowance，另一個分頁的核准或入金、或在錢包裡調低的額度上限，都可能讓它停在預算以下；這時按鈕顯示「Approve & fund」，按下時重新讀 allowance，仍不足才再核准。
-- 入金的結果是鏈上的 campaign 變成 `active`、`fundedBudget` 等於預算，或 API 的索引已經看到入金。入金送出後，按鈕在看到這個結果之前都保持隱藏。只要看到過一次已入金，這個頁面就不再提供核准或入金，即使之後某次讀取（可能來自落後的 RPC 後端）又顯示尚未入金。
-- revert、被取代、兩次檢查一致、失敗卡片之後改成完成，以及從未查到的交易 10 分鐘後改提供「Approve & fund anyway」／「Fund campaign anyway」，都和關閉、退款相同。例外是 revert 的核准：allowance 也可能來自其他 campaign 的核准，所以這張卡片不會之後改成「USDC approved」。
-- 每次送出前頁面都重新讀鏈，包括核准完成、即將送入金的那一刻（核准可能等了兩分鐘）。原本的入金其實已上鏈，或 allowance 已被改到預算以下時，頁面說明原因，不會送出。兩筆核准都上鏈只是把額度再設一次並耗 gas；兩筆入金都送出時，第二筆會被合約以 `InvalidCampaignStatus` 拒絕並耗 gas，USDC 不會被扣兩次。
-- 等待入金期間，頁面每次重新整理都會讀 allowance 和 campaign，用來決定按鈕顯示「Approve & fund」還是「Fund campaign」。
-
-一個動作進行中時，其他按鈕（包含「Close campaign」與「Refund unused budget」）只會變成停用，不會消失，連點也不會點到滑進同一位置的「Refresh」。
-
-這兩個按鈕只對目前部署的合約（`GET /v1/chain`）上的 campaign 出現。ADR-0011 之前的舊合約上的 campaign，頁面沒有合約位址可用，仍要用 `cast send` 由廣告主錢包送 `closeCampaign(id)` 和 `refundUnusedBudget(id)`。
-
-交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。API 暫時連不到鏈（`503 RPC_UNAVAILABLE`）也算「還在對帳」，頁面約兩分鐘內會自己重試；放棄時卡片明確寫出原因並請你按「Check again」（只查詢，不會送交易）。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
-
-「可能有建立交易還沒確認」的幾種邊界（#78）：
-
-- 另一個分頁或瀏覽器的建立交易已上鏈但還沒達到確認深度時，`/publish` 以最新區塊判斷並回 `409 DRAFT_ALREADY_CREATED`，這個分頁不會再送；頁面改為等它確認後連結。交易還在 mempool、尚未上鏈時 API 看不到，這時只有合約擋得住（第二筆 revert，只耗 gas）。
-- 瀏覽器不能用 `localStorage`（例如私密模式）時，標記只存在這個分頁的記憶體裡：同一次瀏覽中「Check again」與 10 分鐘後的「Create on-chain anyway」照常出現，重新整理後就不記得了，頁面會直接提供「Create on-chain」（送出前仍會先查已確認的建立，`/publish` 再查最新區塊）。
-- 按「Create on-chain anyway」後在錢包拒絕簽署，這次沒有送出任何交易，先前那次嘗試的標記會保留，頁面繼續提供「Check again」。
-
-### 完整網頁 demo：本機鏈 + 前端（#11 / #12）
-
-用瀏覽器錢包實際操作「廣告主建立、入金 → 使用者作答、領取」。World ID 在這個模式下是模擬的：`WORLD_ID_MODE=simulated` 只能在本機 anvil（chain 31337）啟用，換成其他鏈 API 會拒絕啟動。
-
-下面用到的都是 anvil 啟動時印出的**公開測試帳號**，只能用在本機，絕不要拿到任何真實網路上。
-
-| 角色 | 帳號 | 地址 |
-| --- | --- | --- |
-| 部署者 | anvil #0 | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` |
-| claim 簽名者 | anvil #1 | `0x70997970C51812dc3A010C7d01b50e0d17dc79C8` |
-| 廣告主（匯入瀏覽器錢包） | anvil #2 | `0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC` |
-| 使用者（匯入另一個錢包或帳號） | anvil #3 | `0x90F79bf6EB2c4f870365E785982E1f101E93b906` |
-
-```bash
-# 終端機 1：資料庫（同上的 docker run，資料庫名改用 vham）
-# 終端機 2：本機鏈。每 2 秒產生一個區塊，indexer 才有確認數可以等
+# Terminal 1: the database. Stop the scripted demo's container first (it has the same name and port),
+# then use the same docker run with POSTGRES_DB=vham
+# Terminal 2: local chain. Stop the scripted demo's anvil first: it mines no blocks on its own
+# and the test moved its clock forward. A block every 2 seconds gives the indexer confirmations to wait for
 anvil --block-time 2
 
-# 終端機 3：部署 mock USDC + CampaignManager，並給廣告主 100 mock USDC
+# Terminal 3: deploy mock USDC and CampaignManager, and give the advertiser 100 mock USDC
 cd packages/contracts && forge build
 CLAIM_SIGNER_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
 ADVERTISER_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC \
 forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcast \
   --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-cat deployments/31337.json      # 記下 campaignManager、usdc、deployBlock
+cat deployments/31337.json      # note campaignManager, usdc and deployBlock
 ```
 
-API 和 indexer 的環境變數（例如寫在 `.env`，**不要 commit**）：
+Environment variables for the API and the indexer (for example in `.env` in the repository root, which must **not** be committed):
 
 ```bash
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
 EVM_CHAIN_ID=31337
 EVM_RPC_URL=http://127.0.0.1:8545
-USDC_ADDRESS=<deployments/31337.json 的 usdc>
+USDC_ADDRESS=<usdc from deployments/31337.json>
 CAMPAIGN_MANAGER_ADDRESS=<campaignManager>
 CAMPAIGN_MANAGER_DEPLOY_BLOCK=<deployBlock>
 CLAIM_SIGNER_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
@@ -234,103 +157,223 @@ SIWE_DOMAIN=localhost:3000
 WORLD_ID_MODE=simulated
 PARTICIPANT_KEY_SECRET=local-demo-secret-at-least-32-characters
 INDEXER_CONFIRMATIONS=2
-# 本機 demo：讓 anvil #2 的 campaign 直接通過審核（也可以改用 MODERATION_MODE=open）
+# Local demo: campaigns of anvil #2 pass moderation at once (MODERATION_MODE=open also works)
 ADVERTISER_ALLOWLIST=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
-API 和 indexer 不會自動讀 `.env`，請先在終端機 4、5 載入：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
+Run terminals 4 to 6 from the repository root. The API and the indexer do not read `.env` by themselves. Load it in terminals 4 and 5 first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell.
 
 ```bash
-# 終端機 4：API（會先跑 migration）
+# Terminal 4: API (runs the migrations first)
 pnpm --filter @vham/api db:migrate && pnpm --filter @vham/api dev
-# 終端機 5：indexer
+# Terminal 5: indexer
 pnpm --filter @vham/api indexer
-# 終端機 6：前端
+# Terminal 6: web app
 API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web dev
 ```
 
-在瀏覽器錢包新增網路：RPC `http://127.0.0.1:8545`，Chain ID `31337`。
+On Windows, run terminals 2 and 3 in WSL and the rest in PowerShell. Windows PowerShell 5.1 has no `&&`, and PowerShell has no `NAME=value command` form, so run `pnpm --filter @vham/api db:migrate` and `pnpm --filter @vham/api dev` one after the other, and for terminal 6 set `$env:API_URL = "http://localhost:3001"` and `$env:NEXT_PUBLIC_CHAIN_ID = "31337"` before `pnpm --filter @vham/web dev`.
 
-1. **廣告主（anvil #2）：** 打開 http://localhost:3000/advertiser，依序連接錢包、登入、建立 campaign。開始時間要設在幾分鐘後。接著按 Create on-chain，再按 Approve & fund，等狀態變成 `active` 後，複製頁面上的 participant link。
-2. **等到開始時間後**（本機鏈時間跟著真實時間走）：
-3. **使用者（anvil #3）：** 打開 participant link，依序連接錢包、按 Verify with World ID（本機為模擬，不會開 widget，直接通過）、閱讀內容並作答、按 Claim USDC，錢包就會收到 1 mock USDC。
-4. 回到廣告主頁面，可以看到已付金額和完成數。
-5. **廣告主（anvil #2）：** 按「Close campaign」提早結束，再等「Refund unused budget」出現（關閉後約 15 分鐘，頁面有倒數）並按下，狀態變成 `settled`。想跳過等待，執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。快轉後這條鏈的時間比真實時間快，下一輪請先重啟 anvil。
+### Click through it
 
-### 使用真的 World ID（#12）
+In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant, each with the network and its own account. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows. If it is still the other account, allow the second account to connect to this site in the wallet, then reload.
 
-本機 demo 用模擬；要接真的 World ID，需要 World App（或官方 simulator / sandbox）和 Developer Portal 的 app。以下依 2026-10-13 查證的官方文件（<https://docs.world.org/world-id/idkit/integrate>、<https://docs.world.org/world-id/idkit/signatures>）：
+1. **Advertiser (anvil #2):** open <http://localhost:3000/advertiser>, press **Connect wallet**, then **Sign in with Ethereum**. Fill in the form:
+   - **Sponsored content URL:** any public `https` address, for example `https://example.com/`. The form accepts only `https`, and the API refuses IP addresses, internal hostnames such as `localhost`, and addresses with a port.
+   - **Reward per completion** and **Max completions:** keep the defaults, `1` and `10`, for a budget of 10 USDC.
+   - **End:** at least 15 minutes after the start and at most 24 hours after it. The default works.
+   - One question, its choices, and which choice is correct.
+   - **Start:** fill this in last, 3 to 5 minutes from now. The default is 15 minutes from now, and nobody can answer before the start. The start must still be ahead when **Create on-chain** is mined. If the page says "The start time has passed; create a new campaign with a later start.", open <http://localhost:3000/advertiser> again and make a new draft.
 
-1. 到 [Developer Portal](https://developer.world.org) 建立 app，並完成 World ID 4.0 的 RP registration，取得 `app_id`、`rp_id` 和 `signing_key`。
-2. API 設定（只放在 API 的環境變數，**不要 commit**，也不要放進任何 `NEXT_PUBLIC_*`）：
+   Press **Save draft**, then **Create on-chain**, then **Approve & fund** (the wallet asks for two transactions: the approval and the funding). When the status is `active`, copy the participant link from the page.
+2. **Wait for the start time.** The local chain follows the real clock.
+3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
+4. Back on the advertiser page, the paid amount and the completion count have changed. A participant who submits less than 15 seconds after verifying is still paid, and the page lists that completion under `FAST_COMPLETION` and leaves it out of "Quality-adjusted accepted".
+5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine` in terminal 3 (WSL on Windows); the button appears the next time the page reads the chain (within 10 seconds).
 
-   | 變數 | 說明 |
-   | --- | --- |
-   | `WORLD_ID_APP_ID` | `app_…`，回傳給前端開 widget |
-   | `WORLD_ID_RP_ID` | `rp_` 加 1 到 16 位 hex，用來簽 request 和呼叫 `POST /api/v4/verify/{rp_id}` |
-   | `RP_SIGNING_KEY` | RP 簽章私鑰（32 bytes hex），只在伺服器簽 `rp_context`，是秘密 |
-   | `WORLD_ID_ENVIRONMENT` | `production`（預設）或 `staging`（配合 simulator）。同一個值會回傳給 widget，後端也據此拒絕其他環境的 proof |
-   | `PARTICIPANT_KEY_SECRET` | 至少 32 字元；沒設定時資格驗證回 503 |
+The session cookie is `HttpOnly` and `Secure` (#72). Chromium keeps such a cookie for `http://localhost` and `http://127.0.0.1`; other browsers were not checked. If the browser drops it, signing in says why: use Chromium, or `next dev --experimental-https`.
 
-   `WORLD_ID_MODE` 必須是 `live`（預設），且 `WORLD_ID_RP_ID`、`RP_SIGNING_KEY`、`WORLD_ID_APP_ID` 都要有。三個都沒設定時 `world-id/request` 回 `503 WORLD_ID_NOT_CONFIGURED`；只設定一部分，或 id、私鑰格式不對時，API 啟動就失敗（`loadWorldIdConfig`）。`simulated` 模式只能在 anvil 使用，`world-id/request` 會回傳 `mode: "simulated"` 與 action，沒有 `appId` 與 `rp_context`。
-3. 前端沒有自己的 World ID 模式設定，依 `world-id/request` 回傳的 `mode` 決定流程。參與者按 **Verify with World ID** 後，前端向 API 取得 `rp_context`，在瀏覽器產生 32 bytes 隨機鹽並算出綁定這個錢包的 signal（`@vham/shared/world-id`），再開 IDKit widget；IDKit 的結果原封不動連同錢包地址與鹽送到 `eligibility/verify`，換一個錢包或鹽送出會得到 `403 SIGNAL_MISMATCH`。API 只接受 `proof_of_human` 憑證（`issuer_schema_id` 1）。鹽只存在瀏覽器記憶體，API 不儲存也不記錄。
-4. 每個 campaign 使用 action `vham-campaign-<id>`。官方文件沒有要求預先在 portal 註冊 action（見 ADR-0007），但這點要等 Base Sepolia 實測確認。
-5. 輪替 `RP_SIGNING_KEY` 只影響之後簽出的 request；輪替 `PARTICIPANT_KEY_SECRET` 會破壞進行中 campaign 的重複偵測，只能在 campaign 之間做。
+### Running it again
 
-### 部署到 Base Sepolia
+anvil starts a new chain every time, and the deploy script puts the contracts at the same addresses on it. A database that still holds the previous chain no longer matches: the indexer logs `Inconsistent chain read at block N; retrying`, and new campaigns never become `active`. After `anvil_increaseTime` the chain's clock is also ahead of the real one, so restart anvil after using it. Before another round:
 
-請依 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md) 操作。
-
-### Base Sepolia 完整流程實測（2026-10-14，#13）
-
-用真的 World ID（production、Orb 驗證過的 World App）、Base Sepolia 上的 `CampaignManager` 和 Circle 測試 USDC 跑完一次完整流程，全部成功。
-
-> 這次用的是 ADR-0011 之前的 v1 合約，部署紀錄已移到 `packages/contracts/deployments/archive/`。新版合約（`createCampaign` 帶 `draftRef`）需要重新部署並重跑一次，見 [`docs/deployment/TESTNET.md`](deployment/TESTNET.md)。
-
-| 項目 | 值 |
-| --- | --- |
-| `CampaignManager` | `0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`（v1，紀錄已封存：`packages/contracts/deployments/archive/84532-2026-10-14-pre-adr-0011.json`） |
-| Campaign | on-chain ID `1`；1 USDC × 最多 3 筆；入金 3 USDC |
-| World ID | `production`，action `vham-campaign-<campaignId>`，`proofOfHuman()`（#74 修正前的設定，該 preset 仍允許 3.0 proof，已由 `CredentialRequest("proof_of_human")` 取代，見 ADR-0007） |
-
-| 步驟 | 結果 | 交易 / 區塊 |
-| --- | --- | --- |
-| 部署 | owner、signer、USDC、合約程式碼皆在鏈上讀回確認 | `0x2903d8ac3ae70c06441cc34f915fe9be0681b75050a683b9ec643529cdc90338` / 48106357 |
-| 建立 campaign | API 驗證後連結 on-chain ID 1 | `0x2042fdcc6c7de3b14df89d4f6fb1c25df4814a87e95f3f8db606879d629f0b39` / 48107249 |
-| 入金 | indexer 確認後狀態變 `active` | `0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65` / 48107268 |
-| World ID 驗證 | 真實 proof 通過後端 v4 verify，寫入一筆 eligibility | — |
-| 作答 | 開始時間前送出被 `CAMPAIGN_NOT_STARTED` 擋下（預期行為），開始後通過 | — |
-| 領取 | 參與者收到 1 USDC | `0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7` / 48107877 |
-| 關閉 | 狀態 `closed` | `0x3bdfb614d99bbc5673469648424fc43ff72d2d32c9b22c10867a2fab65914ae5` / 48107965 |
-| 退款 | 關閉 15 分鐘後退回 2 USDC，合約餘額 0，狀態 `settled` | `0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4` / 48108562 |
-
-實測發現：
-
-- **per-campaign action 不需要預先註冊。** Developer Portal 沒有建立任何 action，`vham-campaign-<id>` 仍然驗證成功（ADR-0007 已更新）。
-- **公開 RPC 的 `eth_getLogs` 最多 200 個區塊。** 用 `https://sepolia.base.org` 時要設 `INDEXER_MAX_BLOCK_RANGE=200`，否則 indexer 一直收到 HTTP 413。
-- 第一次掃 QR code 出現 World App 的「Verification unavailable」，換掃描方式後成功；API 沒有收到請求，不是後端設定問題。
-- 網頁沒有關閉和退款按鈕，這次用 `cast send ... --interactive` 由廣告主自己簽。
-- 本機 5432 被其他容器佔用時，PostgreSQL 可以改用其他埠，並同步改 `DATABASE_URL`。
+1. Stop the API and the indexer, and restart anvil.
+2. Recreate the database: stop and start the PostgreSQL container again (`--rm` drops its data), or drop and create the `vham` database.
+3. Run the deploy command again and check that `deployments/31337.json` still matches the addresses and the deploy block in your environment.
+4. Run the migrations and start the API, the indexer and the web app again.
+5. The wallet still remembers the old chain's transaction counts. Clear its activity data for this network (in MetaMask: Settings → Advanced → Clear activity tab data).
 
 ---
 
-## API 流程速查
+## With a real World ID
 
-| 步驟 | 端點 | 誰呼叫 |
+The local demo simulates World ID. A real proof needs the World App (or the official simulator or sandbox) and an app in the Developer Portal. These steps follow the official documentation as checked on 2026-10-13 (<https://docs.world.org/world-id/idkit/integrate>, <https://docs.world.org/world-id/idkit/signatures>):
+
+1. Create an app in the [Developer Portal](https://developer.world.org) and complete the World ID 4.0 RP registration. It gives you an `app_id`, an `rp_id` and a `signing_key`.
+2. Configure the API. These go only in the API's environment, **never** in a commit and never in a `NEXT_PUBLIC_*` variable:
+
+   | Variable | Meaning |
+   | --- | --- |
+   | `WORLD_ID_APP_ID` | `app_…`, returned to the web app so that it can open the widget |
+   | `WORLD_ID_RP_ID` | `rp_` followed by 1 to 16 hex digits; used to sign requests and to call `POST /api/v4/verify/{rp_id}` |
+   | `RP_SIGNING_KEY` | The RP signing key (32 bytes, hex). It signs `rp_context` on the server only and is a secret |
+   | `WORLD_ID_ENVIRONMENT` | `production` (the default) or `staging` (for the simulator). The same value goes to the widget, and the backend refuses a proof from the other environment |
+   | `PARTICIPANT_KEY_SECRET` | At least 32 characters. Without it, eligibility verification answers 503 |
+
+   `WORLD_ID_MODE` must be `live` (the default), with `WORLD_ID_RP_ID`, `RP_SIGNING_KEY` and `WORLD_ID_APP_ID` all set. With none of the three set, `world-id/request` answers `503 WORLD_ID_NOT_CONFIGURED`. With only some of them set, or with a malformed id or key, the API fails at startup (`loadWorldIdConfig`). `simulated` mode works only on anvil; there `world-id/request` returns `mode: "simulated"` and the action, with no `appId` and no `rp_context`.
+
+3. The web app has no World ID mode of its own; it follows the `mode` that `world-id/request` returns. When the participant presses **Verify with World ID**, the web app gets `rp_context` from the API, generates a random 32-byte salt in the browser, computes the signal bound to this wallet (`@vham/shared/world-id`), and opens the IDKit widget. It sends IDKit's result unchanged to `eligibility/verify`, with the wallet address and the salt. Another wallet or another salt gets `403 SIGNAL_MISMATCH`. The API accepts only the `proof_of_human` credential (`issuer_schema_id` 1). The salt stays in the browser's memory; the API neither stores nor logs it.
+4. Each campaign uses the action `vham-campaign-<id>`. The official documentation does not require registering an action in the portal first (see ADR-0007), and the Base Sepolia run below confirmed that.
+5. Rotating `RP_SIGNING_KEY` affects only requests signed afterwards. Rotating `PARTICIPANT_KEY_SECRET` breaks duplicate detection for running campaigns, so do it only between campaigns.
+
+---
+
+## Base Sepolia
+
+**No public deployment matches the current code.** The contract deployed on 2026-10-14 is from before ADR-0011, and the API refuses to start against it (`campaignIdByDraft` reverts). To see the whole flow today, use the local demos above. To deploy the current contract, follow [`docs/deployment/TESTNET.md`](deployment/TESTNET.md); the re-run is described in [`docs/deployment/BASE_SEPOLIA_RERUN.md`](deployment/BASE_SEPOLIA_RERUN.md).
+
+### The Base Sepolia run of 2026-10-14
+
+The whole flow ran once on Base Sepolia (#13) with a real World ID proof (production environment, an Orb-verified World App), the `CampaignManager` contract and Circle's test USDC. Every step succeeded.
+
+> This run used the v1 contract, from before ADR-0011. Its deployment record is in `packages/contracts/deployments/archive/`. The current contract, whose `createCampaign` takes a `draftRef`, has to be deployed and run again.
+
+| Item | Value |
+| --- | --- |
+| `CampaignManager` | [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) (v1; record archived in `packages/contracts/deployments/archive/84532-2026-10-14-pre-adr-0011.json`) |
+| Campaign | on-chain ID `1`; 1 USDC × at most 3 completions; funded with 3 USDC |
+| World ID | `production`, action `vham-campaign-<campaignId>`, the `proofOfHuman()` preset. This was the setting before the #74 fix: the preset still allowed 3.0 proofs, and `CredentialRequest("proof_of_human")` replaced it (ADR-0007) |
+
+| Step | Result | Transaction / block |
 | --- | --- | --- |
-| 登入 | `POST /v1/auth/nonce` → 錢包簽 SIWE → `POST /v1/auth/verify` | 廣告主 |
-| 建草稿 | `POST /v1/campaigns`（`Authorization: Bearer …`、`Idempotency-Key`） | 廣告主 |
-| 審核 | `POST /v1/admin/campaigns/:id/moderation { action: "approve", reason }` | 營運者 |
-| 鏈設定 | `GET /v1/chain` | 任何人 |
-| 取得上鏈參數 | `POST /v1/campaigns/:id/publish`（需已核准） | 廣告主 |
-| 回報 / 連結建立交易 | `POST /v1/campaigns/:id/onchain { txHash }`，或 `{}` 以 `draftRef` 查鏈上建立 | 廣告主 |
-| 任務內容 | `GET /v1/campaigns/:id/mission` | 使用者 |
-| World ID 請求 | `POST /v1/campaigns/:id/world-id/request` | 使用者 |
-| 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, signalSalt, idkitResponse }` | 使用者 |
-| 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 使用者 |
-| 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 使用者 |
-| 鏈上領取 | `CampaignManager.claim(authorization, signature)`，由使用者錢包送出 | 使用者 |
-| 成效 | `GET /v1/campaigns/:id/analytics` | 廣告主 |
-| 檢舉 | `POST /v1/campaigns/:id/reports { reason, details? }` | 任何人 |
+| Deploy | Owner, signer, USDC and contract code read back from the chain | [`0x2903d8ac…cdc90338`](https://sepolia.basescan.org/tx/0x2903d8ac3ae70c06441cc34f915fe9be0681b75050a683b9ec643529cdc90338) / 48106357 |
+| Create campaign | The API verified it and linked on-chain ID 1 | [`0x2042fdcc…629f0b39`](https://sepolia.basescan.org/tx/0x2042fdcc6c7de3b14df89d4f6fb1c25df4814a87e95f3f8db606879d629f0b39) / 48107249 |
+| Fund | Status `active` once the indexer confirmed it | [`0xda1673ce…8a3bea65`](https://sepolia.basescan.org/tx/0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65) / 48107268 |
+| World ID verification | A real proof passed the backend's v4 verification, and one eligibility row was written | — |
+| Answer | A submission before the start time was refused with `CAMPAIGN_NOT_STARTED`, as intended; it passed after the start | — |
+| Claim | The participant received 1 USDC | [`0xc929552c…4bf876d7`](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) / 48107877 |
+| Close | Status `closed` | [`0x3bdfb614…65914ae5`](https://sepolia.basescan.org/tx/0x3bdfb614d99bbc5673469648424fc43ff72d2d32c9b22c10867a2fab65914ae5) / 48107965 |
+| Refund | 2 USDC returned 15 minutes after the close; contract balance 0; status `settled` | [`0x242c6aac…1c5e44a4`](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) / 48108562 |
 
-完整規格見 [`docs/architecture/API_SPEC.md`](architecture/API_SPEC.md)。
+What the run showed:
+
+- **A per-campaign action needs no registration.** No action was created in the Developer Portal, and `vham-campaign-<id>` still verified (ADR-0007 was updated).
+- **The public RPC answers `eth_getLogs` for at most 200 blocks.** With `https://sepolia.base.org`, set `INDEXER_MAX_BLOCK_RANGE=200`, or the indexer keeps getting HTTP 413.
+- The first QR scan showed the World App's "Verification unavailable"; scanning another way worked. The API received no request, so it was not a backend setting.
+- The web app had no close and refund buttons then, so the advertiser signed both with `cast send ... --interactive`. The buttons exist now.
+- When another container holds port 5432, PostgreSQL can use another port; change `DATABASE_URL` to match.
+
+---
+
+## Other commands
+
+The checks to run before a commit are in [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+### PostgreSQL integration tests only
+
+```bash
+export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
+pnpm --filter @vham/api exec vitest run postgres
+```
+
+These tests also empty the tables of that database.
+
+### API and indexer against a deployed contract
+
+```bash
+cp .env.example .env    # fill it in as its comments say; do not commit .env
+set -a; source .env; set +a        # load .env; the API and the indexer do not read it themselves
+pnpm --filter @vham/api db:migrate
+pnpm --filter @vham/api dev        # API, http://localhost:3001 by default
+pnpm --filter @vham/api indexer    # in another terminal (load .env there too): event indexing and campaign status
+```
+
+The API and the indexer read settings only from environment variables. Without `DATABASE_URL` in the shell, `db:migrate` fails at once (`DATABASE_URL is required for migrations`). Load the variables in every terminal that runs the API or the indexer.
+
+What each group of variables does:
+
+- **Chain** (`EVM_RPC_URL`, `USDC_ADDRESS`, `CAMPAIGN_MANAGER_ADDRESS`, `CAMPAIGN_MANAGER_DEPLOY_BLOCK`): set all of them or none. At startup the API checks the chain ID and the contract code.
+- **`SIWE_DOMAIN`**: without it nobody can sign in, and every advertiser endpoint answers 401.
+- **`WORLD_ID_RP_ID` + `RP_SIGNING_KEY` + `WORLD_ID_APP_ID` + `PARTICIPANT_KEY_SECRET`**: set the first three together. With none of them, eligibility verification answers 503; with only some, or a malformed value, the API refuses to start.
+- **`CLAIM_SIGNER_PRIVATE_KEY`** (or, in production, `CLAIM_SIGNER_URL` + `CLAIM_SIGNER_ADDRESS`, ADR-0008): without it no authorization is signed. The signer's address must equal the contract's `authorizedSigner` and must not be the deployer's key. A plain private key is allowed only on anvil and Base Sepolia.
+- **Moderation (#24)**: the default is `MODERATION_MODE=review`. A wallet in `OPERATOR_ADDRESSES` has to approve a new campaign before it can be published and answered, unless the advertiser is in `ADVERTISER_ALLOWLIST`. `MODERATION_MODE=open` works only on a local anvil chain. See [docs/operations/MODERATION.md](operations/MODERATION.md).
+
+### Advertiser web app
+
+```bash
+# API side (.env): SIWE_DOMAIN must equal the host of the web app's address
+SIWE_DOMAIN=localhost:3000
+
+# Web app
+export API_URL=http://localhost:3001        # Next forwards /api/* to it
+export NEXT_PUBLIC_CHAIN_ID=84532           # 31337 for a local anvil chain
+pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
+```
+
+What the page does (#11):
+
+1. Connect a browser wallet. On the wrong network the page shows a switch button.
+2. Sign in with Ethereum. The session survives a reload; with no wallet connected the page shows "Signed in as …" and "Sign out". "Disconnect" signs out first and then disconnects the wallet; if signing out fails, both stay and you can press it again.
+3. Fill in the campaign (the reward is entered as decimal USDC and converted to integer atomic units) with 1 to 3 comprehension questions, and press "Save draft".
+4. Press "Create on-chain" to send `createCampaign`. The API verifies the transaction and links the draft.
+5. Press "Approve & fund" to approve and fund. When the wallet's USDC allowance for CampaignManager already covers the budget, the button reads "Fund campaign" and sends only the funding.
+6. Once the indexer confirms the funding, the status becomes `active` and the page shows the budget and the results.
+7. Press "Close campaign" to end early. After the close the API issues no new authorization; one that was already issued can still be claimed on-chain until it expires. The button is not offered in the last minute before the end, because the transaction could land after the end and revert.
+8. The refund opens 15 minutes after the close (or after the end, if the campaign was never closed): an issued authorization stays valid for up to 15 minutes, and the contract waits until all of them have expired. Until then the page shows the opening time, a countdown and the reason. Then press "Refund unused budget": the status becomes `settled` and the unused budget returns to the advertiser's wallet.
+
+---
+
+## How the advertiser page handles slow or replaced transactions
+
+When the owner has paused the contract, the page says that the refund has to wait for the unpause; "Close campaign" is not affected by a pause. Before sending, both buttons read the chain again and simulate the transaction. When the contract refuses it, the page shows the custom error's name (for example `RefundNotAvailable`) and does not resend.
+
+**Close and refund (#86).** When the transaction has no receipt within the wait (2 minutes), the card says "still confirming" and the button is hidden. Every 10 seconds the page checks the receipt, the wallet account's nonce and the campaign's status, with no reload needed:
+
+- When the receipt arrives, or the chain already shows the action's result (`closed` after a close, `settled` after a refund; for example a replacement finished it after a speed-up in the wallet), the card becomes done and the buttons follow the chain.
+- When the receipt shows a revert, or another transaction used the same nonce (a cancel in the wallet), and the campaign read again is unchanged, the card gives the reason and the button comes back if the chain still allows the action.
+- Different backends may answer the wallet's RPC, so a conclusion counts only when two checks in a row agree. If the chain later shows the action's result after all, a card that said failed becomes done.
+- A transaction that was found at least once (its nonce is known) counts as still confirming until that nonce is used, because it can land at any time. A transaction that was never found and is still missing after 10 minutes may never have been sent: the normal button stays hidden, and the page offers a separate "Close campaign anyway" or "Refund unused budget anyway" with a warning. Look at the wallet's activity first. The resend is simulated too: if the original landed, the simulation fails and nothing is sent; if neither has landed, the second one only reverts and costs gas.
+
+**Approve and fund (#103).** The approval (Approve USDC) and the funding (Fund campaign) follow the same rules: the card says "still confirming", the funding button is hidden, and every 10 seconds the page checks the receipt, the nonce and the result the transaction should produce, with no reload needed.
+
+- The approval's result is an allowance (owner: the advertiser; spender: CampaignManager) that covers the budget, which is rewardPerCompletion × maxCompletions in atomic units, computed with integers. Once the page sees it, the card becomes done and the button reads "Fund campaign". The funding is sent only when you press it; the page never sends it by itself.
+- The button comes back as soon as the approval's receipt arrives, even when a later check finds it, without waiting for the allowance to cover the budget. A wallet has one allowance for CampaignManager, so an approval or a funding in another tab, or a lower spending cap set in the wallet, can leave it below the budget. Then the button reads "Approve & fund", and pressing it reads the allowance again and approves only if it is still short.
+- The funding's result is a campaign that is `active` on-chain with `fundedBudget` equal to the budget, or funding that the API's index has seen. After the funding is sent, the button stays hidden until the page sees that result. Once the page has seen the campaign funded, it offers neither approval nor funding again, even when a later read (perhaps from a lagging RPC backend) shows it unfunded.
+- A revert, a replacement, two agreeing checks, a failed card that later becomes done, and "Approve & fund anyway" or "Fund campaign anyway" after 10 minutes for a transaction that was never found all work as they do for close and refund. The exception is a reverted approval: the allowance can also come from another campaign's approval, so that card does not turn into "USDC approved" later.
+- The page reads the chain again before every send, including the moment the approval is done and the funding is about to go (the approval may have waited two minutes). When the original funding has landed after all, or the allowance was changed to below the budget, the page says why and sends nothing. Two approvals that both land only set the allowance twice and cost gas. When two fundings are sent, the contract refuses the second with `InvalidCampaignStatus` and it costs gas; the USDC is not taken twice.
+- While the page waits for the funding, every refresh reads the allowance and the campaign to decide whether the button reads "Approve & fund" or "Fund campaign".
+
+While one action is in progress, the other buttons (including "Close campaign" and "Refund unused budget") are disabled, not removed, so a repeated click cannot land on a "Refresh" that slid into the same place.
+
+The close and refund buttons appear only for a campaign on the contract that is deployed now (`GET /v1/chain`). For a campaign on the contract from before ADR-0011 the page has no contract address to use; the advertiser's wallet still has to send `closeCampaign(id)` and `refundUnusedBudget(id)` with `cast send`.
+
+**Create.** When the creation transaction has no receipt for a long time, the page says "still confirming, do not resend" and keeps reconciling with the API: by the transaction hash while the page has it, and by `draftRef` otherwise. An API that cannot reach the chain for a moment (`503 RPC_UNAVAILABLE`) also counts as still reconciling, and the page retries by itself for about two minutes. When it gives up, the card states the reason and asks you to press "Check again", which only queries and sends no transaction. After a reload the page no longer has the transaction hash; it remembers only that a creation may have been sent for this draft, so it offers "Check again" first. "Create on-chain anyway" is offered only after 10 minutes. If the original transaction landed after all, the second one reverts with `DraftAlreadyCreated` and costs gas; it does not create a second campaign.
+
+Edge cases of "a creation may be unconfirmed" (#78):
+
+- When a creation from another tab or browser is mined but below the confirmation depth, `/publish` decides from the latest block and answers `409 DRAFT_ALREADY_CREATED`, so this tab does not send another; the page waits for the confirmation and then links it. While that transaction is in the mempool and not mined, the API cannot see it, and only the contract stops the second one (it reverts and costs gas).
+- When the browser has no `localStorage` (for example in private browsing), the marker lives only in this tab's memory: "Check again" and, after 10 minutes, "Create on-chain anyway" appear as usual during the visit, and a reload forgets it. The page then offers "Create on-chain" directly; before sending it still looks for a confirmed creation, and `/publish` checks the latest block.
+- When you press "Create on-chain anyway" and then reject the signature in the wallet, nothing was sent this time. The marker of the earlier attempt stays, and the page goes on offering "Check again".
+
+---
+
+## API quick reference
+
+| Step | Endpoint | Called by |
+| --- | --- | --- |
+| Sign in | `POST /v1/auth/nonce` → the wallet signs the SIWE message → `POST /v1/auth/verify` | Advertiser |
+| Create a draft | `POST /v1/campaigns` (`Authorization: Bearer …`, `Idempotency-Key`) | Advertiser |
+| Moderate | `POST /v1/admin/campaigns/:id/moderation { action: "approve", reason }` | Operator |
+| Chain settings | `GET /v1/chain` | Anyone |
+| Get the on-chain parameters | `POST /v1/campaigns/:id/publish` (the campaign must be approved) | Advertiser |
+| Report or link the creation | `POST /v1/campaigns/:id/onchain { txHash }`, or `{}` to look up the creation by `draftRef` | Advertiser |
+| Mission content | `GET /v1/campaigns/:id/mission` | Participant |
+| World ID request | `POST /v1/campaigns/:id/world-id/request` | Participant |
+| Eligibility | `POST /v1/campaigns/:id/eligibility/verify { claimant, signalSalt, idkitResponse }` | Participant |
+| Answer | `POST /v1/campaigns/:id/submissions` (`Idempotency-Key`) | Participant |
+| Claim authorization | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | Participant |
+| Claim on-chain | `CampaignManager.claim(authorization, signature)`, sent by the participant's wallet | Participant |
+| Results | `GET /v1/campaigns/:id/analytics` | Advertiser |
+| Report a campaign | `POST /v1/campaigns/:id/reports { reason, details? }` | Anyone |
+
+The full specification is in [`docs/architecture/API_SPEC.md`](architecture/API_SPEC.md).

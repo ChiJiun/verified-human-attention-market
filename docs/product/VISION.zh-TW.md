@@ -2,7 +2,7 @@
 
 [English](VISION.md) | [繁體中文](VISION.zh-TW.md)
 
-> 這是原本放在 README 的產品與工程總體規劃，2026-10-14 原封不動搬到這裡。內容包含長期願景、設計原則、SDLC 計畫與完整的開發路線圖。
+> 這是原本放在 README 的產品與工程總體規劃，2026-10-14 搬到這裡，除了 2026-11-11 加上的快照註記之外內容未更動。內容包含長期願景、設計原則、SDLC 計畫與完整的開發路線圖。
 >
 > 它**不是**目前進度的依據。目前進度請看 [`docs/SDLC_STATUS.md`](../SDLC_STATUS.md)、GitHub issues 和 [`AGENTS.md`](../../AGENTS.md)。已採納的決策在 [`docs/adr/`](../adr/)。
 
@@ -52,6 +52,8 @@
 ---
 
 ## 4. 系統總覽
+
+> 這是目標設計。目前已完成：託管、World ID 資格驗證、鏈下驗證器，以及 USDC 的領取與退款。尚未實作：x402、協議手續費、publisher 分潤、publisher SDK 與 widget，以及跨 campaign 信譽。
 
 ```mermaid
 flowchart LR
@@ -836,6 +838,8 @@ verified-human-attention-market/
 
 ## 尚待決策
 
+> 這是 2026-10-05 的歷史快照，內容未更動。合約、API、前端、World ID 整合與 USDC 結算都已實作；現況請看 [README](../../README.zh-TW.md) 與 [docs/SDLC_STATUS.md](../SDLC_STATUS.md)。
+
 在 production code 開始前，優先決定：
 
 1. 第一個市場：ads、product research、AI human evaluation？
@@ -882,6 +886,8 @@ Protocol
 
 ## 專案狀態
 
+> 這是 2026-10-05 的歷史快照，內容未更動。合約、API、前端、World ID 整合與 USDC 結算都已實作；現況請看 [README](../../README.zh-TW.md) 與 [docs/SDLC_STATUS.md](../SDLC_STATUS.md)。
+
 **Stage:** Planning / Requirements  
 **Target:** POC → MVP  
 **Repository:** Product specification + future implementation workspace
@@ -909,6 +915,8 @@ Protocol
 ---
 
 ## 目前狀態
+
+> 這是 2026-10-05 的歷史快照，內容未更動。合約、API、前端、World ID 整合與 USDC 結算都已實作；現況請看 [README](../../README.zh-TW.md) 與 [docs/SDLC_STATUS.md](../SDLC_STATUS.md)。
 
 | 項目 | 狀態 |
 | --- | --- |

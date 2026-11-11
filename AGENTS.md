@@ -136,10 +136,13 @@ Current intent:
 ├─ README.md
 ├─ README.zh-TW.md
 ├─ AGENTS.md
+├─ CONTRIBUTING.md     # checks before a commit
 ├─ docs/
 │  ├─ SDLC_STATUS.md   # status page
-│  ├─ DEMO.md          # local and testnet run
-│  ├─ adr/
+│  ├─ DEMO.md          # local and testnet run (DEMO.zh-TW.md: Traditional Chinese)
+│  ├─ HACKATHON.md     # submission summary (HACKATHON.zh-TW.md: Traditional Chinese)
+│  ├─ images/          # screenshots used by the README
+│  ├─ adr/             # decisions; README.md is the index
 │  ├─ architecture/
 │  ├─ deployment/      # TESTNET.md, BASE_SEPOLIA_RERUN.md
 │  ├─ operations/      # runbook, alerts, readiness, incidents
@@ -422,7 +425,7 @@ Current contract tests cover:
 - cancel of an unfunded draft, no cancel once funded, no funding after end;
 - signer rotation revokes old signatures; typehash pinned against the backend;
 - draft reference (ADR-0011): duplicate / zero / other-advertiser reference, `CampaignCreated` carries it, funding for another draft, authorization for another draft, authorization after a deep reorg reusing an id;
-- every remaining `CampaignManager` revert (#73): wrong claim amount; authorization timing (not yet valid, lifetime too long, an inverted window that fails the time checks before the lifetime check, issued before start or after end); signature encoding (wrong length, high `s`, invalid `v`, and `v` of 0 or 1 accepted); wrong funding amount and funding twice; the `AlreadyFunded` and `InsufficientCampaignBudget` guards, which the public interface cannot reach, through a test harness that forces the state (#80 decides whether they stay); campaign window edges and fuzzed duration bounds and past starts;
+- the `CampaignManager` reverts listed in #73 (not every revert has a test; `docs/SDLC_STATUS.md` names the ones without): wrong claim amount; authorization timing (not yet valid, lifetime too long, an inverted window that fails the time checks before the lifetime check, issued before start or after end); signature encoding (wrong length, high `s`, invalid `v`, and `v` of 0 or 1 accepted); wrong funding amount and funding twice; the `AlreadyFunded` and `InsufficientCampaignBudget` guards, which the public interface cannot reach, through a test harness that forces the state (#80 decides whether they stay); campaign window edges and fuzzed duration bounds and past starts;
 - deployment script fail-fast checks and event/selector pins (`DeployCampaignManager.t.sol`, `EventTopics.t.sol`).
 
 Do not reduce coverage when refactoring.

@@ -2,26 +2,71 @@
 
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
-Advertisers pay for attention from **verified unique humans**, and those humans are paid in **USDC**. Budgets sit in an on-chain escrow, World ID proves a participant is a unique person, and an off-chain verifier decides whether the work was actually done before the contract releases a reward.
+[![CI](https://github.com/ChiJiun/verified-human-attention-market/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ChiJiun/verified-human-attention-market/actions/workflows/ci.yml)
 
-> **This is not a "watch ads to earn crypto" site.** The goal is a market, and later an API, for buying human attention that can be verified, so that bots and farms cannot drain the budget.
+A proof of concept in which advertisers pay for attention from **verified unique humans**, and those humans are paid in **USDC**. Budgets sit in an on-chain escrow, World ID proves a participant is a unique person, and an off-chain verifier decides whether the work was actually done before the contract releases a reward.
+
+> **This is not a "watch ads to earn crypto" site.** The goal is a market, and later an API, for buying human attention that can be verified, so that one bot or one person with many wallets cannot claim a campaign's budget many times over.
+
+Today the engagement check is a short comprehension quiz: a baseline signal, not proof of deep attention ([ADR-0002](docs/adr/0002-first-use-case-sponsored-content.md)). A verified human can still farm rewards; World ID limits each person to one reward per campaign.
 
 > ⚠️ **Testnet only.** The contracts are not audited and the project has not passed its production-readiness gate ([#29](https://github.com/ChiJiun/verified-human-attention-market/issues/29)). Do not use real funds.
 
-**New developer or AI session?** Start with [AGENTS.md](AGENTS.md).
+**Reviewing this project?** [What is real today](#what-is-real-today) says what is proven and what is not, and [Run it locally](#run-it-locally) checks it in two commands. A short description for a submission form is in [docs/HACKATHON.md](docs/HACKATHON.md).
+
+### Proof it runs
+
+- **On a public testnet.** The full flow ran on Base Sepolia on 2026-10-14 (v1 contract) with a real World ID proof from an Orb-verified World App: [fund 3 USDC](https://sepolia.basescan.org/tx/0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65) · [claim 1 USDC](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) · [refund 2 USDC](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) · [contract](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) · [all six transactions](docs/DEMO.md#the-base-sepolia-run-of-2026-10-14)
+- **In CI, on every push and pull request.** The Foundry suite (60 tests as `forge` reports them, with three stateful invariants checked over 8,192 calls per run); more than 860 TypeScript tests; and an end-to-end run of the whole money loop on a local chain with PostgreSQL.
+- **What that does not cover.** The testnet run used the earlier World ID request, which also allowed 3.0 proofs, and the contract has changed since. The current contract has run only on a local chain and in CI, where World ID is simulated. The current 4.0-only, wallet-bound request is covered only by unit tests against a mocked World API, not by a real World App. The testnet re-run is pending.
 
 ---
 
-## Status
+## What it looks like
 
-| | |
+Screenshots from a local run: local chain (anvil), simulated World ID, mock USDC.
+
+| Advertiser: the campaign is funded and active | Participant: read and answer |
 | --- | --- |
-| **Milestone** | M1 (proof of concept): the full flow ran on **Base Sepolia** on 2026-10-14 with the v1 contract. ADR-0011 (idempotent creation) changed the contract, so the flow is repeated on a redeploy before #12 and #13 close |
-| **What was proven** | A real World ID proof, an answered comprehension check, a backend-signed authorization and an on-chain USDC payout, followed by close and refund. Transactions are listed in [docs/DEMO.md](docs/DEMO.md) |
-| **Contract** | v1 `CampaignManager` [`0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc`](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) on Base Sepolia (chain `84532`), retired by ADR-0011; the redeploy is pending |
-| **Next** | The owner decides the `CampaignManager` cleanup ([#80](https://github.com/ChiJiun/verified-human-attention-market/issues/80)) before the redeploy. Then redeploy and re-run to close M1, and decide [ADR-0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md): earn while browsing, with World ID at login and withdrawal |
+| ![Advertiser page: an active campaign with 10 USDC funded, 2 USDC paid for 2 completions, one of them flagged FAST_COMPLETION, and the participant link](docs/images/advertiser-active.png) | ![Mission page: the participant's wallet, a link to the sponsored content, one comprehension question and the Submit answers button](docs/images/mission-answer.png) |
+| **Participant: the reward is paid on-chain** | **Advertiser: closed, refunded and settled** |
+| ![Mission page: "Reward paid to your wallet" with the claim transaction hash](docs/images/mission-paid.png) | ![Advertiser page: the campaign is settled, 2 USDC paid, 0 USDC remaining, and the refund transaction is done](docs/images/advertiser-settled.png) |
 
-Detailed status: [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md).
+---
+
+## Why it exists
+
+**Problem.** Campaigns pay for clicks and wallet activity that bots, or one person with many wallets, can produce. A wallet is not a unique human, and a unique human has not necessarily engaged.
+
+**Who it is for.** First, an advertiser or creator who wants a small number of real people to read something. Publishers and AI agents buying through an API come later and are not built.
+
+**Why World ID.** It gives an anonymous per-campaign identifier, so one person is paid once per campaign without the project learning who they are.
+
+**Why on-chain.** The advertiser does not hand the budget to the platform. It sits in a contract that cannot pay more than was funded, pays only against a signed authorization, and returns the rest. What is still trusted: the off-chain verifier and its signing key, and the contract's owner. The owner can pause the contract (creating, funding, claiming and refunding) and replace the signer, so the owner is inside the same trust boundary as the signing key. No function lets the owner withdraw the escrow. The contract caps the loss (in the proof of concept, 10 test USDC per campaign).
+
+| | Watch-to-earn, quest and survey platforms (typically) | This project |
+| --- | --- | --- |
+| Who can be paid | Often any account or wallet, so one person can run many | One World ID-verified human per campaign; a second wallet does not get a second reward |
+| What is paid for | Often an impression, a click or an on-chain action | A completion the verifier accepted (today a comprehension check: a baseline, not proof of deep attention) |
+| Paid in | Often the platform's own token or points | USDC; no native token, by design |
+| Where the budget sits | Usually with the platform | In a per-campaign on-chain escrow; the advertiser takes back what was not spent |
+| What is stored about the person | Often an account profile | A per-campaign keyed hash of the World ID nullifier and the claiming wallet; no name, no raw World ID data |
+
+The middle column describes categories of product, not any one of them.
+
+---
+
+## What is real today
+
+| | Status |
+| --- | --- |
+| Escrow contract (`CampaignManager`, Solidity) | Built and tested. The v1 contract ran the full flow on Base Sepolia on 2026-10-14 (links above) |
+| World ID | Real in that run: a production proof from an Orb-verified World App, verified by the backend. Simulated in the local demo and in CI |
+| USDC | Circle's test USDC on Base Sepolia; a mock token on the local chain |
+| Web app, API, indexer | Built: the advertiser creates, funds, closes and refunds a campaign; the participant verifies, answers and claims |
+| Not done yet | The contract changed after the testnet run (campaign creation became idempotent, [ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)), so the current code is tested on a local chain and in CI and has not been redeployed to Base Sepolia. No audit, no mainnet, no real funds, no real advertiser |
+
+Engineering status and the list of merged changes: [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md).
 
 ---
 
@@ -72,6 +117,16 @@ sequenceDiagram
 
 ---
 
+## Engineering highlights
+
+- **No refund race.** A claim authorization is signed off-chain, so one can exist that the chain has not seen. If the advertiser could refund at close, a participant holding a valid signature could find the escrow empty. The contract makes the advertiser wait until every authorization that could have been issued has expired ([`refundUnusedBudget`](packages/contracts/src/CampaignManager.sol#L319), `MAX_AUTHORIZATION_TTL` = 15 minutes).
+- **A retry cannot create a second escrow.** A lost RPC response, a resend or a second browser tab cannot create a second campaign for the same draft: `createCampaign` is idempotent per draft, and the claim signature is bound to the same draft ([ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)).
+- **The chain is the ledger.** The database is reconciled from confirmed events by an indexer that handles reorganizations. A reorganization deeper than the confirmation depth stops signing instead of guessing.
+- **The proof is requested for one wallet.** The World ID signal commits to the campaign and the claimant address, and the API refuses a result whose signal does not match before it asks World ([ADR-0007](docs/adr/0007-world-id-integration.md)). Tested locally and in CI. Whether World's verifier rejects a proof moved to another wallet has not been tested against a real World App yet ([#71](https://github.com/ChiJiun/verified-human-attention-market/issues/71)).
+- **A small contract with no dependencies.** 443 lines and no imports. Unit, fuzz and invariant tests cover 93% of its lines and 71% of its branches (`forge coverage`, 2026-11-11). Three stateful invariants (budget conservation, payouts never exceed funding, completion cap) hold over 8,192 randomized calls per CI run.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -116,78 +171,63 @@ Exact versions are in the package manifests and the lockfile.
 
 ## Run it locally
 
-Requirements: Node.js 24+, pnpm 12.4.2, Foundry v1.8.4 (on Windows, inside WSL), Docker for PostgreSQL 16.
+Requirements: Node.js 24.15 or newer, pnpm 12.4.2, Foundry v1.8.4 (on Windows, inside WSL). Steps 2 and 3 also need PostgreSQL 16 or newer reachable through a connection URL. Docker is the quickest way; a native install works too. If port 5432 is taken, map another port and change the URL.
 
-**Minimal start** (web + API only; sign-in, World ID and the chain stay disabled until configured):
+On Windows, run `forge` and `anvil` in WSL and the `pnpm` commands in PowerShell. Windows PowerShell 5.1 has no `&&`, so run chained commands one at a time, and write `$env:NAME = "value"` in place of `export NAME=value`.
 
-```bash
-pnpm install
-docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
-export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
-pnpm --filter @vham/api db:migrate
-pnpm dev            # web on :3000, API on :3001
-```
-
-The API and indexer read settings only from environment variables, never from a `.env` file. [`.env.example`](.env.example) lists every variable. To keep them in a git-ignored `.env`, load it into the shell first: `set -a; source .env; set +a` (bash/zsh) or one `$env:NAME = "value"` line per variable (PowerShell).
-
-**Full flow** (local chain, contract, indexer, wallet, simulated World ID): follow **[docs/DEMO.md](docs/DEMO.md)** (Traditional Chinese). It runs the real contract on anvil; only World ID is simulated.
-
-Before every commit:
+**1. Check it in two commands** (no database, no chain)
 
 ```bash
-pnpm typecheck && pnpm test && pnpm lint && pnpm build && pnpm format:check
-cd packages/contracts && forge fmt --check && forge build --sizes && forge test -vv
+pnpm install && pnpm test                  # API, web app and shared package
+(cd packages/contracts && forge test -vv)  # the contract; it has no dependencies, so no `forge install`
 ```
 
-| Test layer | Command | Needs |
-| --- | --- | --- |
-| Unit + API (in memory) | `pnpm test` | nothing |
-| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` set | PostgreSQL 16 |
-| Contracts | `forge test -vv` in `packages/contracts` | Foundry |
-| ABI drift | `forge build && node scripts/export-abi.mjs --check` in `packages/contracts` | Foundry |
-| End-to-end on a local chain | `pnpm --filter @vham/api test:e2e` | anvil + PostgreSQL |
+Without a database `pnpm test` runs about 780 tests and skips the PostgreSQL integration tests. CI runs those too, which gives the 860+ above.
 
-CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit keys or a filled-in `.env`. Testnet deployment: [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md).
+**2. The whole money loop on a local chain** (a few minutes)
+
+The real contract on anvil, a real PostgreSQL database and the real API; only World ID is simulated. One test creates and funds a campaign, verifies a participant, pays a claim, has a second claim refused, closes, refunds, and then checks the API's figures against the chain. The same test also pays a second participant after the close and runs failure drills ([details](docs/DEMO.md#scripted-demo-the-end-to-end-test)).
+
+```bash
+# terminal 1
+docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham_e2e postgres:16-alpine
+# terminal 2
+anvil
+# terminal 3
+(cd packages/contracts && forge build)
+export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
+pnpm --filter @vham/api test:e2e
+```
+
+Expected: `Test Files  1 passed (1)`. If the test is reported as skipped, `TEST_DATABASE_URL` is not set. Point it at a database kept for this, because the run empties its tables. The same test is the `e2e` job in CI.
+
+**3. Click through it in a browser**
+
+The advertiser funds a campaign and the participant claims: follow [docs/DEMO.md](docs/DEMO.md). It needs six terminals and a browser wallet, and World ID is simulated.
+
+The API and the indexer read their settings only from environment variables, never from a `.env` file. [`.env.example`](.env.example) lists every runtime variable. Never commit keys or a filled-in `.env`.
+
+CI runs four jobs on every push and pull request: `javascript` (with PostgreSQL), `audit`, `e2e` and `solidity`. Contributors and AI coding agents: see [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
 
 ---
 
-## Documentation map
+## Documentation
 
 | Document | Read it when you want to know… |
 | --- | --- |
-| [AGENTS.md](AGENTS.md) | The rules for working on this repo, what is done and what comes next |
-| [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | Where the project is right now |
-| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | Who the product is for and why |
-| [docs/product/REQUIREMENTS.md](docs/product/REQUIREMENTS.md) | What the MVP must do |
-| [docs/product/VISION.md](docs/product/VISION.md) | The long-term vision, business model and full roadmap (formerly this README) |
+| [docs/HACKATHON.md](docs/HACKATHON.md) | A short description of the project for a submission form |
+| [docs/DEMO.md](docs/DEMO.md) | How to run the full flow, and the Base Sepolia run log |
+| [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | Where the project is right now, and which changes were merged when |
+| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | Who the product is for and why (in Chinese with English terms) |
+| [docs/product/VISION.md](docs/product/VISION.md) | The long-term vision, business model options and full roadmap |
 | [docs/architecture/MVP_ARCHITECTURE.md](docs/architecture/MVP_ARCHITECTURE.md) | How the components fit together |
 | [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | Exactly what the contract does and guarantees |
 | [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | How the signed claim authorization works |
-| [docs/architecture/API_SPEC.md](docs/architecture/API_SPEC.md) | Every API endpoint and error code |
-| [docs/architecture/DATA_MODEL.md](docs/architecture/DATA_MODEL.md) | The database tables and their constraints |
-| [docs/adr/](docs/adr/) | Why each major decision was made (see below) |
 | [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | What can go wrong and how it is mitigated |
-| [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) | What is tested and how |
-| [docs/privacy/DATA_RETENTION.md](docs/privacy/DATA_RETENTION.md) | What data is kept, for how long, and how it is deleted |
-| [docs/operations/](docs/operations/) | Runbook, alerts, incidents, backups, moderation, production readiness |
-| [docs/DEMO.md](docs/DEMO.md) | How to run the full flow, and the Base Sepolia run log |
-| [docs/deployment/TESTNET.md](docs/deployment/TESTNET.md) | How to deploy to Base Sepolia |
+| [docs/adr/](docs/adr/README.md) | Why each major decision was made |
+| [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) | The checks to run before a commit, and the rules for working on this repository |
 
-### Architecture decisions (ADRs)
-
-| ADR | Decision |
-| --- | --- |
-| [0001](docs/adr/0001-mvp-chain-base.md) | Base is the MVP chain; single chain first |
-| [0002](docs/adr/0002-first-use-case-sponsored-content.md) | First mission: sponsored content + a short comprehension check |
-| [0003](docs/adr/0003-poc-gas-ux.md) | In the POC the user pays testnet gas; revisit before real money |
-| [0004](docs/adr/0004-claim-authorization-eip712.md) | Claims are authorized off-chain with EIP-712 and verified on-chain |
-| [0005](docs/adr/0005-poc-campaign-economics.md) | POC economics: 1 test USDC × max 10, 0% fee |
-| [0006](docs/adr/0006-onchain-exposure-limits.md) | Exposure limits enforced by the contract |
-| [0007](docs/adr/0007-world-id-integration.md) | World ID via IDKit, one action per campaign, no raw identity stored |
-| [0008](docs/adr/0008-signer-custody-and-payout-limits.md) | Claim-signer custody, admin roles and payout limits |
-| [0009](docs/adr/0009-quality-signals-and-reputation-scope.md) | Campaign-scoped quality signals, no cross-campaign reputation yet |
-| [0010](docs/adr/0010-passive-accrual-verify-at-withdrawal.md) | *Proposed:* earn while browsing, World ID at login and withdrawal |
-| [0011](docs/adr/0011-idempotent-campaign-creation.md) | Idempotent on-chain campaign creation per draft (`draftRef`); a deep reorg halts signing |
+More: [requirements](docs/product/REQUIREMENTS.md) (in Chinese with English terms), [API specification](docs/architecture/API_SPEC.md), [data model](docs/architecture/DATA_MODEL.md), [test plan](docs/testing/TEST_PLAN.md), [data retention](docs/privacy/DATA_RETENTION.md), [operations](docs/operations/) and [testnet deployment](docs/deployment/TESTNET.md).
 
 ---
 
@@ -196,13 +236,15 @@ CI runs the `javascript`, `e2e` and `solidity` jobs on every push. Never commit 
 | Milestone | Goal | Status |
 | --- | --- | --- |
 | M0 | Product decisions: first buyer, chain, gas, claim model, economics | ✅ Done |
-| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia (v1 contract); ADR-0011 redeploy and re-run pending (#12, #13) |
+| **M1** | **POC: the full money loop on a testnet** | 🟡 Ran on Base Sepolia (v1 contract); the re-run on the updated contract is pending |
 | M2 | MVP for a real buyer: observability, privacy, moderation, signer custody | 🟡 Engineering baseline done; no real buyer yet |
-| M3 | Closed beta: quality signals, public API, publisher SDK | 🟡 #25 and #26 done; #27 SDK open |
-| M4 | AI agents buy campaigns over x402 | ⬜ Not started (#28) |
-| M5 | Production readiness for real funds: audit, on-call | 🟡 Partial (#29) |
+| M3 | Closed beta: quality signals, public API, publisher SDK | 🟡 Quality signals and the public API contract done; publisher SDK not started |
+| M4 | AI agents buy campaigns over x402 | ⬜ Not started |
+| M5 | Production readiness for real funds: audit, on-call | 🟡 Partial: no audit and no on-call yet |
 | M6–M7 | Publisher network, protocol ecosystem | ⬜ Not started |
-| M8 | Multi-chain, only with evidence of demand | ⬜ Deferred (#30) |
+| M8 | Multi-chain, only with evidence of demand | ⬜ Deferred |
+
+Business model: not implemented, and the proof of concept charges no fee ([ADR-0005](docs/adr/0005-poc-campaign-economics.md)). The options under consideration start with a percentage fee on settled campaign value or a fee per verified completion: [VISION §13](docs/product/VISION.md#13-business-model).
 
 Full roadmap with deliverables and exit criteria: [docs/product/VISION.md](docs/product/VISION.md#roadmap).
 
@@ -212,10 +254,6 @@ Full roadmap with deliverables and exit criteria: [docs/product/VISION.md](docs/
 
 | Term | Meaning |
 | --- | --- |
-| **ADR** | Architecture Decision Record: a short document explaining one decision, the alternatives and the consequences. Status goes *Proposed → Accepted* |
-| **M0–M8** | Milestones in the roadmap above |
-| **P0–P3** | Issue priority: P0 must be done and blocks later work; P3 only after evidence of need |
-| **EPIC** | A large issue that will be split into smaller ones |
 | **World ID** | A zero-knowledge proof that someone is a unique human, without revealing who |
 | **Nullifier** | The anonymous value World ID returns per app and action; the same person always gets the same one, which is how a second claim is blocked |
 | **RP / RP signature** | Relying Party: our app. The backend signs every World ID request so nobody can impersonate it |
@@ -223,6 +261,9 @@ Full roadmap with deliverables and exit criteria: [docs/product/VISION.md](docs/
 | **EIP-712** | A standard for signing structured data; the backend signs a claim authorization the contract can verify |
 | **SIWE** | Sign-In with Ethereum: logging in by signing a message with the wallet |
 | **Indexer** | A worker that reads confirmed contract events into the database, handling chain reorganizations |
+| **ADR** | Architecture Decision Record: a short document explaining one decision, the alternatives and the consequences |
+| **P0–P3** | Issue priority in issue titles: P0 must be done and blocks later work; P3 only after evidence of need |
+| **EPIC** | A large issue that will be split into smaller ones |
 | **Atomic units** | USDC has 6 decimals, so `1000000` means 1 USDC. Money is never stored as floating point |
 | **Base Sepolia** | Base's public testnet (chain ID `84532`) |
 | **anvil** | Foundry's local blockchain used for development and CI |

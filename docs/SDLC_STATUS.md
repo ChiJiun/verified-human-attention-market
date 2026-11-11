@@ -1,8 +1,8 @@
-# SDLC Status / 軟體開發生命週期狀態
+# SDLC Status
 
 > Last reviewed: 2026-11-11 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
-Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
+The Milestone 0 working decisions and the system design baseline are settled, and the project is in **Implementation**. This page tracks SDLC execution; the roadmap in the README tracks product maturity.
 
 ## Current Phase
 
@@ -13,25 +13,25 @@ System Design   ✅ Baseline complete
 Implementation 🟡 Active
 Testing        🟡 Active
 Deployment     🟡 Base Sepolia testnet only; v1 run done 2026-10-14, ADR-0011 redeploy pending; no real funds
-Operations     ⬜ Not started
+Operations     🟡 Runbook, alerts and drills written; no production service is operated
 ```
 
 ## Working Product Decision
 
-目前採用以下 **可逆的 working assumptions**，避免因輕微未決事項阻塞開發。正式進入 Implementation 前仍可由專案 owner 修改。
+These choices keep small open questions from blocking the work. The rows marked Accepted are decided in the ADR named; the rows marked Working assumption can still be changed by the owner.
 
 | Decision | Working choice | Status |
 | --- | --- | --- |
 | First buyer | Advertiser / creator | Working assumption |
-| First mission | Sponsored article/content + short comprehension check | Working assumption |
+| First mission | Sponsored article/content + short comprehension check | Accepted in ADR-0002 |
 | Settlement | USDC | Working assumption |
 | MVP chain | Base | Accepted in ADR-0001 |
-| Identity | World ID external integration | Accepted baseline |
+| Identity | World ID external integration | Accepted in ADR-0007 |
 | Proof of engagement | Off-chain verifier + EIP-712 claim authorization | Accepted in ADR-0004 |
 | POC gas UX | User pays testnet gas | Accepted in ADR-0003 |
 | POC economics | 1 test USDC × max 10, 0% fee | Accepted in ADR-0005 |
 | Agent payment | x402, later milestone | Deferred |
-| Multi-chain | None in MVP | Accepted principle |
+| Multi-chain | None in MVP | Accepted in ADR-0001 |
 | AARC | Only after multi-chain decision gate | Deferred |
 | Native token | None | Out of scope |
 
@@ -108,7 +108,7 @@ Official references:
 - Monorepo scaffold verified with `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm build`, and `pnpm format:check`.
 - `CampaignManager` implements campaign creation/funding, EIP-712 claims, close/refund, replay protection, completion caps, pause, signer rotation, and single-token settlement.
 - Claim authorization now includes `issuedAt` + `expiresAt`; refunds wait until the issuance deadline plus maximum authorization TTL, eliminating the off-chain authorization/refund race in the original design.
-- Foundry: 59 unit/fuzz tests plus 3 stateful invariants, every `CampaignManager` revert covered (#73).
+- Foundry: 59 unit/fuzz tests plus 3 stateful invariants. #73 added tests for the reverts it lists; not every revert has a test. `forge coverage` on 2026-11-11 reports 93% of the lines and 71% of the branches of `CampaignManager.sol`. The reverts with no test include `InvalidReward`, `InvalidCompletionLimit`, `CampaignNotClaimable`, `TokenTransferFailed`, the three in `closeCampaign`, and `transferOwnership`, which no test calls. `forge` v1.8.4 reports 60 tests, because it runs the three invariants as one.
 - Stateful invariant run: 128 runs × 64 depth = 8,192 handler calls with zero invariant failures.
 - Claim issuance checks the contract signer via RPC, matches the contract's EIP-712 typehash, caps distinct authorizations by campaign completion limit, and returns the same unexpired signature on retry.
 - Base Sepolia run on 2026-10-14 (v1 contract, before ADR-0011) with a real World ID proof: funded 3 USDC, paid 1 USDC, refunded 2 USDC, contract balance 0; transactions in `docs/DEMO.md`.
@@ -212,7 +212,8 @@ Reviewed by a separate agent before merging, with the review recorded on the PR,
 
 | PR | Closes | What changed |
 | --- | --- | --- |
-| #128 | — | Review follow-ups to #127: the indexer worker retries its startup read of the halt while the database cannot be read, instead of exiting and crash-looping under its supervisor, and its logs name the cause of a failed query, which Drizzle keeps apart from the message. Registry tests pin that the registry is freed before the database closes and that a build failing late leaves it free. The alert tests pin that `record` is refused next to `alert` and count a range between two strings once, and their comment lists more of the files Prometheus accepts that fail here. The runbook says that smart-contract wallets cannot sign in while the RPC fails and other wallets wait for it, that a read waiting for a connection can take twice `connect_timeout`, that a failed API scrape also restarts VhamIndexerLag on the API's series, why a lost lock can keep a restarted worker waiting, and that readiness logs no error for its 503s |
+| #128 | — | Review follow-ups to #127: the indexer worker retries its startup read of the halt while the database cannot be read, instead of exiting and crash-looping under its supervisor, and its logs name the cause of a failed query, which Drizzle keeps apart from the message. Registry tests pin that the registry is freed before the database closes and that a build failing late leaves it free. The alert tests pin that `record` is refused next to `alert` and count a range between two strings once, and their comment lists more of the files Prometheus accepts that fail here. The runbook says that while the RPC hangs a smart-contract wallet cannot sign in, a client calling the API directly is signed in after about 40 s, and sign-in through the web app fails because its rewrite gives up after 30 s; that a worker stopped at startup exits once the attempt in progress ends; that postgres.js waits up to 20 s before it reopens a failed connection; that a read waiting for a connection can take twice `connect_timeout`, that a failed API scrape also restarts VhamIndexerLag on the API's series, why a lost lock can keep a restarted worker waiting, and that readiness logs no error for its 503s |
+| #129 | — | The README is rewritten for a first-time reader: a CI badge, links to the Base Sepolia transactions, what is real today and what is not, screenshots of the local browser demo (`docs/images/`), the product thesis, engineering highlights, and three ways to run it. `docs/DEMO.md` is now English and `docs/DEMO.zh-TW.md` holds the Traditional Chinese guide; both add the missing browser steps (Save draft, a public https content URL, the start time, Submit answers), the keys of the public anvil accounts, and what to reset before a second round. New: `docs/HACKATHON.md` (a submission summary), `CONTRIBUTING.md` (the pre-commit checks and the web + API start, moved from the README) and `docs/adr/README.md` (the ADR index, moved from the README). `docs/product/VISION.md` marks its 2026-10-05 status sections as historical. The advertiser page says "1 completion" for one paid completion, with DOM tests. This page no longer says that every `CampaignManager` revert has a test, gives the measured coverage, and names the ADR for the first mission, identity and multi-chain rows. `AGENTS.md` (§6, §14) and `docs/deployment/BASE_SEPOLIA_RERUN.md` follow |
 
 ## Next SDLC Actions
 
