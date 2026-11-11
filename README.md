@@ -50,7 +50,7 @@ Screenshots from a local run: local chain (anvil), simulated World ID, mock USDC
 | What is paid for | Often an impression, a click or an on-chain action | A completion the verifier accepted (today a comprehension check: a baseline, not proof of deep attention) |
 | Paid in | Often the platform's own token or points | USDC; no native token, by design |
 | Where the budget sits | Usually with the platform | In a per-campaign on-chain escrow; the advertiser takes back what was not spent |
-| What is stored about the person | Often an account profile | A per-campaign keyed hash of the World ID nullifier and the claiming wallet; no name, no raw World ID data |
+| What is stored about the person | Often an account profile | For identity: a per-campaign keyed hash of the World ID nullifier and the claiming wallet; no name, no raw World ID data. Also the answers (deleted 30 days after the campaign ends) and the quality flags of a submission ([retention](docs/privacy/DATA_RETENTION.md)) |
 
 The middle column describes categories of product, not any one of them.
 
@@ -61,7 +61,7 @@ The middle column describes categories of product, not any one of them.
 | | Status |
 | --- | --- |
 | Escrow contract (`CampaignManager`, Solidity) | Built and tested. The v1 contract ran the full flow on Base Sepolia on 2026-10-14 (links above) |
-| World ID | Real in that run: a production proof from an Orb-verified World App, verified by the backend. Simulated in the local demo and in CI |
+| World ID | Real in that run: a production proof from an Orb-verified World App, verified by the backend. Simulated in the local demo and in CI. The current request (4.0 proofs only, bound to the claiming wallet) has not run against a real World App yet |
 | USDC | Circle's test USDC on Base Sepolia; a mock token on the local chain |
 | Web app, API, indexer | Built: the advertiser creates, funds, closes and refunds a campaign; the participant verifies, answers and claims |
 | Not done yet | The contract changed after the testnet run (campaign creation became idempotent, [ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)), so the current code is tested on a local chain and in CI and has not been redeployed to Base Sepolia. No audit, no mainnet, no real funds, no real advertiser |
@@ -194,6 +194,7 @@ docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POS
 # terminal 2
 anvil
 # terminal 3
+pnpm install                      # if you skipped step 1
 (cd packages/contracts && forge build)
 export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
@@ -218,16 +219,16 @@ CI runs four jobs on every push and pull request: `javascript` (with PostgreSQL)
 | [docs/HACKATHON.md](docs/HACKATHON.md) | A short description of the project for a submission form |
 | [docs/DEMO.md](docs/DEMO.md) | How to run the full flow, and the Base Sepolia run log |
 | [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | Where the project is right now, and which changes were merged when |
-| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | Who the product is for and why (in Chinese with English terms) |
+| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | Who the product is for and why (English and Chinese mixed) |
 | [docs/product/VISION.md](docs/product/VISION.md) | The long-term vision, business model options and full roadmap |
 | [docs/architecture/MVP_ARCHITECTURE.md](docs/architecture/MVP_ARCHITECTURE.md) | How the components fit together |
 | [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | Exactly what the contract does and guarantees |
 | [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | How the signed claim authorization works |
-| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | What can go wrong and how it is mitigated |
+| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | What can go wrong and how it is mitigated (a few passages in Chinese) |
 | [docs/adr/](docs/adr/README.md) | Why each major decision was made |
 | [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) | The checks to run before a commit, and the rules for working on this repository |
 
-More: [requirements](docs/product/REQUIREMENTS.md) (in Chinese with English terms), [API specification](docs/architecture/API_SPEC.md), [data model](docs/architecture/DATA_MODEL.md), [test plan](docs/testing/TEST_PLAN.md), [data retention](docs/privacy/DATA_RETENTION.md), [operations](docs/operations/) and [testnet deployment](docs/deployment/TESTNET.md).
+More: [requirements](docs/product/REQUIREMENTS.md) (English and Chinese mixed), [API specification](docs/architecture/API_SPEC.md), [data model](docs/architecture/DATA_MODEL.md), [test plan](docs/testing/TEST_PLAN.md), [data retention](docs/privacy/DATA_RETENTION.md), [operations](docs/operations/) and [testnet deployment](docs/deployment/TESTNET.md).
 
 ---
 

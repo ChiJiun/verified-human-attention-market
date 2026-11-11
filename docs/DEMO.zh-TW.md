@@ -10,8 +10,8 @@ Demo 會用**真的**本機鏈（anvil）、**真的**編譯後 `CampaignManager
 廣告主 SIWE 登入 → 建立草稿 campaign（含理解測驗）
 → 鏈上 createCampaign → API 驗證交易後連結
 → approve + fundCampaign → indexer 確認後 campaign 變 active
-→ 使用者 World ID 資格驗證（模擬）→ 作答通過
-→ 後端簽 EIP-712 授權 → 使用者鏈上 claim 領到 1 USDC
+→ 參與者 World ID 資格驗證（模擬）→ 作答通過
+→ 後端簽 EIP-712 授權 → 參與者鏈上 claim 領到 1 USDC
 → 重複 claim 被合約拒絕 → 對帳數字與鏈上一致
 → 廣告主 close（之後不再產生新負債）
 → 等待期過後 refund 沒用完的預算
@@ -176,18 +176,18 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
 ### 實際操作
 
-在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`，幣別符號 `ETH`），並匯入上表的兩個帳號。最保險的做法是用兩個瀏覽器 profile，各裝一個錢包擴充套件：一個給廣告主，一個給參與者，各自新增網路並匯入自己的帳號。兩個頁面都在 `localhost:3000`，而頁面只在按下 **Connect wallet** 時讀一次錢包的帳號。只用一個擴充套件時，切換帳號後請重新整理頁面，並確認頁面顯示的位址。如果還是另一個帳號，請在錢包裡允許第二個帳號連接這個網站，再重新整理。
+在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`，幣別符號 `ETH`），並匯入上表的兩個帳號。打開頁面之前，先在錢包裡選好這個網路。最保險的做法是用兩個瀏覽器 profile，各裝一個錢包擴充套件：一個給廣告主，一個給參與者，各自新增網路並匯入自己的帳號。兩個頁面都在 `localhost:3000`，而頁面只在按下 **Connect wallet** 時讀一次錢包的帳號。只用一個擴充套件時，切換帳號後請重新整理頁面，並確認頁面顯示的位址。如果還是另一個帳號，請在錢包裡允許第二個帳號連接這個網站，再重新整理。
 
-1. **廣告主（anvil #2）：** 打開 <http://localhost:3000/advertiser>，按 **Connect wallet**，再按 **Sign in with Ethereum**。填寫表單：
+1. **廣告主（anvil #2）：** 打開 <http://localhost:3000/advertiser>，按 **Connect wallet**，再按 **Sign in with Ethereum**。錢包如果在別的網路，頁面會顯示 **Switch to Foundry** 而不是登入按鈕，請先按它。填寫表單：
    - **Sponsored content URL：** 任何公開的 `https` 網址，例如 `https://example.com/`。表單只接受 `https`，API 會拒絕 IP 位址、`localhost` 這類內部主機名稱，以及帶埠號的網址。
    - **Reward per completion** 與 **Max completions：** 用預設的 `1` 與 `10`，預算就是 10 USDC。
    - **End：** 至少比 Start 晚 15 分鐘，最多晚 24 小時。預設值可以直接用。
    - 一題理解測驗、它的選項，以及哪個選項是正確答案。
    - **Start：** 最後才填，設在 3 到 5 分鐘後。預設是 15 分鐘後，開始時間之前沒有人能作答。**Create on-chain** 的交易上鏈時，開始時間必須還沒到。頁面顯示「The start time has passed; create a new campaign with a later start.」時，請重新打開 <http://localhost:3000/advertiser> 建立新的草稿。
 
-   按 **Save draft**，再按 **Create on-chain**，接著按 **Approve & fund**（錢包會要求兩筆交易：核准與入金）。等狀態變成 `active` 後，複製頁面上的 participant link。
+   按 **Save draft**，再按 **Create on-chain**，接著按 **Approve & fund**（錢包會要求兩筆交易：核准與入金）。等狀態變成 `active` 後，頁面會顯示 participant link。它是相對路徑，所以要打開的網址是 `http://localhost:3000/mission?campaign=<campaign id>`。
 2. **等到開始時間。** 本機鏈時間跟著真實時間走。
-3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
+3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。這個頁面只讀一次網路，也沒有切換按鈕：如果顯示「Switch your wallet to Foundry.」，請在錢包裡選好網路、重新整理頁面並重新連接，否則 **Claim USDC** 會一直停用。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
 4. 回到廣告主頁面，可以看到已付金額和完成數都變了。參與者在驗證後不到 15 秒就送出作答時，仍然會領到獎勵，但頁面會把這次完成列在 `FAST_COMPLETION` 之下，並且不計入「Quality-adjusted accepted」。
 5. **廣告主（anvil #2）：** 在廣告主頁面，確認連接的是廣告主的帳號，按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，在終端機 3（Windows 上是 WSL）執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
 
@@ -195,11 +195,11 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
 ### 再跑一次
 
-anvil 每次啟動都是一條新的鏈，而部署腳本會把合約部署到同樣的位址。資料庫如果還留著上一條鏈的資料，兩邊就對不上：indexer 會記錄 `Inconsistent chain read at block N; retrying`，新的 campaign 永遠不會變成 `active`。用過 `anvil_increaseTime` 之後，鏈的時間也會比真實時間快，所以用過之後也請重啟 anvil。下一輪開始前：
+anvil 每次啟動都是一條新的鏈，而部署腳本會把合約部署到同樣的位址。資料庫如果還留著上一條鏈的資料，兩邊就對不上：indexer 會記錄 `Inconsistent chain read at block N`，新的 campaign 永遠不會變成 `active`。用過 `anvil_increaseTime` 之後，鏈的時間也會比真實時間快，所以用過之後也請重啟 anvil。下一輪開始前：
 
 1. 停掉 API 與 indexer，並重啟 anvil。
 2. 重建資料庫：把 PostgreSQL 容器停掉再啟動（`--rm` 會丟掉資料），或把 `vham` 資料庫 drop 後重新 create。
-3. 重新執行部署指令，並確認 `deployments/31337.json` 與環境變數裡的位址和 deploy block 仍然一致。
+3. 重新執行部署指令。位址不會變，但 `deployments/31337.json` 的 `deployBlock` 通常會變：請把新的值填進 `.env` 的 `CAMPAIGN_MANAGER_DEPLOY_BLOCK`，並重新載入 `.env`。沒有任何檢查會拿這個值和鏈上比對，而 indexer 從它開始讀，所以值太大時會漏掉事件，而且不會報錯。
 4. 重新跑 migration，再啟動 API、indexer 與前端。
 5. 錢包還記得舊鏈的交易次數（nonce）。請清除它在這個網路的活動紀錄（MetaMask：設定 → 進階 → 清除活動分頁資料）。
 
@@ -253,7 +253,7 @@ anvil 每次啟動都是一條新的鏈，而部署腳本會把合約部署到�
 | 作答 | 開始時間前送出被 `CAMPAIGN_NOT_STARTED` 擋下（預期行為），開始後通過 | — |
 | 領取 | 參與者收到 1 USDC | [`0xc929552c…4bf876d7`](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) / 48107877 |
 | 關閉 | 狀態 `closed` | [`0x3bdfb614…65914ae5`](https://sepolia.basescan.org/tx/0x3bdfb614d99bbc5673469648424fc43ff72d2d32c9b22c10867a2fab65914ae5) / 48107965 |
-| 退款 | 關閉 15 分鐘後退回 2 USDC，合約餘額 0，狀態 `settled` | [`0x242c6aac…1c5e44a4`](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) / 48108562 |
+| 退款 | 關閉約 20 分鐘後退回 2 USDC（等待期是 15 分鐘），合約餘額 0，狀態 `settled` | [`0x242c6aac…1c5e44a4`](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) / 48108562 |
 
 實測發現：
 
@@ -367,12 +367,12 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 | 鏈設定 | `GET /v1/chain` | 任何人 |
 | 取得上鏈參數 | `POST /v1/campaigns/:id/publish`（需已核准） | 廣告主 |
 | 回報 / 連結建立交易 | `POST /v1/campaigns/:id/onchain { txHash }`，或 `{}` 以 `draftRef` 查鏈上建立 | 廣告主 |
-| 任務內容 | `GET /v1/campaigns/:id/mission` | 使用者 |
-| World ID 請求 | `POST /v1/campaigns/:id/world-id/request` | 使用者 |
-| 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, signalSalt, idkitResponse }` | 使用者 |
-| 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 使用者 |
-| 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 使用者 |
-| 鏈上領取 | `CampaignManager.claim(authorization, signature)`，由使用者錢包送出 | 使用者 |
+| 任務內容 | `GET /v1/campaigns/:id/mission` | 參與者 |
+| World ID 請求 | `POST /v1/campaigns/:id/world-id/request` | 參與者 |
+| 資格驗證 | `POST /v1/campaigns/:id/eligibility/verify { claimant, signalSalt, idkitResponse }` | 參與者 |
+| 作答 | `POST /v1/campaigns/:id/submissions`（`Idempotency-Key`） | 參與者 |
+| 領取授權 | `POST /v1/campaigns/:id/submissions/:submissionId/authorization` | 參與者 |
+| 鏈上領取 | `CampaignManager.claim(authorization, signature)`，由參與者錢包送出 | 參與者 |
 | 成效 | `GET /v1/campaigns/:id/analytics` | 廣告主 |
 | 檢舉 | `POST /v1/campaigns/:id/reports { reason, details? }` | 任何人 |
 

@@ -50,7 +50,7 @@
 | 付錢買什麼 | 往往是曝光、點擊或鏈上操作 | 驗證器接受的一次完成（目前是理解測驗：基本訊號，不能證明認真讀過） |
 | 用什麼付 | 往往是平台自己的代幣或點數 | USDC；刻意不發行原生代幣 |
 | 預算放在哪 | 通常在平台手上 | 每個 campaign 各自的鏈上託管；沒用完的由廣告主領回 |
-| 儲存了參與者的哪些資料 | 往往是帳號資料 | 每個 campaign 一個以金鑰雜湊過的 World ID nullifier，以及領取用的錢包；沒有姓名，也沒有原始的 World ID 資料 |
+| 儲存了參與者的哪些資料 | 往往是帳號資料 | 身分方面：每個 campaign 一個以金鑰雜湊過的 World ID nullifier，以及領取用的錢包；沒有姓名，也沒有原始的 World ID 資料。另外會存作答（campaign 結束 30 天後刪除）與該次作答的品質標記（[資料保存](docs/privacy/DATA_RETENTION.md)） |
 
 中間一欄描述的是產品類別，不是指特定產品。
 
@@ -61,7 +61,7 @@
 | | 狀態 |
 | --- | --- |
 | 託管合約（`CampaignManager`，Solidity） | 已完成並有測試。v1 合約已於 2026-10-14 在 Base Sepolia 跑完整個流程（連結見上方） |
-| World ID | 那次執行是真的：Orb 驗證過的 World App 產生的 production proof，由後端驗證。本機 demo 與 CI 中是模擬的 |
+| World ID | 那次執行是真的：Orb 驗證過的 World App 產生的 production proof，由後端驗證。本機 demo 與 CI 中是模擬的。現行的請求（只接受 4.0 proof、綁定領取用的錢包）還沒用真實的 World App 跑過 |
 | USDC | Base Sepolia 上是 Circle 的測試 USDC；本機鏈上是 mock token |
 | 前端、API、indexer | 已完成：廣告主可以建立、入金、關閉 campaign 並退款；參與者可以驗證、作答並領取 |
 | 還沒做的 | 測試網執行之後合約改過（campaign 的建立改成冪等，[ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)），所以現行程式只在本機鏈與 CI 測試過，還沒重新部署到 Base Sepolia。沒有審計、沒有主網、沒有真實資金、沒有真實廣告主 |
@@ -194,6 +194,7 @@ docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POS
 # 終端機 2
 anvil
 # 終端機 3
+pnpm install                      # 如果跳過了第 1 步
 (cd packages/contracts && forge build)
 export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
@@ -218,16 +219,16 @@ CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 Postgre
 | [docs/HACKATHON.zh-TW.md](docs/HACKATHON.zh-TW.md) | 可以貼到報名表的專案簡短說明 |
 | [docs/DEMO.zh-TW.md](docs/DEMO.zh-TW.md) | 如何跑完整流程，以及 Base Sepolia 實測紀錄 |
 | [docs/SDLC_STATUS.md](docs/SDLC_STATUS.md) | 專案現在進行到哪裡，以及哪些變更在什麼時候合併 |
-| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | 產品為誰而做、為什麼要做（中文夾英文術語） |
+| [docs/product/PRODUCT_BRIEF.md](docs/product/PRODUCT_BRIEF.md) | 產品為誰而做、為什麼要做（中英混合） |
 | [docs/product/VISION.zh-TW.md](docs/product/VISION.zh-TW.md) | 長期願景、商業模式選項與完整路線圖 |
 | [docs/architecture/MVP_ARCHITECTURE.md](docs/architecture/MVP_ARCHITECTURE.md) | 各元件怎麼組在一起 |
 | [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | 合約確切做什麼、保證什麼 |
 | [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | 簽名領取授權的運作方式 |
-| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | 可能出什麼問題、如何防範 |
+| [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | 可能出什麼問題、如何防範（英文，少數段落是中文） |
 | [docs/adr/](docs/adr/README.md) | 每個重大決策的理由（英文） |
 | [CONTRIBUTING.md](CONTRIBUTING.md)、[AGENTS.md](AGENTS.md) | commit 前要跑的檢查，以及在這個 repo 工作的規則（英文） |
 
-其他：[需求](docs/product/REQUIREMENTS.md)（中文夾英文術語）、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。除了檔名帶 `.zh-TW` 與標示「中文夾英文術語」的文件之外，其餘文件都是英文。
+其他：[需求](docs/product/REQUIREMENTS.md)（中英混合）、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。除了檔名帶 `.zh-TW` 的文件與上面另有標示的幾份之外，其餘文件都是英文。
 
 ---
 
