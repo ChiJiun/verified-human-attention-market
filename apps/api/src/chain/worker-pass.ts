@@ -166,14 +166,14 @@ export async function retryWithBackoff<T>(
 }
 
 /** One error's own text: its message, or what else names it. */
-function ownMessage(error: unknown): string {
+function ownMessage(error: unknown, depth = 0): string {
   if (!(error instanceof Error)) return String(error);
   if (error.message) return error.message;
   // Node reports a connection refused on every address as an AggregateError
-  // with an empty message.
+  // with an empty message. The depth limit ends one that holds itself.
   const inner =
-    error instanceof AggregateError
-      ? error.errors.map(ownMessage).join("; ")
+    error instanceof AggregateError && depth < 3
+      ? error.errors.map((each) => ownMessage(each, depth + 1)).join("; ")
       : "";
   const code = (error as { code?: unknown }).code;
   return inner || (typeof code === "string" ? code : error.name);
@@ -186,14 +186,15 @@ function ownMessage(error: unknown): string {
  * message alone does not say why.
  */
 export function errorMessage(error: unknown): string {
-  const parts: string[] = [];
-  const seen = new Set<unknown>();
+  const parts = [ownMessage(error)];
+  const seen = new Set<unknown>([error]);
   let current = error;
-  while (current !== undefined && current !== null && !seen.has(current)) {
+  // At most five parts, and a cause that was already named ends the chain.
+  while (parts.length < 5 && current instanceof Error) {
+    current = current.cause;
+    if (current === undefined || current === null || seen.has(current)) break;
     seen.add(current);
     parts.push(ownMessage(current));
-    if (parts.length === 5 || !(current instanceof Error)) break;
-    current = current.cause;
   }
   return parts.join("; cause: ");
 }

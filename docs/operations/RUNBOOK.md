@@ -37,7 +37,9 @@ API's series, or it resolves there if it fires (the worker's series is not
 affected). The API's `increase()` rules see only the samples from before. A
 read that has to open a connection gives up instead, after `connect_timeout`;
 one that finds every connection still opening waits for one of them to give
-up first, so it can take twice that or longer. When every read of a scrape
+up first, so it can take twice that or longer. (After a failed connection
+postgres.js also waits before it opens that one again, up to 20 s after
+repeated failures.) When every read of a scrape
 gives up before the `scrape_timeout`, the scrape completes with
 `vham_chain_halted` at 1; that needs at least a `scrape_timeout` above
 `connect_timeout`, which is 30 s by default. The worker's VhamIndexerStalled
@@ -496,9 +498,14 @@ authorization (`POST .../authorization`) and a new submission answer 503
 (`POST .../publish`) answer 503 `RPC_UNAVAILABLE`. These 503s count towards
 [VhamServerErrors](#vhamservererrors). Sign-in (`POST /v1/auth/verify`)
 reads the chain too, to check a smart-contract wallet's signature: such a
-wallet gets 401 `INVALID_SIGNATURE` meanwhile, and other wallets still sign
-in once the RPC gives up, which takes about 40 s while it hangs (viem's 10 s
-timeout, tried 4 times).
+wallet gets 401 `INVALID_SIGNATURE` meanwhile, and for other wallets the API
+answers once the RPC gives up, which takes about 40 s while it hangs (viem's
+10 s timeout, tried 4 times). A client that calls the API directly is signed
+in then. A browser is not: it signs in through the web app's `/api/*`
+rewrite, which gives up after 30 s (Next's default proxy timeout) and answers
+500 without the session cookie. So sign-in from the web app fails while the
+RPC hangs. The API still finishes each such request, which uses up its nonce
+and creates a session that nobody holds, and a new attempt needs a new nonce.
 
 ### VhamWorldIdUnavailable
 
@@ -564,7 +571,10 @@ maximum backoff.
 
 **Stopping.** On SIGTERM or SIGINT the worker finishes the current pass,
 cuts any backoff sleep short, releases its lock and exits, well within a 30 s
-grace period unless a single pass takes longer.
+grace period unless a single pass takes longer. A worker stopped at startup,
+while it reads the halt or waits for the lock, exits once the attempt in
+progress ends: with a database that does not answer, that is after
+`connect_timeout` (30 s by default), which can pass the grace period.
 
 ## Client addresses behind the web app (#75)
 

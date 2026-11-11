@@ -27,22 +27,22 @@ afterEach(async () => {
  */
 function failingRegistry(failAt = Infinity) {
   const metrics = new MetricsRegistry();
-  let calls = 0;
-  const count = () => {
-    calls += 1;
-    if (calls === failAt) throw new Error("build failed");
+  const names: string[] = [];
+  const count = (name: string) => {
+    names.push(name);
+    if (names.length === failAt) throw new Error("build failed");
   };
   const gauge = metrics.gauge.bind(metrics);
   const counter = metrics.counter.bind(metrics);
   vi.spyOn(metrics, "gauge").mockImplementation((name, help) => {
-    count();
+    count(name);
     return gauge(name, help);
   });
   vi.spyOn(metrics, "counter").mockImplementation((name, help) => {
-    count();
+    count(name);
     return counter(name, help);
   });
-  return { metrics, calls: () => calls };
+  return { metrics, names: () => names };
 }
 
 const AUTHORIZATION_ROUTE =
@@ -236,8 +236,12 @@ describe("GET /metrics", () => {
     // for its last in registerInstrumentation, late in the build.
     const probe = failingRegistry();
     closers.push(buildApp({ metrics: probe.metrics }));
-    const last = probe.calls();
-    expect(last).toBeGreaterThan(4);
+    const names = probe.names();
+    const last = names.length;
+    expect(names[0]).toBe("vham_indexer_lag_blocks");
+    // registerInstrumentation asks for this one first, after every other
+    // part of the build that asks for a metric.
+    expect(names.indexOf("vham_http_requests_total")).toBeGreaterThanOrEqual(4);
 
     for (const failAt of [1, last]) {
       const { metrics } = failingRegistry(failAt);

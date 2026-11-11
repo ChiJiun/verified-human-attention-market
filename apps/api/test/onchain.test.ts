@@ -812,10 +812,13 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const scope = { chainId: 84532, contractAddress: CONTRACT };
     const events = new InMemoryChainEventRepository();
     const failures: string[] = [];
+    const slept: number[] = [];
     const options = {
       onFailure: (attempt: number, error: unknown, retryInMs: number) =>
         failures.push(`${attempt}, ${retryInMs} ms: ${errorMessage(error)}`),
-      sleep: async () => {},
+      sleep: async (ms: number) => {
+        slept.push(ms);
+      },
     };
     // As Drizzle reports a failed query: the reason is in the cause.
     const unavailable = () =>
@@ -843,6 +846,18 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       "1, 1000 ms: Failed query: select 1; cause: connect ECONNREFUSED",
       "2, 2000 ms: Failed query: select 1; cause: connect ECONNREFUSED",
     ]);
+    // It waits with the sleep it was given, not with a timer of its own.
+    expect(slept).toEqual([1000, 2000]);
+
+    // A worker that is already stopping reads nothing.
+    calls = 0;
+    expect(
+      await readHaltWithRetry(flaky, scope, {
+        ...options,
+        stopping: () => true,
+      }),
+    ).toBeNull();
+    expect(calls).toBe(0);
 
     // A recorded halt comes back as it is.
     await events.haltForReorg(scope, 42n, new Date());
@@ -884,6 +899,8 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
   it("logs an error with its causes", () => {
     expect(errorMessage(new Error("plain"))).toBe("plain");
     expect(errorMessage("text")).toBe("text");
+    expect(errorMessage(undefined)).toBe("undefined");
+    expect(errorMessage(null)).toBe("null");
     expect(
       errorMessage(
         new Error("Failed query: select 1", {
@@ -899,13 +916,45 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     expect(errorMessage(new Error("Failed query", { cause: refused }))).toBe(
       "Failed query; cause: connect ECONNREFUSED ::1:5432",
     );
+    // For `localhost` it tries two addresses: both are named.
+    expect(
+      errorMessage(
+        new AggregateError(
+          [
+            new Error("connect ECONNREFUSED ::1:5432"),
+            new Error("connect ECONNREFUSED 127.0.0.1:5432"),
+          ],
+          "",
+        ),
+      ),
+    ).toBe(
+      "connect ECONNREFUSED ::1:5432; connect ECONNREFUSED 127.0.0.1:5432",
+    );
+    // An AggregateError with a message of its own keeps to it.
+    expect(
+      errorMessage(new AggregateError([new Error("inner")], "all failed")),
+    ).toBe("all failed");
+    // Without a message: the code, or else the name.
     expect(
       errorMessage(Object.assign(new Error(""), { code: "ETIMEDOUT" })),
     ).toBe("ETIMEDOUT");
+    expect(errorMessage(new TypeError(""))).toBe("TypeError");
     // A cause that points back at its error ends the chain.
     const loop = new Error("outer");
     loop.cause = new Error("inner", { cause: loop });
     expect(errorMessage(loop)).toBe("outer; cause: inner");
+    // So does an AggregateError without a message that holds itself.
+    const selfHolding = new AggregateError([], "");
+    selfHolding.errors.push(selfHolding);
+    expect(errorMessage(selfHolding)).toBe("AggregateError");
+    // A longer chain is cut after five parts.
+    let deep = new Error("e7");
+    for (const name of ["e6", "e5", "e4", "e3", "e2", "e1"]) {
+      deep = new Error(name, { cause: deep });
+    }
+    expect(errorMessage(deep)).toBe(
+      "e1; cause: e2; cause: e3; cause: e4; cause: e5",
+    );
   });
 
   it("starts the stall clock only once it holds the deployment lock", async () => {

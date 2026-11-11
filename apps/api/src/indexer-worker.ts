@@ -412,9 +412,7 @@ while (!stopping) {
           ...(await applyRetention(database.db, new Date())),
         });
       } catch (error) {
-        log("error", "retention failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        log("error", "retention failed", { error: errorMessage(error) });
       }
     }
 
@@ -460,10 +458,7 @@ while (!stopping) {
             "COULD NOT RECORD THE REORG HALT; retrying. The API is NOT paused until this succeeds",
             {
               attempt,
-              error:
-                haltError instanceof Error
-                  ? haltError.message
-                  : String(haltError),
+              error: errorMessage(haltError),
             },
           ),
       });
