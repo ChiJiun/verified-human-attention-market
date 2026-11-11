@@ -2,7 +2,7 @@
 
 [English](VISION.md) | [繁體中文](VISION.zh-TW.md)
 
-> This is the original product and engineering master plan, moved here from the README on 2026-10-14 without content changes. It describes the long-term vision, design principles, SDLC plan and the full roadmap.
+> This is the original product and engineering master plan, moved here from the README on 2026-10-14 without content changes other than the snapshot notes added on 2026-11-11. It describes the long-term vision, design principles, SDLC plan and the full roadmap.
 >
 > It is **not** the source of truth for current status. For that, see [`docs/SDLC_STATUS.md`](../SDLC_STATUS.md), the GitHub issues, and [`AGENTS.md`](../../AGENTS.md). Accepted decisions live in [`docs/adr/`](../adr/).
 
@@ -52,6 +52,8 @@ The long-term product is not only a website. The website is one client of the pr
 ---
 
 ## 4. System Overview
+
+> Target design. Built today: escrow, World ID eligibility, the off-chain verifier, and USDC claim and refund. Not built: x402, the protocol fee, the publisher share and cross-campaign reputation.
 
 ```mermaid
 flowchart LR
@@ -946,6 +948,8 @@ Prefer:
 
 # Open Decisions
 
+> Historical snapshot from 2026-10-05, kept unchanged. The contract, API, web app, World ID integration and USDC settlement are implemented; see the [README](../../README.md) and [docs/SDLC_STATUS.md](../SDLC_STATUS.md) for the current state.
+
 Before writing production code, resolve these:
 
 1. **First market:** ads, product research, or AI human-evaluation?
@@ -992,6 +996,8 @@ After this loop demonstrates real demand, expand toward x402 agent buyers, publi
 
 ## Status
 
+> Historical snapshot from 2026-10-05, kept unchanged. The contract, API, web app, World ID integration and USDC settlement are implemented; see the [README](../../README.md) and [docs/SDLC_STATUS.md](../SDLC_STATUS.md) for the current state.
+
 **Stage:** Planning / Requirements  
 **Target:** POC → MVP  
 **Repository:** Product specification and future implementation workspace
@@ -1019,6 +1025,8 @@ It intentionally avoids fixed calendar dates until team capacity and the first t
 ---
 
 ## Current Status
+
+> Historical snapshot from 2026-10-05, kept unchanged. The contract, API, web app, World ID integration and USDC settlement are implemented; see the [README](../../README.md) and [docs/SDLC_STATUS.md](../SDLC_STATUS.md) for the current state.
 
 | Area | Status |
 | --- | --- |

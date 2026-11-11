@@ -150,8 +150,25 @@ function advertiserWallet() {
   });
 }
 
+/** Confirmed settlement figures after `paidCompletions` rewards of 1 USDC. */
+function settlementAfter(paidCompletions: number) {
+  const paid = BigInt(paidCompletions) * 1_000_000n;
+  return {
+    confirmed: {
+      funded: "10000000",
+      paidRewards: paid.toString(),
+      remaining: (10_000_000n - paid).toString(),
+      paidCompletions,
+    },
+    pending: { funded: "10000000", status: "active" },
+    hasUnconfirmedEvents: false,
+  };
+}
+
 /** The API: a signed-in advertiser and the campaign, active and linked. */
-function advertiserApi() {
+function advertiserApi(
+  settlement: ReturnType<typeof settlementAfter> | null = null,
+) {
   let session: { address: string; expiresAt: string } | null = {
     address: ADVERTISER,
     expiresAt: "2030-01-01T00:00:00.000Z",
@@ -186,7 +203,7 @@ function advertiserApi() {
           adjustedAccepted: 0,
           flagReasons: {},
         },
-        settlement: null,
+        settlement,
       },
     }),
   });
@@ -252,6 +269,28 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete window.ethereum;
   localStorage.clear();
+});
+
+describe("advertiser page: paid rewards", () => {
+  it.each([
+    [0, "0 USDC (0 completions)"],
+    [1, "1 USDC (1 completion)"],
+    [2, "2 USDC (2 completions)"],
+  ])("shows %i paid as %s", async (paidCompletions, text) => {
+    window.ethereum = advertiserWallet().provider;
+    vi.stubGlobal(
+      "fetch",
+      advertiserApi(settlementAfter(paidCompletions)).fetch,
+    );
+
+    render(<AdvertiserPage />);
+    await advance(0);
+    fireEvent.click(screen.getByRole("button", { name: "Connect wallet" }));
+    await advance(0);
+
+    const term = screen.getByText("Paid rewards");
+    expect(term.nextElementSibling?.textContent).toBe(text);
+  });
 });
 
 describe("advertiser page: an unresolved close (#86)", () => {

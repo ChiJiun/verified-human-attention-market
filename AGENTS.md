@@ -136,10 +136,13 @@ Current intent:
 ├─ README.md
 ├─ README.zh-TW.md
 ├─ AGENTS.md
+├─ CONTRIBUTING.md     # checks before a commit
 ├─ docs/
 │  ├─ SDLC_STATUS.md   # status page
-│  ├─ DEMO.md          # local and testnet run
-│  ├─ adr/
+│  ├─ DEMO.md          # local and testnet run (DEMO.zh-TW.md: Traditional Chinese)
+│  ├─ HACKATHON.md     # submission summary (HACKATHON.zh-TW.md: Traditional Chinese)
+│  ├─ images/          # screenshots used by the README
+│  ├─ adr/             # decisions; README.md is the index
 │  ├─ architecture/
 │  ├─ deployment/      # TESTNET.md, BASE_SEPOLIA_RERUN.md
 │  ├─ operations/      # runbook, alerts, readiness, incidents

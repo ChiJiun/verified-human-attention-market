@@ -1221,7 +1221,10 @@ export default function AdvertiserPage() {
                   <dd>
                     {formatUsdc(analytics.settlement.confirmed.paidRewards)} (
                     {analytics.settlement.confirmed.paidCompletions}{" "}
-                    completions)
+                    {analytics.settlement.confirmed.paidCompletions === 1
+                      ? "completion"
+                      : "completions"}
+                    )
                   </dd>
                   <dt>Remaining</dt>
                   <dd>
