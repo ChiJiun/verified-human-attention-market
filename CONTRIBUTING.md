@@ -26,7 +26,7 @@ A machine may lack Foundry, PostgreSQL or anvil. CI is then the required check f
 
 ## Development servers
 
-The web app and the API alone, with no chain. Sign-in, World ID and the chain features stay disabled until they are configured ([`.env.example`](.env.example)).
+The web app and the API alone, with no chain. Sign-in, World ID and the chain features stay disabled until they are configured ([`.env.example`](.env.example)). The database container below has the same name and port as the one in [docs/DEMO.md](docs/DEMO.md), and it is started without `--rm`, so it stays after it stops: remove it with `docker rm -f vham-pg` before you start the other one.
 
 ```bash
 pnpm install

@@ -176,18 +176,18 @@ On Windows, run terminals 2 and 3 in WSL and the rest in PowerShell. Windows Pow
 
 ### Click through it
 
-In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant, each with the network and its own account. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows. If it is still the other account, allow the second account to connect to this site in the wallet, then reload.
+In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Select that network in the wallet before you open the pages. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant, each with the network and its own account. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows. If it is still the other account, allow the second account to connect to this site in the wallet, then reload.
 
-1. **Advertiser (anvil #2):** open <http://localhost:3000/advertiser>, press **Connect wallet**, then **Sign in with Ethereum**. Fill in the form:
+1. **Advertiser (anvil #2):** open <http://localhost:3000/advertiser>, press **Connect wallet**, then **Sign in with Ethereum**. If the wallet is on another network, the page shows **Switch to Foundry** in place of the sign-in button: press it first. Fill in the form:
    - **Sponsored content URL:** any public `https` address, for example `https://example.com/`. The form accepts only `https`, and the API refuses IP addresses, internal hostnames such as `localhost`, and addresses with a port.
    - **Reward per completion** and **Max completions:** keep the defaults, `1` and `10`, for a budget of 10 USDC.
    - **End:** at least 15 minutes after the start and at most 24 hours after it. The default works.
    - One question, its choices, and which choice is correct.
    - **Start:** fill this in last, 3 to 5 minutes from now. The default is 15 minutes from now, and nobody can answer before the start. The start must still be ahead when **Create on-chain** is mined. If the page says "The start time has passed; create a new campaign with a later start.", open <http://localhost:3000/advertiser> again and make a new draft.
 
-   Press **Save draft**, then **Create on-chain**, then **Approve & fund** (the wallet asks for two transactions: the approval and the funding). When the status is `active`, copy the participant link from the page.
+   Press **Save draft**, then **Create on-chain**, then **Approve & fund** (the wallet asks for two transactions: the approval and the funding). When the status is `active`, the page shows the participant link. It is a path, so the address to open is `http://localhost:3000/mission?campaign=<campaign id>`.
 2. **Wait for the start time.** The local chain follows the real clock.
-3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
+3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). This page reads the network once and has no switch button: if it says "Switch your wallet to Foundry.", select the network in the wallet, reload the page and connect again, because **Claim USDC** stays disabled until then. Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
 4. Back on the advertiser page, the paid amount and the completion count have changed. A participant who submits less than 15 seconds after verifying is still paid, and the page lists that completion under `FAST_COMPLETION` and leaves it out of "Quality-adjusted accepted".
 5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine` in terminal 3 (WSL on Windows); the button appears the next time the page reads the chain (within 10 seconds).
 
@@ -195,11 +195,11 @@ The session cookie is `HttpOnly` and `Secure` (#72). Chromium keeps such a cooki
 
 ### Running it again
 
-anvil starts a new chain every time, and the deploy script puts the contracts at the same addresses on it. A database that still holds the previous chain no longer matches: the indexer logs `Inconsistent chain read at block N; retrying`, and new campaigns never become `active`. After `anvil_increaseTime` the chain's clock is also ahead of the real one, so restart anvil after using it. Before another round:
+anvil starts a new chain every time, and the deploy script puts the contracts at the same addresses on it. A database that still holds the previous chain no longer matches: the indexer logs `Inconsistent chain read at block N`, and new campaigns never become `active`. After `anvil_increaseTime` the chain's clock is also ahead of the real one, so restart anvil after using it. Before another round:
 
 1. Stop the API and the indexer, and restart anvil.
 2. Recreate the database: stop and start the PostgreSQL container again (`--rm` drops its data), or drop and create the `vham` database.
-3. Run the deploy command again and check that `deployments/31337.json` still matches the addresses and the deploy block in your environment.
+3. Run the deploy command again. The addresses stay the same, but `deployBlock` in `deployments/31337.json` usually changes: put the new value in `CAMPAIGN_MANAGER_DEPLOY_BLOCK` in `.env` and load `.env` again. Nothing compares this value with the chain, and the indexer starts reading at it, so a value that is too high makes it miss events without an error.
 4. Run the migrations and start the API, the indexer and the web app again.
 5. The wallet still remembers the old chain's transaction counts. Clear its activity data for this network (in MetaMask: Settings → Advanced → Clear activity tab data).
 
@@ -253,7 +253,7 @@ The whole flow ran once on Base Sepolia (#13) with a real World ID proof (produc
 | Answer | A submission before the start time was refused with `CAMPAIGN_NOT_STARTED`, as intended; it passed after the start | — |
 | Claim | The participant received 1 USDC | [`0xc929552c…4bf876d7`](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) / 48107877 |
 | Close | Status `closed` | [`0x3bdfb614…65914ae5`](https://sepolia.basescan.org/tx/0x3bdfb614d99bbc5673469648424fc43ff72d2d32c9b22c10867a2fab65914ae5) / 48107965 |
-| Refund | 2 USDC returned 15 minutes after the close; contract balance 0; status `settled` | [`0x242c6aac…1c5e44a4`](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) / 48108562 |
+| Refund | 2 USDC returned about 20 minutes after the close (the waiting period is 15 minutes); contract balance 0; status `settled` | [`0x242c6aac…1c5e44a4`](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) / 48108562 |
 
 What the run showed:
 
