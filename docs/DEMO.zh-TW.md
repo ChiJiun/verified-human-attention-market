@@ -13,11 +13,14 @@ Demo 會用**真的**本機鏈（anvil）、**真的**編譯後 `CampaignManager
 → 使用者 World ID 資格驗證（模擬）→ 作答通過
 → 後端簽 EIP-712 授權 → 使用者鏈上 claim 領到 1 USDC
 → 重複 claim 被合約拒絕 → 對帳數字與鏈上一致
-→ 廣告主 close（之後不再產生新負債）→ 等待期過後 refund 9 USDC
+→ 廣告主 close（之後不再產生新負債）
+→ 等待期過後 refund 沒用完的預算
 → analytics 顯示 settled，金額完全對得上
 ```
 
 本機唯一模擬的是 **World ID**：真的 proof 需要 World App 和 Developer Portal 的 app。本機的 USDC 是 mock token。
+
+金額依執行方式而不同。自動化測試入金 10 USDC，付給兩位參與者（第二位在關閉前被接受、關閉後才領取），退款 8 USDC。瀏覽器 demo 只有一位參與者，退款 9 USDC。
 
 目錄：
 
@@ -45,7 +48,7 @@ Demo 會用**真的**本機鏈（anvil）、**真的**編譯後 `CampaignManager
 
 ## 自動化 demo：端到端測試
 
-這會把上面的流程當成一個測試跑完，不需要瀏覽器。CI 的 `e2e` job 在每次 push 與 pull request 都會跑同一個測試，設定見 `.github/workflows/ci.yml`。
+這會把上面的流程當成一個測試跑完，不需要瀏覽器。測試另外加了第二位參與者，以及幾項故障演練：RPC 回應遺失、同一個草稿重送、暫停合約、輪替簽名者。CI 的 `e2e` job 在每次 push 與 pull request 都會跑同一個測試，設定見 `.github/workflows/ci.yml`。
 
 ### macOS / Linux / WSL
 
@@ -125,7 +128,8 @@ pnpm --filter @vham/api test:e2e
 ### 啟動各項服務
 
 ```bash
-# 終端機 1：資料庫（同自動化 demo 的 docker run，POSTGRES_DB 改成 vham）
+# 終端機 1：資料庫。先停掉自動化 demo 的容器（名稱與埠相同），
+# 再用同一個 docker run，POSTGRES_DB 改成 vham
 # 終端機 2：本機鏈。每 2 秒產生一個區塊，indexer 才有確認數可以等
 anvil --block-time 2
 
@@ -138,7 +142,7 @@ forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcas
 cat deployments/31337.json      # 記下 campaignManager、usdc、deployBlock
 ```
 
-API 和 indexer 的環境變數（例如寫在 `.env`，**不要 commit**）：
+API 和 indexer 的環境變數（例如寫在 repo 根目錄的 `.env`，**不要 commit**）：
 
 ```bash
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
@@ -156,7 +160,7 @@ INDEXER_CONFIRMATIONS=2
 ADVERTISER_ALLOWLIST=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
-API 和 indexer 不會自動讀 `.env`，請先在終端機 4、5 載入：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
+終端機 4 到 6 請在 repo 根目錄執行。API 和 indexer 不會自動讀 `.env`，請先在終端機 4、5 載入：bash/zsh 用 `set -a; source .env; set +a`，PowerShell 則逐行設定 `$env:NAME = "value"`。
 
 ```bash
 # 終端機 4：API（會先跑 migration）
@@ -167,23 +171,24 @@ pnpm --filter @vham/api indexer
 API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web dev
 ```
 
-在 Windows 上，終端機 2、3 在 WSL 執行，其餘在 PowerShell 執行。PowerShell 沒有 `&&`，也沒有 `NAME=value 指令` 的寫法，所以 `pnpm --filter @vham/api db:migrate` 與 `pnpm --filter @vham/api dev` 要分兩次執行；終端機 6 則先設定 `$env:API_URL = "http://localhost:3001"` 與 `$env:NEXT_PUBLIC_CHAIN_ID = "31337"`，再執行 `pnpm --filter @vham/web dev`。
+在 Windows 上，終端機 2、3 在 WSL 執行，其餘在 PowerShell 執行。Windows PowerShell 5.1 沒有 `&&`，PowerShell 也沒有 `NAME=value 指令` 的寫法，所以 `pnpm --filter @vham/api db:migrate` 與 `pnpm --filter @vham/api dev` 要分兩次執行；終端機 6 則先設定 `$env:API_URL = "http://localhost:3001"` 與 `$env:NEXT_PUBLIC_CHAIN_ID = "31337"`，再執行 `pnpm --filter @vham/web dev`。
 
 ### 實際操作
 
-在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`），並匯入上表的兩個帳號。
+在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`，幣別符號 `ETH`），並匯入上表的兩個帳號。最保險的做法是用兩個瀏覽器 profile，各裝一個錢包擴充套件：一個給廣告主，一個給參與者。兩個頁面都在 `localhost:3000`，而頁面只在按下 **Connect wallet** 時讀一次錢包的帳號。只用一個擴充套件時，切換帳號後請重新整理頁面，並確認頁面顯示的位址。
 
 1. **廣告主（anvil #2）：** 打開 <http://localhost:3000/advertiser>，按 **Connect wallet**，再按 **Sign in with Ethereum**。填寫表單：
    - **Sponsored content URL：** 任何公開的 `https` 網址，例如 `https://example.com/`。表單只接受 `https`，API 會拒絕 IP 位址、`localhost` 這類內部主機名稱，以及帶埠號的網址。
-   - **Start：** 2 到 3 分鐘後。預設是 15 分鐘後，開始時間之前沒有人能作答。
+   - **Reward per completion** 與 **Max completions：** 用預設的 `1` 與 `10`，預算就是 10 USDC。
    - **End：** 至少比 Start 晚 15 分鐘，最多晚 24 小時。預設值可以直接用。
    - 一題理解測驗、它的選項，以及哪個選項是正確答案。
+   - **Start：** 最後才填，設在 3 到 5 分鐘後。預設是 15 分鐘後，開始時間之前沒有人能作答。**Create on-chain** 的交易上鏈時，開始時間必須還沒到。頁面顯示「The start time has passed; create a new campaign with a later start.」時，請重新打開 <http://localhost:3000/advertiser> 建立新的草稿。
 
    按 **Save draft**，再按 **Create on-chain**，接著按 **Approve & fund**（錢包會要求兩筆交易：核准與入金）。等狀態變成 `active` 後，複製頁面上的 participant link。
 2. **等到開始時間。** 本機鏈時間跟著真實時間走。
-3. **參與者（anvil #3）：** 把錢包切到第二個帳號，打開 participant link。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
+3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
 4. 回到廣告主頁面，可以看到已付金額和完成數都變了。參與者在驗證後不到 15 秒就送出作答時，仍然會領到獎勵，但頁面會把這次完成列在 `FAST_COMPLETION` 之下，並且不計入「Quality-adjusted accepted」。
-5. **廣告主（anvil #2）：** 按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
+5. **廣告主（anvil #2）：** 在廣告主頁面，確認連接的是廣告主的帳號，按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
 
 登入後的 session 放在 `HttpOnly`、`Secure` 的 cookie 裡（#72）。已確認 Chromium 會保留 `http://localhost` 與 `http://127.0.0.1` 設定的這個 cookie；其他瀏覽器沒有驗證過。瀏覽器沒有保留 cookie 時，登入會直接顯示原因，這時請改用 Chromium，或改用 `next dev --experimental-https`。
 
@@ -341,7 +346,7 @@ pnpm --filter @vham/web dev                 # http://localhost:3000/advertiser
 
 關閉與退款這兩個按鈕只對目前部署的合約（`GET /v1/chain`）上的 campaign 出現。ADR-0011 之前的舊合約上的 campaign，頁面沒有合約位址可用，仍要用 `cast send` 由廣告主錢包送 `closeCampaign(id)` 和 `refundUnusedBudget(id)`。
 
-**建立。** 建立交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續以 `draftRef` 向 API 對帳。API 暫時連不到鏈（`503 RPC_UNAVAILABLE`）也算「還在對帳」，頁面約兩分鐘內會自己重試；放棄時卡片明確寫出原因並請你按「Check again」（只查詢，不會送交易）。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
+**建立。** 建立交易遲遲沒有收據時，頁面顯示「還在確認中，不要重送」，並持續向 API 對帳：頁面還有交易 hash 時用 hash，沒有時用 `draftRef`。API 暫時連不到鏈（`503 RPC_UNAVAILABLE`）也算「還在對帳」，頁面約兩分鐘內會自己重試；放棄時卡片明確寫出原因並請你按「Check again」（只查詢，不會送交易）。重新整理後頁面不保留交易 hash，只記得「這個草稿可能已送出建立交易」，因此優先提供「Check again」；超過 10 分鐘才會再提供「Create on-chain anyway」（若原交易其實已上鏈，第二筆只會 `DraftAlreadyCreated` revert 並耗 gas，不會建立第二個 campaign）。
 
 「可能有建立交易還沒確認」的幾種邊界（#78）：
 

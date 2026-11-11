@@ -24,7 +24,7 @@ A short description of the project, written to be pasted into a submission form.
 
 **Tech.** Solidity and Foundry (unit, fuzz and stateful invariant tests), a Fastify API and chain indexer on PostgreSQL, Next.js, World ID IDKit, USDC on Base Sepolia.
 
-**Status and next.** The full loop ran on Base Sepolia on 2026-10-14 with a real World ID proof (v1 contract). The contract has changed since, and the current version has run only on a local chain and in CI. Unaudited, test funds only, no real advertiser yet. Next: redeploy the updated contract, repeat the testnet run, then test with a real buyer.
+**Status and next.** The full loop ran on Base Sepolia on 2026-10-14 with a real World ID proof (v1 contract). The contract and the World ID request have changed since: the request now accepts only 4.0 proofs and is bound to the claiming wallet. The current versions have run only on a local chain and in CI, with World ID simulated. Unaudited, test funds only, no real advertiser yet. Next: redeploy the updated contract, repeat the testnet run, then test with a real buyer.
 
 **A limit worth stating.** The comprehension check is a baseline engagement signal, not proof of attention. World ID limits each person to one reward per campaign; it does not make the answers thoughtful.
 

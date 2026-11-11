@@ -70,7 +70,7 @@ The run needs all of the following:
 
 ### Record evidence as you go
 
-Record the evidence in a new section of [DEMO.md](../DEMO.md), in the table format of the 2026-10-14 run:
+Record the evidence in a new section of [DEMO.md](../DEMO.md) and of its Traditional Chinese version, [DEMO.zh-TW.md](../DEMO.zh-TW.md), in the table format of the 2026-10-14 run:
 
 - the hash and block of every transaction;
 - the HTTP status and error code of every refusal;
@@ -414,7 +414,7 @@ Steps 26 to 28 show a campaign that its advertiser closed. This variant shows a 
 
 33. Record the URL of the passing `e2e` CI job for the deployed commit. That job runs [`apps/api/e2e/poc.e2e.ts`](../../apps/api/e2e/poc.e2e.ts) on anvil. It loses the `createCampaign` response after broadcast, sends the same draft again from a second client, and creates a same-parameter campaign for another draft. Exactly one campaign is linked to the draft.
 
-After the run, commit the evidence section in DEMO.md and update `docs/SDLC_STATUS.md`. The owner closes #12 and #13 once every row below has its evidence.
+After the run, commit the evidence section in DEMO.md and DEMO.zh-TW.md and update `docs/SDLC_STATUS.md`. The owner closes #12 and #13 once every row below has its evidence.
 
 ## Acceptance criteria and the steps that prove them
 

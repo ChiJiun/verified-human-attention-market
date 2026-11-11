@@ -13,11 +13,14 @@ Advertiser signs in with Ethereum → creates a draft campaign with a comprehens
 → participant passes World ID (simulated) → answers the check
 → the backend signs an EIP-712 authorization → the participant claims 1 USDC on-chain
 → a second claim is refused by the contract → the API's figures match the chain
-→ the advertiser closes the campaign → after the waiting period, refunds 9 USDC
+→ the advertiser closes the campaign (no new liability after that)
+→ after the waiting period, refunds the unused budget
 → analytics show "settled" and every amount adds up
 ```
 
 Only **World ID** is simulated locally, because a real proof needs the World App and a Developer Portal app. The local USDC is a mock token.
+
+The amounts depend on the run. The scripted test funds 10 USDC, pays two participants (the second is accepted before the close and claims after it) and refunds 8 USDC. The browser demo, with one participant, refunds 9 USDC.
 
 Contents:
 
@@ -45,7 +48,7 @@ Contents:
 
 ## Scripted demo: the end-to-end test
 
-This runs the loop above as one test, with no browser. CI runs the same test on every push and pull request (the `e2e` job in `.github/workflows/ci.yml`).
+This runs the loop above as one test, with no browser. The test adds a second participant and failure drills: a lost RPC response, a resend of the same draft, a pause and a signer rotation. CI runs the same test on every push and pull request (the `e2e` job in `.github/workflows/ci.yml`).
 
 ### macOS, Linux or WSL
 
@@ -125,7 +128,8 @@ The accounts below are the **public test accounts** anvil prints when it starts.
 ### Start the services
 
 ```bash
-# Terminal 1: the database (the docker run of the scripted demo, with POSTGRES_DB=vham)
+# Terminal 1: the database. Stop the scripted demo's container first (it has the same name and port),
+# then use the same docker run with POSTGRES_DB=vham
 # Terminal 2: local chain. A block every 2 seconds gives the indexer confirmations to wait for
 anvil --block-time 2
 
@@ -138,7 +142,7 @@ forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcas
 cat deployments/31337.json      # note campaignManager, usdc and deployBlock
 ```
 
-Environment variables for the API and the indexer (for example in `.env`, which must **not** be committed):
+Environment variables for the API and the indexer (for example in `.env` in the repository root, which must **not** be committed):
 
 ```bash
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
@@ -156,7 +160,7 @@ INDEXER_CONFIRMATIONS=2
 ADVERTISER_ALLOWLIST=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
-The API and the indexer do not read `.env` by themselves. Load it in terminals 4 and 5 first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell.
+Run terminals 4 to 6 from the repository root. The API and the indexer do not read `.env` by themselves. Load it in terminals 4 and 5 first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell.
 
 ```bash
 # Terminal 4: API (runs the migrations first)
@@ -167,23 +171,24 @@ pnpm --filter @vham/api indexer
 API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web dev
 ```
 
-On Windows, run terminals 2 and 3 in WSL and the rest in PowerShell. PowerShell has no `&&` and no `NAME=value command` form, so run `pnpm --filter @vham/api db:migrate` and `pnpm --filter @vham/api dev` one after the other, and for terminal 6 set `$env:API_URL = "http://localhost:3001"` and `$env:NEXT_PUBLIC_CHAIN_ID = "31337"` before `pnpm --filter @vham/web dev`.
+On Windows, run terminals 2 and 3 in WSL and the rest in PowerShell. Windows PowerShell 5.1 has no `&&`, and PowerShell has no `NAME=value command` form, so run `pnpm --filter @vham/api db:migrate` and `pnpm --filter @vham/api dev` one after the other, and for terminal 6 set `$env:API_URL = "http://localhost:3001"` and `$env:NEXT_PUBLIC_CHAIN_ID = "31337"` before `pnpm --filter @vham/web dev`.
 
 ### Click through it
 
-In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`) and import the two accounts from the table above.
+In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows.
 
 1. **Advertiser (anvil #2):** open <http://localhost:3000/advertiser>, press **Connect wallet**, then **Sign in with Ethereum**. Fill in the form:
    - **Sponsored content URL:** any public `https` address, for example `https://example.com/`. The form accepts only `https`, and the API refuses IP addresses, internal hostnames such as `localhost`, and addresses with a port.
-   - **Start:** 2 or 3 minutes from now. The default is 15 minutes from now, and nobody can answer before the start.
+   - **Reward per completion** and **Max completions:** keep the defaults, `1` and `10`, for a budget of 10 USDC.
    - **End:** at least 15 minutes after the start and at most 24 hours after it. The default works.
    - One question, its choices, and which choice is correct.
+   - **Start:** fill this in last, 3 to 5 minutes from now. The default is 15 minutes from now, and nobody can answer before the start. The start must still be ahead when **Create on-chain** is mined. If the page says "The start time has passed; create a new campaign with a later start.", open <http://localhost:3000/advertiser> again and make a new draft.
 
    Press **Save draft**, then **Create on-chain**, then **Approve & fund** (the wallet asks for two transactions: the approval and the funding). When the status is `active`, copy the participant link from the page.
 2. **Wait for the start time.** The local chain follows the real clock.
-3. **Participant (anvil #3):** switch the wallet to the second account and open the participant link. Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
+3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
 4. Back on the advertiser page, the paid amount and the completion count have changed. A participant who submits less than 15 seconds after verifying is still paid, and the page lists that completion under `FAST_COMPLETION` and leaves it out of "Quality-adjusted accepted".
-5. **Advertiser (anvil #2):** press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`; the button appears the next time the page reads the chain (within 10 seconds).
+5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`; the button appears the next time the page reads the chain (within 10 seconds).
 
 The session cookie is `HttpOnly` and `Secure` (#72). Chromium keeps such a cookie for `http://localhost` and `http://127.0.0.1`; other browsers were not checked. If the browser drops it, signing in says why: use Chromium, or `next dev --experimental-https`.
 
@@ -341,7 +346,7 @@ While one action is in progress, the other buttons (including "Close campaign" a
 
 The close and refund buttons appear only for a campaign on the contract that is deployed now (`GET /v1/chain`). For a campaign on the contract from before ADR-0011 the page has no contract address to use; the advertiser's wallet still has to send `closeCampaign(id)` and `refundUnusedBudget(id)` with `cast send`.
 
-**Create.** When the creation transaction has no receipt for a long time, the page says "still confirming, do not resend" and keeps reconciling with the API by `draftRef`. An API that cannot reach the chain for a moment (`503 RPC_UNAVAILABLE`) also counts as still reconciling, and the page retries by itself for about two minutes. When it gives up, the card states the reason and asks you to press "Check again", which only queries and sends no transaction. After a reload the page no longer has the transaction hash; it remembers only that a creation may have been sent for this draft, so it offers "Check again" first. "Create on-chain anyway" is offered only after 10 minutes. If the original transaction landed after all, the second one reverts with `DraftAlreadyCreated` and costs gas; it does not create a second campaign.
+**Create.** When the creation transaction has no receipt for a long time, the page says "still confirming, do not resend" and keeps reconciling with the API: by the transaction hash while the page has it, and by `draftRef` otherwise. An API that cannot reach the chain for a moment (`503 RPC_UNAVAILABLE`) also counts as still reconciling, and the page retries by itself for about two minutes. When it gives up, the card states the reason and asks you to press "Check again", which only queries and sends no transaction. After a reload the page no longer has the transaction hash; it remembers only that a creation may have been sent for this draft, so it offers "Check again" first. "Create on-chain anyway" is offered only after 10 minutes. If the original transaction landed after all, the second one reverts with `DraftAlreadyCreated` and costs gas; it does not create a second campaign.
 
 Edge cases of "a creation may be unconfirmed" (#78):
 

@@ -53,7 +53,7 @@ The long-term product is not only a website. The website is one client of the pr
 
 ## 4. System Overview
 
-> Target design. Built today: escrow, World ID eligibility, the off-chain verifier, and USDC claim and refund. Not built: x402, the protocol fee, the publisher share and cross-campaign reputation.
+> Target design. Built today: escrow, World ID eligibility, the off-chain verifier, and USDC claim and refund. Not built: x402, the protocol fee, the publisher share, the publisher SDK and widget, and cross-campaign reputation.
 
 ```mermaid
 flowchart LR

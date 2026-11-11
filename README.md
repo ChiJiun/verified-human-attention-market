@@ -42,7 +42,7 @@ Screenshots from a local run: local chain (anvil), simulated World ID, mock USDC
 
 **Why World ID.** It gives an anonymous per-campaign identifier, so one person is paid once per campaign without the project learning who they are.
 
-**Why on-chain.** The advertiser does not hand the budget to the platform. It sits in a contract that cannot pay more than was funded, pays only against a signed authorization, and returns the rest. What is still trusted: the off-chain verifier and its signing key. The contract caps the loss (in the proof of concept, 10 test USDC per campaign).
+**Why on-chain.** The advertiser does not hand the budget to the platform. It sits in a contract that cannot pay more than was funded, pays only against a signed authorization, and returns the rest. What is still trusted: the off-chain verifier and its signing key, and the contract's owner, who can pause claims and refunds and replace the signer but cannot withdraw the escrow. The contract caps the loss (in the proof of concept, 10 test USDC per campaign).
 
 | | Watch-to-earn, quest and survey platforms (typically) | This project |
 | --- | --- | --- |
@@ -122,7 +122,7 @@ sequenceDiagram
 - **No refund race.** A claim authorization is signed off-chain, so one can exist that the chain has not seen. If the advertiser could refund at close, a participant holding a valid signature could find the escrow empty. The contract makes the advertiser wait until every authorization that could have been issued has expired ([`refundUnusedBudget`](packages/contracts/src/CampaignManager.sol#L319), `MAX_AUTHORIZATION_TTL` = 15 minutes).
 - **A retry cannot create a second escrow.** A lost RPC response, a resend or a second browser tab cannot create a second campaign for the same draft: `createCampaign` is idempotent per draft, and the claim signature is bound to the same draft ([ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)).
 - **The chain is the ledger.** The database is reconciled from confirmed events by an indexer that handles reorganizations. A reorganization deeper than the confirmation depth stops signing instead of guessing.
-- **The proof is bound to the wallet.** The World ID signal commits to the campaign and the claimant address, so a proof made for one wallet is refused for another ([ADR-0007](docs/adr/0007-world-id-integration.md)). Tested locally and in CI; not yet exercised against a real World App.
+- **The proof is requested for one wallet.** The World ID signal commits to the campaign and the claimant address, and the API refuses a result whose signal does not match before it asks World ([ADR-0007](docs/adr/0007-world-id-integration.md)). Tested locally and in CI. Whether World's verifier rejects a proof moved to another wallet has not been tested against a real World App yet ([#71](https://github.com/ChiJiun/verified-human-attention-market/issues/71)).
 - **A small contract with no dependencies.** 443 lines, no imports, every revert covered by a test. Three stateful invariants (budget conservation, payouts never exceed funding, completion cap) hold over 8,192 randomized calls per CI run.
 
 ---
@@ -173,11 +173,13 @@ Exact versions are in the package manifests and the lockfile.
 
 Requirements: Node.js 24.15 or newer, pnpm 12.4.2, Foundry v1.8.4 (on Windows, inside WSL). Steps 2 and 3 also need PostgreSQL 16 or newer reachable through a connection URL. Docker is the quickest way; a native install works too. If port 5432 is taken, map another port and change the URL.
 
+On Windows, run `forge` and `anvil` in WSL and the `pnpm` commands in PowerShell. Windows PowerShell 5.1 has no `&&`, so run chained commands one at a time, and write `$env:NAME = "value"` in place of `export NAME=value`.
+
 **1. Check it in two commands** (no database, no chain)
 
 ```bash
 pnpm install && pnpm test                  # API, web app and shared package
-cd packages/contracts && forge test -vv    # the contract; it has no dependencies, so no `forge install`
+(cd packages/contracts && forge test -vv)  # the contract; it has no dependencies, so no `forge install`
 ```
 
 Without a database `pnpm test` runs about 780 tests and skips the PostgreSQL integration tests. CI runs those too, which gives the 860+ above.
@@ -197,7 +199,7 @@ export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
 ```
 
-Expected: `Test Files  1 passed (1)`. If the test is reported as skipped, `TEST_DATABASE_URL` is not set. Point it at a database kept for this, because the run empties every table. The same test is the `e2e` job in CI. On Windows, run `anvil` and `forge build` in WSL and the `pnpm` commands in PowerShell, with `$env:TEST_DATABASE_URL = "…"` in place of `export`.
+Expected: `Test Files  1 passed (1)`. If the test is reported as skipped, `TEST_DATABASE_URL` is not set. Point it at a database kept for this, because the run empties every table. The same test is the `e2e` job in CI.
 
 **3. Click through it in a browser**
 
@@ -225,7 +227,7 @@ CI runs four jobs on every push and pull request: `javascript` (with PostgreSQL)
 | [docs/adr/](docs/adr/README.md) | Why each major decision was made |
 | [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md) | The checks to run before a commit, and the rules for working on this repository |
 
-More: [requirements](docs/product/REQUIREMENTS.md), [API specification](docs/architecture/API_SPEC.md), [data model](docs/architecture/DATA_MODEL.md), [test plan](docs/testing/TEST_PLAN.md), [data retention](docs/privacy/DATA_RETENTION.md), [operations](docs/operations/) and [testnet deployment](docs/deployment/TESTNET.md).
+More: [requirements](docs/product/REQUIREMENTS.md) (in Chinese with English terms), [API specification](docs/architecture/API_SPEC.md), [data model](docs/architecture/DATA_MODEL.md), [test plan](docs/testing/TEST_PLAN.md), [data retention](docs/privacy/DATA_RETENTION.md), [operations](docs/operations/) and [testnet deployment](docs/deployment/TESTNET.md).
 
 ---
 
@@ -260,6 +262,8 @@ Full roadmap with deliverables and exit criteria: [docs/product/VISION.md](docs/
 | **SIWE** | Sign-In with Ethereum: logging in by signing a message with the wallet |
 | **Indexer** | A worker that reads confirmed contract events into the database, handling chain reorganizations |
 | **ADR** | Architecture Decision Record: a short document explaining one decision, the alternatives and the consequences |
+| **P0–P3** | Issue priority in issue titles: P0 must be done and blocks later work; P3 only after evidence of need |
+| **EPIC** | A large issue that will be split into smaller ones |
 | **Atomic units** | USDC has 6 decimals, so `1000000` means 1 USDC. Money is never stored as floating point |
 | **Base Sepolia** | Base's public testnet (chain ID `84532`) |
 | **anvil** | Foundry's local blockchain used for development and CI |

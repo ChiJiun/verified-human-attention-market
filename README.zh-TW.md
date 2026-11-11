@@ -42,15 +42,15 @@
 
 **為什麼用 World ID。** 它提供每個 campaign 專屬的匿名識別值，所以同一個人在同一個 campaign 只會領到一次，而專案不會知道對方是誰。
 
-**為什麼上鏈。** 廣告主不必把預算交給平台。預算放在合約裡，合約付出的金額不會超過入金，只憑簽好的授權付款，剩下的會退回。仍然需要信任的是鏈下驗證器與它的簽名金鑰；合約限制了最大損失（概念驗證階段是每個 campaign 10 測試 USDC）。
+**為什麼上鏈。** 廣告主不必把預算交給平台。預算放在合約裡，合約付出的金額不會超過入金，只憑簽好的授權付款，剩下的會退回。仍然需要信任的是鏈下驗證器與它的簽名金鑰，以及合約的 owner：owner 可以暫停領取與退款、可以更換簽名者，但無法提走託管的資金。合約限制了最大損失（概念驗證階段是每個 campaign 10 測試 USDC）。
 
 | | 看廣告賺幣、任務牆與問卷平台（常見做法） | 這個專案 |
 | --- | --- | --- |
-| 誰可以領錢 | 通常是任何帳號或錢包，所以一個人可以開很多個 | 每個 campaign 中，每位通過 World ID 驗證的真人一次；換一個錢包也領不到第二次 |
-| 付錢買什麼 | 通常是曝光、點擊或鏈上操作 | 驗證器接受的一次完成（目前是理解測驗：基本訊號，不能證明認真讀過） |
-| 用什麼付 | 通常是平台自己的代幣或點數 | USDC；刻意不發行原生代幣 |
+| 誰可以領錢 | 往往是任何帳號或錢包，所以一個人可以開很多個 | 每個 campaign 中，每位通過 World ID 驗證的真人一次；換一個錢包也領不到第二次 |
+| 付錢買什麼 | 往往是曝光、點擊或鏈上操作 | 驗證器接受的一次完成（目前是理解測驗：基本訊號，不能證明認真讀過） |
+| 用什麼付 | 往往是平台自己的代幣或點數 | USDC；刻意不發行原生代幣 |
 | 預算放在哪 | 通常在平台手上 | 每個 campaign 各自的鏈上託管；沒用完的由廣告主領回 |
-| 儲存了參與者的哪些資料 | 通常是帳號資料 | 每個 campaign 一個以金鑰雜湊過的 World ID nullifier，以及領取用的錢包；沒有姓名，也沒有原始的 World ID 資料 |
+| 儲存了參與者的哪些資料 | 往往是帳號資料 | 每個 campaign 一個以金鑰雜湊過的 World ID nullifier，以及領取用的錢包；沒有姓名，也沒有原始的 World ID 資料 |
 
 中間一欄描述的是產品類別，不是指特定產品。
 
@@ -104,7 +104,7 @@ sequenceDiagram
 | 問題 | 由誰判斷 | 為什麼放在這裡 |
 | --- | --- | --- |
 | 這是獨一無二的真人嗎？ | World ID（零知識證明） | 我們永遠不知道對方是誰，只拿到一個每個 campaign 專屬的識別值，用來擋第二次領取 |
-| 對方真的有參與嗎？ | API（鏈下驗證器） | 規則常改，而且答案必須保密 |
+| 對方真的有參與嗎？ | API（鏈下驗證器） | 規則常改，而且必須保密，例如答案 |
 | 這筆發放有效嗎？ | 合約 | 在鏈上檢查簽名、預算、名額上限、期限與重放 |
 | 實際付了多少錢？ | **鏈** | 資料庫從已確認的鏈上事件對帳，永遠不反過來 |
 
@@ -122,7 +122,7 @@ sequenceDiagram
 - **退款不會和領取搶錢。** 領取授權是在鏈下簽的，所以可能存在一份鏈上還沒看過的授權。如果廣告主一關閉就能退款，手上握有有效簽名的參與者可能發現託管已經空了。合約要求廣告主等到所有可能簽發過的授權都過期（[`refundUnusedBudget`](packages/contracts/src/CampaignManager.sol#L319)，`MAX_AUTHORIZATION_TTL` = 15 分鐘）。
 - **重試不會建立第二筆託管。** RPC 回應遺失、重送，或另一個瀏覽器分頁，都不會讓同一個草稿建立第二個 campaign：`createCampaign` 對每個草稿是冪等的，領取簽名也綁定同一個草稿（[ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)）。
 - **以鏈為帳本。** 資料庫由會處理鏈重組的 indexer 從已確認的事件對帳。重組深度超過確認深度時會停止簽發，而不是猜測。
-- **proof 綁定錢包。** World ID 的 signal 包含 campaign 與領取者位址，所以為某個錢包產生的 proof 換到另一個錢包會被拒絕（[ADR-0007](docs/adr/0007-world-id-integration.md)）。這點在本機與 CI 測試過，還沒用真實的 World App 驗證。
+- **proof 是為特定錢包請求的。** World ID 的 signal 包含 campaign 與領取者位址；signal 不符的結果，API 在詢問 World 之前就會拒絕（[ADR-0007](docs/adr/0007-world-id-integration.md)）。這點在本機與 CI 測試過。至於把 proof 換到另一個錢包時 World 的驗證器會不會拒絕，還沒用真實的 World App 測試（[#71](https://github.com/ChiJiun/verified-human-attention-market/issues/71)）。
 - **合約小，而且沒有相依套件。** 443 行、沒有任何 import，每個 revert 都有測試涵蓋。三個 stateful invariant（預算守恆、發放不超過入金、名額上限）在每次 CI 執行的 8,192 次隨機呼叫中都成立。
 
 ---
@@ -173,11 +173,13 @@ flowchart LR
 
 需要：Node.js 24.15 以上、pnpm 12.4.2、Foundry v1.8.4（Windows 請裝在 WSL）。第 2、3 步還需要一個連得到的 PostgreSQL 16 以上（以連線 URL 指定）。用 Docker 最快，直接安裝也可以。5432 埠被佔用時，請改用其他埠並同步修改 URL。
 
+在 Windows 上，`forge` 與 `anvil` 在 WSL 執行，`pnpm` 指令在 PowerShell 執行。Windows PowerShell 5.1 沒有 `&&`，串接的指令請分開執行，並用 `$env:NAME = "value"` 取代 `export NAME=value`。
+
 **1. 兩個指令檢查**（不需要資料庫，也不需要鏈）
 
 ```bash
 pnpm install && pnpm test                  # API、前端與共用套件
-cd packages/contracts && forge test -vv    # 合約；沒有相依套件，不需要 `forge install`
+(cd packages/contracts && forge test -vv)  # 合約；沒有相依套件，不需要 `forge install`
 ```
 
 沒有資料庫時，`pnpm test` 會跑約 780 個測試，並跳過 PostgreSQL 整合測試。CI 會連同那些一起跑，所以上面寫的是 860 個以上。
@@ -197,7 +199,7 @@ export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
 ```
 
-預期結果：`Test Files  1 passed (1)`。如果測試顯示為 skipped，表示沒有設定 `TEST_DATABASE_URL`。請指到專門給它用的資料庫，因為每次執行都會清空所有資料表。CI 的 `e2e` job 跑的就是同一個測試。在 Windows 上，`anvil` 與 `forge build` 在 WSL 執行，`pnpm` 指令在 PowerShell 執行，並用 `$env:TEST_DATABASE_URL = "…"` 取代 `export`。
+預期結果：`Test Files  1 passed (1)`。如果測試顯示為 skipped，表示沒有設定 `TEST_DATABASE_URL`。請指到專門給它用的資料庫，因為每次執行都會清空所有資料表。CI 的 `e2e` job 跑的就是同一個測試。
 
 **3. 在瀏覽器裡實際操作**
 
@@ -205,7 +207,7 @@ pnpm --filter @vham/api test:e2e
 
 API 和 indexer 只從環境變數讀設定，不會自己讀 `.env` 檔。執行時用到的所有變數都列在 [`.env.example`](.env.example)。不要 commit 任何金鑰或填好的 `.env`。
 
-CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 PostgreSQL）、`audit`、`e2e`、`solidity`。貢獻者與 AI coding agent 請看 [CONTRIBUTING.md](CONTRIBUTING.md) 與 [AGENTS.md](AGENTS.md)。
+CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 PostgreSQL）、`audit`、`e2e`、`solidity`。貢獻者與 AI coding agent 請看 [CONTRIBUTING.md](CONTRIBUTING.md) 與 [AGENTS.md](AGENTS.md)（兩份都是英文）。
 
 ---
 
@@ -222,10 +224,10 @@ CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 Postgre
 | [docs/architecture/CONTRACT_SPEC.md](docs/architecture/CONTRACT_SPEC.md) | 合約確切做什麼、保證什麼 |
 | [docs/architecture/CLAIM_AUTHORIZATION.md](docs/architecture/CLAIM_AUTHORIZATION.md) | 簽名領取授權的運作方式 |
 | [docs/threat-model/THREAT_MODEL.md](docs/threat-model/THREAT_MODEL.md) | 可能出什麼問題、如何防範 |
-| [docs/adr/](docs/adr/README.md) | 每個重大決策的理由 |
-| [CONTRIBUTING.md](CONTRIBUTING.md)、[AGENTS.md](AGENTS.md) | commit 前要跑的檢查，以及在這個 repo 工作的規則 |
+| [docs/adr/](docs/adr/README.md) | 每個重大決策的理由（英文） |
+| [CONTRIBUTING.md](CONTRIBUTING.md)、[AGENTS.md](AGENTS.md) | commit 前要跑的檢查，以及在這個 repo 工作的規則（英文） |
 
-其他：[需求](docs/product/REQUIREMENTS.md)、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。
+其他：[需求](docs/product/REQUIREMENTS.md)（中文夾英文術語）、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。
 
 ---
 
@@ -260,6 +262,8 @@ CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 Postgre
 | **SIWE** | Sign-In with Ethereum：用錢包簽一則訊息來登入 |
 | **Indexer** | 把已確認的合約事件讀進資料庫的 worker，會處理鏈重組（reorg） |
 | **ADR** | 架構決策紀錄（Architecture Decision Record）：一份短文件，說明一個決定、考慮過的其他方案與後果 |
+| **P0–P3** | issue 標題裡的優先級：P0 必做且會擋住後續工作；P3 只在有需求證據時才做 |
+| **EPIC** | 之後會拆成多個小 issue 的大型任務 |
 | **最小單位** | USDC 有 6 位小數，所以 `1000000` 代表 1 USDC。金額永遠不用浮點數儲存 |
 | **Base Sepolia** | Base 的公開測試網（chain ID `84532`） |
 | **anvil** | Foundry 的本機區塊鏈，用於開發與 CI |

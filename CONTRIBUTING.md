@@ -24,6 +24,20 @@ All of them must pass. Run `pnpm test` on Node.js 24.15 or newer: the web app's 
 
 A machine may lack Foundry, PostgreSQL or anvil. CI is then the required check for what it cannot run: the `solidity` job for Foundry, the `javascript` job for the PostgreSQL integration tests, and the `e2e` job for the anvil run. CI also runs an `audit` job for dependencies. [docs/DEMO.md](docs/DEMO.md) shows how to start the database and the local chain.
 
+## Development servers
+
+The web app and the API alone, with no chain. Sign-in, World ID and the chain features stay disabled until they are configured ([`.env.example`](.env.example)).
+
+```bash
+pnpm install
+docker run -d --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham
+pnpm --filter @vham/api db:migrate
+pnpm dev            # web on :3000, API on :3001
+```
+
+The API and the indexer read settings only from environment variables, never from a `.env` file. To keep them in a git-ignored `.env`, load it into the shell first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell. The full flow with a local chain is in [docs/DEMO.md](docs/DEMO.md).
+
 ## Windows
 
 Foundry runs in WSL. With a checkout that has CRLF line endings (Git's default on Windows), `pnpm format:check` and `forge fmt --check` report files that are correct in the repository. To check such a checkout, run `pnpm exec prettier --check --end-of-line auto .`; CI, which checks out LF, is the reference.

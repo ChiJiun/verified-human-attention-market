@@ -53,7 +53,7 @@
 
 ## 4. 系統總覽
 
-> 這是目標設計。目前已完成：託管、World ID 資格驗證、鏈下驗證器，以及 USDC 的領取與退款。尚未實作：x402、協議手續費、publisher 分潤與跨 campaign 信譽。
+> 這是目標設計。目前已完成：託管、World ID 資格驗證、鏈下驗證器，以及 USDC 的領取與退款。尚未實作：x402、協議手續費、publisher 分潤、publisher SDK 與 widget，以及跨 campaign 信譽。
 
 ```mermaid
 flowchart LR

@@ -24,7 +24,7 @@
 
 **技術。** Solidity／Foundry（單元、fuzz、stateful invariant 測試）、Fastify API 與鏈上事件 indexer（PostgreSQL）、Next.js、World ID IDKit、Base Sepolia 上的 USDC。
 
-**現況與下一步。** 2026-10-14 以真實 World ID proof 在 Base Sepolia 跑通完整流程（v1 合約）。之後合約有改版，新版只在本機鏈與 CI 跑過。未審計、只用測試資金、還沒有真實廣告主。下一步：重新部署新版合約、重跑測試網流程，再找真實買家測試。
+**現況與下一步。** 2026-10-14 以真實 World ID proof 在 Base Sepolia 跑通完整流程（v1 合約）。之後合約與 World ID 請求都改過：請求現在只接受 4.0 proof，並綁定領取用的錢包。新版只在本機鏈與 CI 跑過，World ID 是模擬的。未審計、只用測試資金、還沒有真實廣告主。下一步：重新部署新版合約、重跑測試網流程，再找真實買家測試。
 
 **一項該說明的限制。** 理解測驗只是基本的參與度訊號，不能證明對方認真讀過。World ID 限制每個人在每個 campaign 只能領一次，並不保證作答是用心的。
 

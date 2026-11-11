@@ -1,4 +1,4 @@
-# SDLC Status / 軟體開發生命週期狀態
+# SDLC Status
 
 > Last reviewed: 2026-11-11 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
@@ -26,7 +26,7 @@ These choices keep small open questions from blocking the work. The rows marked 
 | First mission | Sponsored article/content + short comprehension check | Accepted in ADR-0002 |
 | Settlement | USDC | Working assumption |
 | MVP chain | Base | Accepted in ADR-0001 |
-| Identity | World ID external integration | Accepted baseline |
+| Identity | World ID external integration | Accepted in ADR-0007 |
 | Proof of engagement | Off-chain verifier + EIP-712 claim authorization | Accepted in ADR-0004 |
 | POC gas UX | User pays testnet gas | Accepted in ADR-0003 |
 | POC economics | 1 test USDC × max 10, 0% fee | Accepted in ADR-0005 |
@@ -213,7 +213,7 @@ Reviewed by a separate agent before merging, with the review recorded on the PR,
 | PR | Closes | What changed |
 | --- | --- | --- |
 | #128 | — | Review follow-ups to #127: the indexer worker retries its startup read of the halt while the database cannot be read, instead of exiting and crash-looping under its supervisor, and its logs name the cause of a failed query, which Drizzle keeps apart from the message. Registry tests pin that the registry is freed before the database closes and that a build failing late leaves it free. The alert tests pin that `record` is refused next to `alert` and count a range between two strings once, and their comment lists more of the files Prometheus accepts that fail here. The runbook says that while the RPC hangs a smart-contract wallet cannot sign in, a client calling the API directly is signed in after about 40 s, and sign-in through the web app fails because its rewrite gives up after 30 s; that a worker stopped at startup exits once the attempt in progress ends; that postgres.js waits up to 20 s before it reopens a failed connection; that a read waiting for a connection can take twice `connect_timeout`, that a failed API scrape also restarts VhamIndexerLag on the API's series, why a lost lock can keep a restarted worker waiting, and that readiness logs no error for its 503s |
-| #129 | — | The README is rewritten for a first-time reader: a CI badge, links to the Base Sepolia transactions, what is real today and what is not, screenshots of the local browser demo (`docs/images/`), the product thesis, engineering highlights, and three ways to run it. `docs/DEMO.md` is now English and `docs/DEMO.zh-TW.md` holds the Traditional Chinese guide; both add the missing browser steps (Save draft, a public https content URL, the start time, Submit answers), the keys of the public anvil accounts, and what to reset before a second round. New: `docs/HACKATHON.md` (a submission summary), `CONTRIBUTING.md` (the pre-commit checks, moved from the README) and `docs/adr/README.md` (the ADR index, moved from the README). `docs/product/VISION.md` marks its 2026-10-05 status sections as historical. The advertiser page says "1 completion" for one paid completion |
+| #129 | — | The README is rewritten for a first-time reader: a CI badge, links to the Base Sepolia transactions, what is real today and what is not, screenshots of the local browser demo (`docs/images/`), the product thesis, engineering highlights, and three ways to run it. `docs/DEMO.md` is now English and `docs/DEMO.zh-TW.md` holds the Traditional Chinese guide; both add the missing browser steps (Save draft, a public https content URL, the start time, Submit answers), the keys of the public anvil accounts, and what to reset before a second round. New: `docs/HACKATHON.md` (a submission summary), `CONTRIBUTING.md` (the pre-commit checks and the web + API start, moved from the README) and `docs/adr/README.md` (the ADR index, moved from the README). `docs/product/VISION.md` marks its 2026-10-05 status sections as historical. The advertiser page says "1 completion" for one paid completion |
 
 ## Next SDLC Actions
 
