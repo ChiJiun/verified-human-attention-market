@@ -113,9 +113,10 @@ export interface AppDependencies {
   /**
    * This app's own registry: its chain and halt gauges keep their reads in
    * order only within one app, so buildApp refuses a registry that another
-   * open app uses. It is free again once that app closes, but a scrape or
-   * readiness check still in flight then can set the gauges when its reads
-   * finish: reuse a registry only once none is in flight.
+   * open app uses. It is free again once that app's close() runs its onClose
+   * hooks, before dependencies.close, but a scrape or readiness check still
+   * in flight then can set the gauges when its reads finish: reuse a
+   * registry only once none is in flight.
    */
   metrics?: MetricsRegistry;
   /** Bearer token for GET /metrics; null or absent = unauthenticated. */
@@ -543,7 +544,7 @@ export function buildApp(dependencies: AppDependencies = {}) {
 
   // Marked only at the end, so a build that throws leaves the registry free.
   // onClose hooks run last added first, so this one frees it before
-  // dependencies.close runs, whether that fails or not.
+  // dependencies.close starts, even if that then fails or hangs.
   registriesInUse.add(metrics);
   app.addHook("onClose", async () => {
     registriesInUse.delete(metrics);

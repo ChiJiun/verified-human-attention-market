@@ -165,6 +165,63 @@ export async function retryWithBackoff<T>(
   return null;
 }
 
+/** One error's own text: its message, or what else names it. */
+function ownMessage(error: unknown, depth = 0): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.message) return error.message;
+  // Node reports a connection refused on every address as an AggregateError
+  // with an empty message. The depth limit ends one that holds itself.
+  const inner =
+    error instanceof AggregateError && depth < 3
+      ? error.errors.map((each) => ownMessage(each, depth + 1)).join("; ")
+      : "";
+  const code = (error as { code?: unknown }).code;
+  return inner || (typeof code === "string" ? code : error.name);
+}
+
+/**
+ * An error's message followed by its causes, for the worker's logs. Drizzle
+ * reports a failed query as `Failed query: <SQL>` and keeps the reason
+ * (connection refused, wrong password, missing table) in `cause`, so the
+ * message alone does not say why.
+ */
+export function errorMessage(error: unknown): string {
+  const parts = [ownMessage(error)];
+  const seen = new Set<unknown>([error]);
+  let current = error;
+  // At most five parts, and a cause that was already named ends the chain.
+  while (parts.length < 5 && current instanceof Error) {
+    current = current.cause;
+    if (current === undefined || current === null || seen.has(current)) break;
+    seen.add(current);
+    parts.push(ownMessage(current));
+  }
+  return parts.join("; cause: ");
+}
+
+/**
+ * Reads the deployment's halt when the worker starts, retrying a database
+ * failure with backoff like the deployment lock instead of exiting (which
+ * would crash-loop under a supervisor). The halt, or null for none, comes
+ * wrapped; null if the worker is stopping first.
+ */
+export async function readHaltWithRetry(
+  events: Pick<ChainEventRepository, "getHalt">,
+  scope: ChainScope,
+  options: {
+    stopping: () => boolean;
+    onFailure: (attempt: number, error: unknown, retryInMs: number) => void;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<{ halt: ChainHalt | null } | null> {
+  return retryWithBackoff(async () => ({ halt: await events.getHalt(scope) }), {
+    retryable: () => true,
+    stopping: options.stopping,
+    onFailure: options.onFailure,
+    sleep: options.sleep,
+  });
+}
+
 /** Another session holds the deployment lock (the worker waits for it). */
 export const DEPLOYMENT_LOCK_HELD =
   "another indexer worker or `reorg:recover --apply` holds this deployment";

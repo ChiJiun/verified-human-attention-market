@@ -14,6 +14,8 @@ import {
 } from "./chain/indexer.js";
 import {
   ChainHaltedError,
+  errorMessage,
+  readHaltWithRetry,
   recordHaltWithRetry,
   retryWithBackoff,
   runWorkerPass,
@@ -67,9 +69,6 @@ const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
       ...extra,
     }),
   );
-
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
 
 // Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
 // An unreachable or failing RPC is retried with backoff (up to 60 s apart)
@@ -227,7 +226,25 @@ const RECOVERY_ACTION =
 
 // A recorded deep reorg must be recovered first (ADR-0011). After
 // `reorg:recover --apply` the worker rebuilds; the halt stays until verified.
-const existingHalt = await repository.getHalt(scope);
+// A database that cannot be read yet is retried, like the lock below.
+const startupHalt = await readHaltWithRetry(repository, scope, {
+  stopping: () => stopping,
+  sleep,
+  onFailure: (attempt, error, retryInMs) =>
+    log("warn", "startup halt read failed; retrying", {
+      attempt,
+      error: errorMessage(error),
+      retryInMs,
+    }),
+});
+if (startupHalt === null) {
+  // Stopped while the database could not be read: close what is open, as
+  // a worker stopped while it waits for the lock does.
+  metricsServer?.close();
+  await database.close();
+  process.exit(0);
+}
+const existingHalt = startupHalt.halt;
 if (existingHalt?.recoveryAppliedAt) {
   log("warn", "rebuilding the index after reorg recovery", {
     block: existingHalt.block.toString(),
@@ -395,9 +412,7 @@ while (!stopping) {
           ...(await applyRetention(database.db, new Date())),
         });
       } catch (error) {
-        log("error", "retention failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        log("error", "retention failed", { error: errorMessage(error) });
       }
     }
 
@@ -443,10 +458,7 @@ while (!stopping) {
             "COULD NOT RECORD THE REORG HALT; retrying. The API is NOT paused until this succeeds",
             {
               attempt,
-              error:
-                haltError instanceof Error
-                  ? haltError.message
-                  : String(haltError),
+              error: errorMessage(haltError),
             },
           ),
       });
