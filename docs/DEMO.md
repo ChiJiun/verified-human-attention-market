@@ -130,7 +130,8 @@ The accounts below are the **public test accounts** anvil prints when it starts.
 ```bash
 # Terminal 1: the database. Stop the scripted demo's container first (it has the same name and port),
 # then use the same docker run with POSTGRES_DB=vham
-# Terminal 2: local chain. A block every 2 seconds gives the indexer confirmations to wait for
+# Terminal 2: local chain. Stop the scripted demo's anvil first: it mines no blocks on its own
+# and the test moved its clock forward. A block every 2 seconds gives the indexer confirmations to wait for
 anvil --block-time 2
 
 # Terminal 3: deploy mock USDC and CampaignManager, and give the advertiser 100 mock USDC
@@ -175,7 +176,7 @@ On Windows, run terminals 2 and 3 in WSL and the rest in PowerShell. Windows Pow
 
 ### Click through it
 
-In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows.
+In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `31337`, currency symbol `ETH`) and import the two accounts from the table above. Two browser profiles, each with its own wallet extension, are the safest: one for the advertiser and one for the participant, each with the network and its own account. Both pages run on `localhost:3000`, and a page reads the wallet's account once, when you press **Connect wallet**. With a single extension, reload the page after you switch accounts and check the address it shows. If it is still the other account, allow the second account to connect to this site in the wallet, then reload.
 
 1. **Advertiser (anvil #2):** open <http://localhost:3000/advertiser>, press **Connect wallet**, then **Sign in with Ethereum**. Fill in the form:
    - **Sponsored content URL:** any public `https` address, for example `https://example.com/`. The form accepts only `https`, and the API refuses IP addresses, internal hostnames such as `localhost`, and addresses with a port.
@@ -188,7 +189,7 @@ In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `3
 2. **Wait for the start time.** The local chain follows the real clock.
 3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
 4. Back on the advertiser page, the paid amount and the completion count have changed. A participant who submits less than 15 seconds after verifying is still paid, and the page lists that completion under `FAST_COMPLETION` and leaves it out of "Quality-adjusted accepted".
-5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`; the button appears the next time the page reads the chain (within 10 seconds).
+5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine` in terminal 3 (WSL on Windows); the button appears the next time the page reads the chain (within 10 seconds).
 
 The session cookie is `HttpOnly` and `Secure` (#72). Chromium keeps such a cookie for `http://localhost` and `http://127.0.0.1`; other browsers were not checked. If the browser drops it, signing in says why: use Chromium, or `next dev --experimental-https`.
 

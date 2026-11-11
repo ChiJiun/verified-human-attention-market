@@ -17,7 +17,7 @@ All of them must pass. Run `pnpm test` on Node.js 24.15 or newer: the web app's 
 | Test layer | Command | Needs |
 | --- | --- | --- |
 | Unit + API (in memory) | `pnpm test` | nothing |
-| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` set | PostgreSQL 16 or newer, in a database kept for tests: the run empties every table |
+| PostgreSQL integration | `pnpm test` with `TEST_DATABASE_URL` set | PostgreSQL 16 or newer, in a database kept for tests: the run empties its tables |
 | Contracts | `forge test -vv` in `packages/contracts` | Foundry |
 | ABI drift | `forge build && node scripts/export-abi.mjs --check` in `packages/contracts` | Foundry |
 | End-to-end on a local chain | `forge build` in `packages/contracts`, then `pnpm --filter @vham/api test:e2e` with `TEST_DATABASE_URL` set | anvil on `127.0.0.1:8545` (or `E2E_RPC_URL`) and an empty PostgreSQL database; skipped when `TEST_DATABASE_URL` is not set |
@@ -41,6 +41,10 @@ The API and the indexer read settings only from environment variables, never fro
 ## Windows
 
 Foundry runs in WSL. With a checkout that has CRLF line endings (Git's default on Windows), `pnpm format:check` and `forge fmt --check` report files that are correct in the repository. To check such a checkout, run `pnpm exec prettier --check --end-of-line auto .`; CI, which checks out LF, is the reference.
+
+## Documents in two languages
+
+`README.md`, `docs/DEMO.md`, `docs/HACKATHON.md` and `docs/product/VISION.md` each have a `.zh-TW.md` version. Change both in the same commit, and keep the facts, numbers, commands and link targets the same.
 
 ## Secrets
 

@@ -18,7 +18,7 @@ Today the engagement check is a short comprehension quiz: a baseline signal, not
 
 - **On a public testnet.** The full flow ran on Base Sepolia on 2026-10-14 (v1 contract) with a real World ID proof from an Orb-verified World App: [fund 3 USDC](https://sepolia.basescan.org/tx/0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65) · [claim 1 USDC](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) · [refund 2 USDC](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) · [contract](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) · [all six transactions](docs/DEMO.md#the-base-sepolia-run-of-2026-10-14)
 - **In CI, on every push and pull request.** The Foundry suite (60 tests as `forge` reports them, with three stateful invariants checked over 8,192 calls per run); more than 860 TypeScript tests; and an end-to-end run of the whole money loop on a local chain with PostgreSQL.
-- **What that does not cover.** The testnet run used the earlier World ID request, which also allowed 3.0 proofs, and the contract has changed since. The current 4.0-only, wallet-bound request and the current contract have run only on a local chain and in CI, with World ID simulated. The testnet re-run is pending.
+- **What that does not cover.** The testnet run used the earlier World ID request, which also allowed 3.0 proofs, and the contract has changed since. The current contract has run only on a local chain and in CI, where World ID is simulated. The current 4.0-only, wallet-bound request is covered only by unit tests against a mocked World API, not by a real World App. The testnet re-run is pending.
 
 ---
 
@@ -42,7 +42,7 @@ Screenshots from a local run: local chain (anvil), simulated World ID, mock USDC
 
 **Why World ID.** It gives an anonymous per-campaign identifier, so one person is paid once per campaign without the project learning who they are.
 
-**Why on-chain.** The advertiser does not hand the budget to the platform. It sits in a contract that cannot pay more than was funded, pays only against a signed authorization, and returns the rest. What is still trusted: the off-chain verifier and its signing key, and the contract's owner, who can pause claims and refunds and replace the signer but cannot withdraw the escrow. The contract caps the loss (in the proof of concept, 10 test USDC per campaign).
+**Why on-chain.** The advertiser does not hand the budget to the platform. It sits in a contract that cannot pay more than was funded, pays only against a signed authorization, and returns the rest. What is still trusted: the off-chain verifier and its signing key, and the contract's owner. The owner can pause the contract (creating, funding, claiming and refunding) and replace the signer, so the owner is inside the same trust boundary as the signing key. No function lets the owner withdraw the escrow. The contract caps the loss (in the proof of concept, 10 test USDC per campaign).
 
 | | Watch-to-earn, quest and survey platforms (typically) | This project |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ sequenceDiagram
 - **A retry cannot create a second escrow.** A lost RPC response, a resend or a second browser tab cannot create a second campaign for the same draft: `createCampaign` is idempotent per draft, and the claim signature is bound to the same draft ([ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)).
 - **The chain is the ledger.** The database is reconciled from confirmed events by an indexer that handles reorganizations. A reorganization deeper than the confirmation depth stops signing instead of guessing.
 - **The proof is requested for one wallet.** The World ID signal commits to the campaign and the claimant address, and the API refuses a result whose signal does not match before it asks World ([ADR-0007](docs/adr/0007-world-id-integration.md)). Tested locally and in CI. Whether World's verifier rejects a proof moved to another wallet has not been tested against a real World App yet ([#71](https://github.com/ChiJiun/verified-human-attention-market/issues/71)).
-- **A small contract with no dependencies.** 443 lines, no imports, every revert covered by a test. Three stateful invariants (budget conservation, payouts never exceed funding, completion cap) hold over 8,192 randomized calls per CI run.
+- **A small contract with no dependencies.** 443 lines and no imports. Unit, fuzz and invariant tests cover 93% of its lines and 71% of its branches (`forge coverage`, 2026-11-11). Three stateful invariants (budget conservation, payouts never exceed funding, completion cap) hold over 8,192 randomized calls per CI run.
 
 ---
 
@@ -186,7 +186,7 @@ Without a database `pnpm test` runs about 780 tests and skips the PostgreSQL int
 
 **2. The whole money loop on a local chain** (a few minutes)
 
-The real contract on anvil, a real PostgreSQL database and the real API; only World ID is simulated. One test creates and funds a campaign, verifies a participant, pays a claim, has a second claim refused, closes, refunds, and then checks the API's figures against the chain.
+The real contract on anvil, a real PostgreSQL database and the real API; only World ID is simulated. One test creates and funds a campaign, verifies a participant, pays a claim, has a second claim refused, closes, refunds, and then checks the API's figures against the chain. The same test also pays a second participant after the close and runs failure drills ([details](docs/DEMO.md#scripted-demo-the-end-to-end-test)).
 
 ```bash
 # terminal 1
@@ -199,7 +199,7 @@ export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
 ```
 
-Expected: `Test Files  1 passed (1)`. If the test is reported as skipped, `TEST_DATABASE_URL` is not set. Point it at a database kept for this, because the run empties every table. The same test is the `e2e` job in CI.
+Expected: `Test Files  1 passed (1)`. If the test is reported as skipped, `TEST_DATABASE_URL` is not set. Point it at a database kept for this, because the run empties its tables. The same test is the `e2e` job in CI.
 
 **3. Click through it in a browser**
 

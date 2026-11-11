@@ -18,7 +18,7 @@
 
 - **在公開測試網上。** 完整流程已於 2026-10-14 在 Base Sepolia 執行（v1 合約），使用 Orb 驗證過的 World App 產生的真實 World ID proof：[入金 3 USDC](https://sepolia.basescan.org/tx/0xda1673ced0c7b3c6bf6345d34339e49d86b33060f903168df53571508a3bea65) · [領取 1 USDC](https://sepolia.basescan.org/tx/0xc929552ca98dc923a18baf04b4d2c47b0b05b1c91093444eafa77a854bf876d7) · [退款 2 USDC](https://sepolia.basescan.org/tx/0x242c6aac019183f29a18c12e39ba2380a94ad2e9f4bf573662831da41c5e44a4) · [合約](https://sepolia.basescan.org/address/0x12cc9447CEb3f8E75dDf4463A1A4D9feB42bDFEc) · [全部六筆交易](docs/DEMO.zh-TW.md#base-sepolia-實測2026-10-14)
 - **在 CI 裡，每次 push 與 pull request 都跑。** Foundry 測試（`forge` 回報 60 個，其中三個 stateful invariant 每次執行檢查 8,192 次呼叫）、超過 860 個 TypeScript 測試，以及在本機鏈加 PostgreSQL 上把整個金流從頭到尾跑一次。
-- **這些沒有涵蓋的部分。** 測試網那次用的是較早的 World ID 請求（也接受 3.0 proof），而且合約之後改過。現行只接受 4.0、綁定錢包的請求，以及現行合約，只在本機鏈與 CI 跑過，World ID 是模擬的。測試網的重跑還沒做。
+- **這些沒有涵蓋的部分。** 測試網那次用的是較早的 World ID 請求（也接受 3.0 proof），而且合約之後改過。現行合約只在本機鏈與 CI 跑過，World ID 在那裡是模擬的。現行只接受 4.0、綁定錢包的請求，目前只有對 mock World API 的單元測試涵蓋，還沒用真實的 World App 跑過。測試網的重跑還沒做。
 
 ---
 
@@ -42,7 +42,7 @@
 
 **為什麼用 World ID。** 它提供每個 campaign 專屬的匿名識別值，所以同一個人在同一個 campaign 只會領到一次，而專案不會知道對方是誰。
 
-**為什麼上鏈。** 廣告主不必把預算交給平台。預算放在合約裡，合約付出的金額不會超過入金，只憑簽好的授權付款，剩下的會退回。仍然需要信任的是鏈下驗證器與它的簽名金鑰，以及合約的 owner：owner 可以暫停領取與退款、可以更換簽名者，但無法提走託管的資金。合約限制了最大損失（概念驗證階段是每個 campaign 10 測試 USDC）。
+**為什麼上鏈。** 廣告主不必把預算交給平台。預算放在合約裡，合約付出的金額不會超過入金，只憑簽好的授權付款，剩下的會退回。仍然需要信任的是鏈下驗證器與它的簽名金鑰，以及合約的 owner。owner 可以暫停合約（建立、入金、領取與退款）、可以更換簽名者，所以和簽名金鑰屬於同一個信任邊界。合約沒有任何函式能讓 owner 提走託管的資金。合約限制了最大損失（概念驗證階段是每個 campaign 10 測試 USDC）。
 
 | | 看廣告賺幣、任務牆與問卷平台（常見做法） | 這個專案 |
 | --- | --- | --- |
@@ -123,7 +123,7 @@ sequenceDiagram
 - **重試不會建立第二筆託管。** RPC 回應遺失、重送，或另一個瀏覽器分頁，都不會讓同一個草稿建立第二個 campaign：`createCampaign` 對每個草稿是冪等的，領取簽名也綁定同一個草稿（[ADR-0011](docs/adr/0011-idempotent-campaign-creation.md)）。
 - **以鏈為帳本。** 資料庫由會處理鏈重組的 indexer 從已確認的事件對帳。重組深度超過確認深度時會停止簽發，而不是猜測。
 - **proof 是為特定錢包請求的。** World ID 的 signal 包含 campaign 與領取者位址；signal 不符的結果，API 在詢問 World 之前就會拒絕（[ADR-0007](docs/adr/0007-world-id-integration.md)）。這點在本機與 CI 測試過。至於把 proof 換到另一個錢包時 World 的驗證器會不會拒絕，還沒用真實的 World App 測試（[#71](https://github.com/ChiJiun/verified-human-attention-market/issues/71)）。
-- **合約小，而且沒有相依套件。** 443 行、沒有任何 import，每個 revert 都有測試涵蓋。三個 stateful invariant（預算守恆、發放不超過入金、名額上限）在每次 CI 執行的 8,192 次隨機呼叫中都成立。
+- **合約小，而且沒有相依套件。** 443 行、沒有任何 import。單元、fuzz 與 invariant 測試涵蓋 93% 的行與 71% 的分支（`forge coverage`，2026-11-11）。三個 stateful invariant（預算守恆、發放不超過入金、名額上限）在每次 CI 執行的 8,192 次隨機呼叫中都成立。
 
 ---
 
@@ -186,7 +186,7 @@ pnpm install && pnpm test                  # API、前端與共用套件
 
 **2. 在本機鏈上跑完整金流**（幾分鐘）
 
-anvil 上的真合約、真的 PostgreSQL、真的 API，只有 World ID 是模擬的。一個測試會建立 campaign 並入金、驗證一位參與者、發放一筆領取、確認第二次領取被拒絕、關閉、退款，最後拿 API 的數字和鏈上比對。
+anvil 上的真合約、真的 PostgreSQL、真的 API，只有 World ID 是模擬的。一個測試會建立 campaign 並入金、驗證一位參與者、發放一筆領取、確認第二次領取被拒絕、關閉、退款，最後拿 API 的數字和鏈上比對。同一個測試還會讓第二位參與者在關閉後領取，並演練幾種故障（[詳見 DEMO](docs/DEMO.zh-TW.md#自動化-demo端到端測試)）。
 
 ```bash
 # 終端機 1
@@ -199,7 +199,7 @@ export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vham_e2e
 pnpm --filter @vham/api test:e2e
 ```
 
-預期結果：`Test Files  1 passed (1)`。如果測試顯示為 skipped，表示沒有設定 `TEST_DATABASE_URL`。請指到專門給它用的資料庫，因為每次執行都會清空所有資料表。CI 的 `e2e` job 跑的就是同一個測試。
+預期結果：`Test Files  1 passed (1)`。如果測試顯示為 skipped，表示沒有設定 `TEST_DATABASE_URL`。請指到專門給它用的資料庫，因為每次執行都會清空它用到的資料表。CI 的 `e2e` job 跑的就是同一個測試。
 
 **3. 在瀏覽器裡實際操作**
 
@@ -227,7 +227,7 @@ CI 在每次 push 與 pull request 執行四個 job：`javascript`（含 Postgre
 | [docs/adr/](docs/adr/README.md) | 每個重大決策的理由（英文） |
 | [CONTRIBUTING.md](CONTRIBUTING.md)、[AGENTS.md](AGENTS.md) | commit 前要跑的檢查，以及在這個 repo 工作的規則（英文） |
 
-其他：[需求](docs/product/REQUIREMENTS.md)（中文夾英文術語）、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。
+其他：[需求](docs/product/REQUIREMENTS.md)（中文夾英文術語）、[API 規格](docs/architecture/API_SPEC.md)、[資料模型](docs/architecture/DATA_MODEL.md)、[測試計畫](docs/testing/TEST_PLAN.md)、[資料保存](docs/privacy/DATA_RETENTION.md)、[維運](docs/operations/)與[測試網部署](docs/deployment/TESTNET.md)。除了檔名帶 `.zh-TW` 與標示「中文夾英文術語」的文件之外，其餘文件都是英文。
 
 ---
 

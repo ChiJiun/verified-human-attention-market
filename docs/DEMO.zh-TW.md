@@ -130,7 +130,8 @@ pnpm --filter @vham/api test:e2e
 ```bash
 # 終端機 1：資料庫。先停掉自動化 demo 的容器（名稱與埠相同），
 # 再用同一個 docker run，POSTGRES_DB 改成 vham
-# 終端機 2：本機鏈。每 2 秒產生一個區塊，indexer 才有確認數可以等
+# 終端機 2：本機鏈。先停掉自動化 demo 的 anvil：它不會自己出塊，
+# 時間也被測試往前調過。每 2 秒產生一個區塊，indexer 才有確認數可以等
 anvil --block-time 2
 
 # 終端機 3：部署 mock USDC + CampaignManager，並給廣告主 100 mock USDC
@@ -175,7 +176,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
 ### 實際操作
 
-在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`，幣別符號 `ETH`），並匯入上表的兩個帳號。最保險的做法是用兩個瀏覽器 profile，各裝一個錢包擴充套件：一個給廣告主，一個給參與者。兩個頁面都在 `localhost:3000`，而頁面只在按下 **Connect wallet** 時讀一次錢包的帳號。只用一個擴充套件時，切換帳號後請重新整理頁面，並確認頁面顯示的位址。
+在瀏覽器錢包新增網路（RPC `http://127.0.0.1:8545`，Chain ID `31337`，幣別符號 `ETH`），並匯入上表的兩個帳號。最保險的做法是用兩個瀏覽器 profile，各裝一個錢包擴充套件：一個給廣告主，一個給參與者，各自新增網路並匯入自己的帳號。兩個頁面都在 `localhost:3000`，而頁面只在按下 **Connect wallet** 時讀一次錢包的帳號。只用一個擴充套件時，切換帳號後請重新整理頁面，並確認頁面顯示的位址。如果還是另一個帳號，請在錢包裡允許第二個帳號連接這個網站，再重新整理。
 
 1. **廣告主（anvil #2）：** 打開 <http://localhost:3000/advertiser>，按 **Connect wallet**，再按 **Sign in with Ethereum**。填寫表單：
    - **Sponsored content URL：** 任何公開的 `https` 網址，例如 `https://example.com/`。表單只接受 `https`，API 會拒絕 IP 位址、`localhost` 這類內部主機名稱，以及帶埠號的網址。
@@ -188,7 +189,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 2. **等到開始時間。** 本機鏈時間跟著真實時間走。
 3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
 4. 回到廣告主頁面，可以看到已付金額和完成數都變了。參與者在驗證後不到 15 秒就送出作答時，仍然會領到獎勵，但頁面會把這次完成列在 `FAST_COMPLETION` 之下，並且不計入「Quality-adjusted accepted」。
-5. **廣告主（anvil #2）：** 在廣告主頁面，確認連接的是廣告主的帳號，按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
+5. **廣告主（anvil #2）：** 在廣告主頁面，確認連接的是廣告主的帳號，按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，在終端機 3（Windows 上是 WSL）執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
 
 登入後的 session 放在 `HttpOnly`、`Secure` 的 cookie 裡（#72）。已確認 Chromium 會保留 `http://localhost` 與 `http://127.0.0.1` 設定的這個 cookie；其他瀏覽器沒有驗證過。瀏覽器沒有保留 cookie 時，登入會直接顯示原因，這時請改用 Chromium，或改用 `next dev --experimental-https`。
 
