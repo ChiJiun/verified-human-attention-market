@@ -1,6 +1,6 @@
 # SDLC Status / 軟體開發生命週期狀態
 
-> Last reviewed: 2026-11-09 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
+> Last reviewed: 2026-11-11 (UTC). Merge dates on this page are GitHub's `mergedAt`, in UTC.
 
 Milestone 0 的 working decisions 與 System Design baseline 已收斂，目前正式進入 **Implementation**。本文件是 SDLC 執行狀態頁；README 的 roadmap 則追蹤產品成熟度。
 
@@ -140,9 +140,9 @@ Owner gates:
 - **Redeploy and re-run.** Needs the owner's keys and the World App scan on the owner's phone. #12 and #13 close only after that run.
 - **#71 closes only after the #13 swap test passes**, run exactly as ADR-0007 describes.
 
-Open issues on 2026-11-09 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
+Open issues on 2026-11-11 (`gh issue list --state open`): #12 and #13 (M1) close after the Base Sepolia re-run; #80 and #70 are owner decisions (#80 has a recommendation in the issue, posted 2026-11-02 UTC); #74 and #71 wait for the #13 re-run; the epics #27, #28 and #29; the deferred decision #30 (multi-chain / AARC only with evidence of demand). #104 (DOM tests for the web pages) was closed by #115.
 
-Recommended to the owner: the repository is public, and on 2026-11-09 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
+Recommended to the owner: the repository is public, and on 2026-11-11 Dependabot alerts, secret scanning and push protection were all disabled (`gh api repos/ChiJiun/verified-human-attention-market --jq .security_and_analysis`; `GET .../vulnerability-alerts` answers 404). Turn them on in the repository's **Settings → Code security** (the page may be named **Advanced Security**). Dependabot alerts report a new advisory against the lockfile without waiting for the next audit run; secret scanning reports a committed key, and push protection blocks a push that contains one (AGENTS.md §17). Only the owner can change these settings.
 
 ## Follow-ups merged 2026-11-02 (UTC)
 
@@ -205,7 +205,14 @@ Reviewed by a separate agent before merging, with the review recorded on the PR,
 | PR | Closes | What changed |
 | --- | --- | --- |
 | #127 | — | Review follow-ups to #126: the API marks a metrics registry as in use only once the app is built, so a build that throws leaves it free, and frees it before the database closes, even when that close fails; tests pin both. The alert tests accept a rule file that uses every key of an alerting rule and count no `[` inside a raw string or after an escaped quote, and their comment names the files Prometheus accepts that fail here. The runbook adds publishing to the requests that answer 503 while the RPC fails, and says that a read sent on a busy connection hangs too, that a scrape completes with `vham_chain_halted` at 1 only with a `scrape_timeout` above `connect_timeout`, that `increase()` rules still see the samples from before a failed scrape, and when VhamIndexerStalled cannot fire |
-| #128 | — | Review follow-ups to #127: the indexer worker retries its startup read of the halt while the database cannot be read, instead of exiting and crash-looping under its supervisor. Registry tests pin that the registry is freed before the database closes and that a build failing late leaves it free. The alert tests pin that `record` is refused next to `alert` and count a range between two strings once, and their comment lists more of the files Prometheus accepts that fail here. The runbook says that smart-contract wallets cannot sign in while the RPC fails and other wallets wait for it, that a read waiting for a connection can take twice `connect_timeout`, that a failed API scrape also restarts VhamIndexerLag on the API's series, why a lost lock can keep a restarted worker waiting, and that readiness logs no error for its 503s |
+
+## Follow-ups merged 2026-11-11 (UTC)
+
+Reviewed by a separate agent before merging, with the review recorded on the PR, and merged with green CI (javascript with PostgreSQL, solidity, e2e and `audit`).
+
+| PR | Closes | What changed |
+| --- | --- | --- |
+| #128 | — | Review follow-ups to #127: the indexer worker retries its startup read of the halt while the database cannot be read, instead of exiting and crash-looping under its supervisor, and its logs name the cause of a failed query, which Drizzle keeps apart from the message. Registry tests pin that the registry is freed before the database closes and that a build failing late leaves it free. The alert tests pin that `record` is refused next to `alert` and count a range between two strings once, and their comment lists more of the files Prometheus accepts that fail here. The runbook says that smart-contract wallets cannot sign in while the RPC fails and other wallets wait for it, that a read waiting for a connection can take twice `connect_timeout`, that a failed API scrape also restarts VhamIndexerLag on the API's series, why a lost lock can keep a restarted worker waiting, and that readiness logs no error for its 503s |
 
 ## Next SDLC Actions
 

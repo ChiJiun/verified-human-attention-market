@@ -165,6 +165,39 @@ export async function retryWithBackoff<T>(
   return null;
 }
 
+/** One error's own text: its message, or what else names it. */
+function ownMessage(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.message) return error.message;
+  // Node reports a connection refused on every address as an AggregateError
+  // with an empty message.
+  const inner =
+    error instanceof AggregateError
+      ? error.errors.map(ownMessage).join("; ")
+      : "";
+  const code = (error as { code?: unknown }).code;
+  return inner || (typeof code === "string" ? code : error.name);
+}
+
+/**
+ * An error's message followed by its causes, for the worker's logs. Drizzle
+ * reports a failed query as `Failed query: <SQL>` and keeps the reason
+ * (connection refused, wrong password, missing table) in `cause`, so the
+ * message alone does not say why.
+ */
+export function errorMessage(error: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    parts.push(ownMessage(current));
+    if (parts.length === 5 || !(current instanceof Error)) break;
+    current = current.cause;
+  }
+  return parts.join("; cause: ");
+}
+
 /**
  * Reads the deployment's halt when the worker starts, retrying a database
  * failure with backoff like the deployment lock instead of exiting (which

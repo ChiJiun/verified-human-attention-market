@@ -14,6 +14,7 @@ import {
 } from "./chain/indexer.js";
 import {
   ChainHaltedError,
+  errorMessage,
   readHaltWithRetry,
   recordHaltWithRetry,
   retryWithBackoff,
@@ -68,9 +69,6 @@ const log = (level: "info" | "warn" | "error", message: string, extra = {}) =>
       ...extra,
     }),
   );
-
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
 
 // Same fail-fast checks as the API: chain, code, and an ADR-0011 contract.
 // An unreachable or failing RPC is retried with backoff (up to 60 s apart)
@@ -240,6 +238,10 @@ const startupHalt = await readHaltWithRetry(repository, scope, {
     }),
 });
 if (startupHalt === null) {
+  // Stopped while the database could not be read: close what is open, as
+  // a worker stopped while it waits for the lock does.
+  metricsServer?.close();
+  await database.close();
   process.exit(0);
 }
 const existingHalt = startupHalt.halt;

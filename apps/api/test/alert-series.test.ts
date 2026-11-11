@@ -288,8 +288,8 @@ describe("series watched by increase() alert rules", () => {
     expect(
       accepted(fileWith({ name: "g", rules: [{ record: "r", expr: "up" }] })),
     ).toBe(false);
-    // `record` next to `alert`, even empty: Prometheus refuses a rule with
-    // both, and an empty one is refused here too.
+    // `record` next to `alert`: Prometheus refuses a rule with both. It
+    // accepts an empty `record`, which is refused here as well.
     expect(
       accepted(fileWith({ name: "g", rules: [{ ...rule, record: "r" }] })),
     ).toBe(false);
@@ -308,6 +308,8 @@ describe("series watched by increase() alert rules", () => {
     expect(rangesOf("x{a='\\'['} == 0")).toBe(0);
     // Strings on both sides of a range: each string ends at its own quote.
     expect(rangesOf('increase(x{a="1"}[5m]) > y{b="2"}')).toBe(1);
+    expect(rangesOf("increase(x{a='1'}[5m]) > y{b='2'}")).toBe(1);
+    expect(rangesOf("increase(x{a=`1`}[5m]) > y{b=`2`}")).toBe(1);
   });
 
   it("links every alert to a heading of the runbook", () => {

@@ -323,7 +323,11 @@ left behind, such as a connection whose end the server has not noticed yet.
 Any other `error` is a database failure, which the worker retries the same
 way. Before it waits for the lock, the worker reads the deployment's halt,
 and it retries a database it cannot read yet the same way
-(`startup halt read failed; retrying`) instead of exiting. While it waits
+(`startup halt read failed; retrying`) instead of exiting. That `error`
+names the query first and the reason after `; cause:`, such as a refused
+connection, a rejected password or a missing table. A failure that does not
+end by itself (wrong credentials, migrations not run) is retried all the
+same, without a restart to notice, so read the reason. While it waits
 for either, the worker exports no stall clock, so VhamIndexerStalled
 does not fire for it. If the database answers, the index has a cursor and no
 other worker is indexing, VhamIndexerLag fires once the API's lag has stayed

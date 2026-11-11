@@ -27,6 +27,7 @@ import {
 import {
   ChainHaltedError,
   DEPLOYMENT_LOCK_HELD,
+  errorMessage,
   readHaltWithRetry,
   recordHaltWithRetry,
   retryWithBackoff,
@@ -813,21 +814,25 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     const failures: string[] = [];
     const options = {
       onFailure: (attempt: number, error: unknown, retryInMs: number) =>
-        failures.push(
-          `${attempt}, ${retryInMs} ms: ${(error as Error).message}`,
-        ),
+        failures.push(`${attempt}, ${retryInMs} ms: ${errorMessage(error)}`),
       sleep: async () => {},
     };
+    // As Drizzle reports a failed query: the reason is in the cause.
+    const unavailable = () =>
+      new Error("Failed query: select 1", {
+        cause: new Error("connect ECONNREFUSED"),
+      });
     let calls = 0;
     const flaky = {
       getHalt: async (target: typeof scope) => {
         calls += 1;
-        if (calls < 3) throw new Error("database unavailable");
+        if (calls < 3) throw unavailable();
         return events.getHalt(target);
       },
     };
 
-    // No halt, read on the third try; the worker logs each failure.
+    // No halt, read on the third try; the worker logs each failure with
+    // its cause.
     expect(
       await readHaltWithRetry(flaky, scope, {
         ...options,
@@ -835,8 +840,8 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
       }),
     ).toEqual({ halt: null });
     expect(failures).toEqual([
-      "1, 1000 ms: database unavailable",
-      "2, 2000 ms: database unavailable",
+      "1, 1000 ms: Failed query: select 1; cause: connect ECONNREFUSED",
+      "2, 2000 ms: Failed query: select 1; cause: connect ECONNREFUSED",
     ]);
 
     // A recorded halt comes back as it is.
@@ -847,13 +852,16 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
     });
     expect(read?.halt?.block).toBe(42n);
 
-    // Stopped while the database is down: null, which is not "no halt".
+    // Stopped while the database is down: null, which is not "no halt",
+    // after the one failure it logged and without another try.
+    failures.length = 0;
     let stopping = false;
+    let sleeps = 0;
     expect(
       await readHaltWithRetry(
         {
           getHalt: async () => {
-            throw new Error("database unavailable");
+            throw unavailable();
           },
         },
         scope,
@@ -861,11 +869,43 @@ describe("reorg beyond the confirmation depth after activation (ADR-0011)", () =
           ...options,
           stopping: () => stopping,
           sleep: async () => {
+            sleeps += 1;
+            if (sleeps > 1) throw new Error("retried after it was stopped");
             stopping = true;
           },
         },
       ),
     ).toBeNull();
+    expect(failures).toEqual([
+      "1, 1000 ms: Failed query: select 1; cause: connect ECONNREFUSED",
+    ]);
+  });
+
+  it("logs an error with its causes", () => {
+    expect(errorMessage(new Error("plain"))).toBe("plain");
+    expect(errorMessage("text")).toBe("text");
+    expect(
+      errorMessage(
+        new Error("Failed query: select 1", {
+          cause: new Error("wrapped", { cause: "password rejected" }),
+        }),
+      ),
+    ).toBe("Failed query: select 1; cause: wrapped; cause: password rejected");
+    // Node refuses a connection on every address with an empty message.
+    const refused = Object.assign(
+      new AggregateError([new Error("connect ECONNREFUSED ::1:5432")], ""),
+      { code: "ECONNREFUSED" },
+    );
+    expect(errorMessage(new Error("Failed query", { cause: refused }))).toBe(
+      "Failed query; cause: connect ECONNREFUSED ::1:5432",
+    );
+    expect(
+      errorMessage(Object.assign(new Error(""), { code: "ETIMEDOUT" })),
+    ).toBe("ETIMEDOUT");
+    // A cause that points back at its error ends the chain.
+    const loop = new Error("outer");
+    loop.cause = new Error("inner", { cause: loop });
+    expect(errorMessage(loop)).toBe("outer; cause: inner");
   });
 
   it("starts the stall clock only once it holds the deployment lock", async () => {
