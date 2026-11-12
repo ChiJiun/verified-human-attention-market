@@ -12,7 +12,7 @@
 
 ## FR-001 Wallet Connection
 
-**Status (2026-10-19):** implemented in `apps/web` (injected wallet via viem; network check against `NEXT_PUBLIC_CHAIN_ID`, switch-chain button on the advertiser page; EIP-1193 4001 rejections are shown, not thrown). Not covered by automated UI tests.
+**Status (2026-10-19):** implemented in `apps/web` (injected wallet via viem; network check against `NEXT_PUBLIC_CHAIN_ID`, switch-chain button on the advertiser page; EIP-1193 4001 rejections are shown, not thrown). Not covered by automated UI tests at that date; since #104 the DOM tests of both pages press **Connect wallet**, and the switch-chain button still has no test.
 
 **Requirement:** Advertiser 必須能連接 EVM wallet。
 

@@ -128,8 +128,9 @@ pnpm --filter @vham/api test:e2e
 ### 啟動各項服務
 
 ```bash
-# 終端機 1：資料庫。先停掉自動化 demo 的容器（名稱與埠相同），
-# 再用同一個 docker run，POSTGRES_DB 改成 vham
+# 終端機 1：資料庫。先停掉自動化 demo 的容器（名稱與埠相同）
+docker run --rm --name vham-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=vham postgres:16-alpine
+
 # 終端機 2：本機鏈。先停掉自動化 demo 的 anvil：它不會自己出塊，
 # 時間也被測試往前調過。每 2 秒產生一個區塊，indexer 才有確認數可以等
 anvil --block-time 2
@@ -187,7 +188,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
    按 **Save draft**，再按 **Create on-chain**，接著按 **Approve & fund**（錢包會要求兩筆交易：核准與入金）。等狀態變成 `active` 後，頁面會顯示 participant link。它是相對路徑，所以要打開的網址是 `http://localhost:3000/mission?campaign=<campaign id>`。
 2. **等到開始時間。** 本機鏈時間跟著真實時間走。
-3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。這個頁面在連接時讀取網路，也沒有切換按鈕：如果顯示「Switch your wallet to Foundry.」，請在錢包裡選好網路、重新整理頁面並重新連接，否則 **Claim USDC** 會一直停用。另一種切換方式：在同一個 profile 打開 <http://localhost:3000/advertiser>，按 **Connect wallet** 與 **Switch to Foundry**，再重新打開 participant link。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
+3. **參與者（anvil #3）：** 在參與者的 profile 打開 participant link（只用一個擴充套件時，先切到第二個帳號）。按 **Connect wallet**，再按 **Verify with World ID**（本機為模擬，不會開 widget，直接通過）。這個頁面在連接時讀取網路，也沒有切換按鈕：如果顯示「Switch your wallet to Foundry.」，請在錢包裡選好網路、重新整理頁面並重新連接，否則 **Claim USDC** 會一直停用。另一種切換方式：在同一個 profile 打開 <http://localhost:3000/advertiser>，按 **Connect wallet** 與 **Switch to Foundry**，再重新打開 participant link 並按 **Connect wallet**。打開內容、選答案並按 **Submit answers**，接著按 **Claim USDC**。錢包會收到 1 mock USDC，頁面顯示「Reward paid to your wallet.」與交易 hash。
 4. 回到廣告主頁面，可以看到已付金額和完成數都變了。參與者在驗證後不到 15 秒就送出作答時，仍然會領到獎勵，但頁面會把這次完成列在 `FAST_COMPLETION` 之下，並且不計入「Quality-adjusted accepted」。
 5. **廣告主（anvil #2）：** 在廣告主頁面，確認連接的是廣告主的帳號，按 **Close campaign**。**Refund unused budget** 大約 15 分鐘後才會出現（頁面有倒數），因為已發出的授權最多還有效 15 分鐘。按下後狀態變成 `settled`。想跳過等待，在終端機 3（Windows 上是 WSL）執行 `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine`，頁面下一次讀鏈時（最多 10 秒）按鈕就會出現。
 
@@ -195,7 +196,7 @@ API_URL=http://localhost:3001 NEXT_PUBLIC_CHAIN_ID=31337 pnpm --filter @vham/web
 
 ### 再跑一次
 
-anvil 每次啟動都是一條新的鏈，而部署腳本會把合約部署到同樣的位址。資料庫如果還留著上一條鏈的資料，兩邊就對不上：indexer 會記錄 `Inconsistent chain read at block N`；新鏈長到資料庫上次停下的區塊之後，則改成記錄 `Confirmed block N is no longer canonical; manual reconciliation required` 並停止。不論哪一種，新的 campaign 都不會變成 `active`。用過 `anvil_increaseTime` 之後，鏈的時間也會比真實時間快，所以用過之後也請重啟 anvil。下一輪開始前：
+anvil 每次啟動都是一條新的鏈，而部署腳本會把合約部署到同樣的位址。資料庫如果還留著上一條鏈的資料，兩邊就對不上：indexer 會記錄 `Inconsistent chain read at block N`；新鏈長到資料庫上次停下的區塊之後，則改成記錄 `Confirmed block N is no longer canonical; manual reconciliation required` 並停止。停止之後再啟動 indexer，它會記錄 `indexer halted by a reorg beyond the confirmation depth` 並立刻結束。不論哪一種，新的 campaign 都不會變成 `active`。用過 `anvil_increaseTime` 之後，鏈的時間也會比真實時間快，所以用過之後也請重啟 anvil。下一輪開始前：
 
 1. 停掉 API 與 indexer，並重啟 anvil。
 2. 重建資料庫：把 PostgreSQL 容器停掉再啟動（`--rm` 會丟掉資料），或把 `vham` 資料庫 drop 後重新 create。
