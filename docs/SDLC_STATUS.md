@@ -222,7 +222,8 @@ Reviewed by a separate agent before merging, with the review recorded on the PR,
 
 | PR | Closes | What changed |
 | --- | --- | --- |
-| #131 | — | Documentation follow-ups from the review of #130. `docs/DEMO.md` and `docs/DEMO.zh-TW.md`: `pnpm install` before the browser demo's services, a second way to switch the participant page's network, and the second indexer message a stale database can cause. The README names the wallet address before the hashed nullifier, so the sentence cannot be read as a hashed address. `CONTRIBUTING.md` names the README's container too, and FR-001 in `docs/product/REQUIREMENTS.md` says the switch-chain button is on the advertiser page |
+| #131 | — | Documentation follow-ups from the review of #130. `docs/DEMO.md` and `docs/DEMO.zh-TW.md`: `pnpm install` before the browser demo's services, a second way to switch the participant page's network, and the second indexer message a stale database can cause. The README names the wallet address before the hashed nullifier, so the sentence cannot be read as a hashed address. `CONTRIBUTING.md` names the README's container too, and FR-001 in `docs/product/REQUIREMENTS.md` says the switch-chain button is on the advertiser page. The demo guide says the participant page reads the network "when it connects", not "once". This page: the #130 row lists the files it had left out |
+| #132 | — | Documentation follow-ups from the review of #131. `docs/DEMO.md` and `docs/DEMO.zh-TW.md`: the browser demo writes out its `docker run` command, the second way to switch the network ends with **Connect wallet**, and "Running it again" names the message of an indexer started after a halt. FR-001 in `docs/product/REQUIREMENTS.md` says what the DOM tests have covered since #104 |
 
 ## Next SDLC Actions
 
