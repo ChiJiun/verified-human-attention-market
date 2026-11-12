@@ -161,7 +161,7 @@ INDEXER_CONFIRMATIONS=2
 ADVERTISER_ALLOWLIST=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
 ```
 
-Run terminals 4 to 6 from the repository root. The API and the indexer do not read `.env` by themselves. Load it in terminals 4 and 5 first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell.
+Run terminals 4 to 6 from the repository root, after `pnpm install` if you have not run it yet. The API and the indexer do not read `.env` by themselves. Load it in terminals 4 and 5 first: `set -a; source .env; set +a` in bash or zsh, or one `$env:NAME = "value"` line per variable in PowerShell.
 
 ```bash
 # Terminal 4: API (runs the migrations first)
@@ -187,7 +187,7 @@ In the browser wallet, add the network (RPC `http://127.0.0.1:8545`, chain ID `3
 
    Press **Save draft**, then **Create on-chain**, then **Approve & fund** (the wallet asks for two transactions: the approval and the funding). When the status is `active`, the page shows the participant link. It is a path, so the address to open is `http://localhost:3000/mission?campaign=<campaign id>`.
 2. **Wait for the start time.** The local chain follows the real clock.
-3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). This page reads the network once and has no switch button: if it says "Switch your wallet to Foundry.", select the network in the wallet, reload the page and connect again, because **Claim USDC** stays disabled until then. Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
+3. **Participant (anvil #3):** open the participant link in the participant's profile (with a single extension, switch to the second account first). Press **Connect wallet**, then **Verify with World ID** (simulated locally: no widget opens and it passes). This page reads the network when it connects and has no switch button: if it says "Switch your wallet to Foundry.", select the network in the wallet, reload the page and connect again, because **Claim USDC** stays disabled until then. Another way to switch: in the same profile open <http://localhost:3000/advertiser>, press **Connect wallet** and **Switch to Foundry**, then open the participant link again. Open the content, choose an answer and press **Submit answers**, then press **Claim USDC**. The wallet receives 1 mock USDC and the page shows "Reward paid to your wallet." with the transaction hash.
 4. Back on the advertiser page, the paid amount and the completion count have changed. A participant who submits less than 15 seconds after verifying is still paid, and the page lists that completion under `FAST_COMPLETION` and leaves it out of "Quality-adjusted accepted".
 5. **Advertiser (anvil #2):** on the advertiser page, with the advertiser's account connected, press **Close campaign**. **Refund unused budget** appears about 15 minutes later (the page counts down), because authorizations that were already issued stay valid for up to 15 minutes. Press it and the status becomes `settled`. To skip the wait, run `cast rpc anvil_increaseTime 900 && cast rpc anvil_mine` in terminal 3 (WSL on Windows); the button appears the next time the page reads the chain (within 10 seconds).
 
@@ -195,7 +195,7 @@ The session cookie is `HttpOnly` and `Secure` (#72). Chromium keeps such a cooki
 
 ### Running it again
 
-anvil starts a new chain every time, and the deploy script puts the contracts at the same addresses on it. A database that still holds the previous chain no longer matches: the indexer logs `Inconsistent chain read at block N`, and new campaigns never become `active`. After `anvil_increaseTime` the chain's clock is also ahead of the real one, so restart anvil after using it. Before another round:
+anvil starts a new chain every time, and the deploy script puts the contracts at the same addresses on it. A database that still holds the previous chain no longer matches: the indexer logs `Inconsistent chain read at block N`. Once the new chain has reached the block the database stopped at, it logs `Confirmed block N is no longer canonical; manual reconciliation required` instead and halts. Either way new campaigns never become `active`. After `anvil_increaseTime` the chain's clock is also ahead of the real one, so restart anvil after using it. Before another round:
 
 1. Stop the API and the indexer, and restart anvil.
 2. Recreate the database: stop and start the PostgreSQL container again (`--rm` drops its data), or drop and create the `vham` database.

@@ -50,7 +50,7 @@ Screenshots from a local run: local chain (anvil), simulated World ID, mock USDC
 | What is paid for | Often an impression, a click or an on-chain action | A completion the verifier accepted (today a comprehension check: a baseline, not proof of deep attention) |
 | Paid in | Often the platform's own token or points | USDC; no native token, by design |
 | Where the budget sits | Usually with the platform | In a per-campaign on-chain escrow; the advertiser takes back what was not spent |
-| What is stored about the person | Often an account profile | For identity: a per-campaign keyed hash of the World ID nullifier and the claiming wallet; no name, no raw World ID data. Also the answers (deleted 30 days after the campaign ends) and the quality flags of a submission ([retention](docs/privacy/DATA_RETENTION.md)) |
+| What is stored about the person | Often an account profile | For identity: the claiming wallet address and a per-campaign keyed hash of the World ID nullifier; no name, no raw World ID data. Also the answers (deleted 30 days after the campaign ends) and the quality flags of a submission ([retention](docs/privacy/DATA_RETENTION.md)) |
 
 The middle column describes categories of product, not any one of them.
 
